@@ -3563,6 +3563,8 @@ struct SettingsView: View {
                     .padding(.top, 5)
                 }
 
+                MessagesAccessSection(state: state)
+
                 GroupBox("When confirmation is off") {
                     Text("Agents send without asking. Cancel, closing the panel or letting it time out never sends, so leave these on unless you trust every agent connected to this Mac.")
                         .font(.caption)

@@ -32,9 +32,12 @@ class AppSupportOverviewTests(unittest.TestCase):
         self.assertEqual(["Run shortcut"], rows["Shortcuts"]["runs"])
         self.assertIn("Delete reminder", rows["Reminders"]["changes"])
         self.assertEqual("By looking at the window", rows["Slack"]["support_words"])
-        self.assertEqual("Partly built in", rows["Messages"]["support_words"])
-        ways = {way["task"]: way["how"] for way in rows["Messages"]["other_ways"]}
-        self.assertEqual({"Read conversation": "By looking at the window and clicking"}, ways)
+        self.assertEqual("Built in", rows["Messages"]["support_words"])
+        self.assertEqual([], rows["Messages"]["other_ways"])
+        self.assertIn("Read messages", rows["Messages"]["reads"])
+        self.assertEqual(["Send message"], rows["Messages"]["sends"])
+        ways = {way["task"]: way["how"] for way in rows["Xcode"]["other_ways"]}
+        self.assertEqual("By looking at the window and clicking", ways["Inspect window"])
         order = [row["support"] for row in app_adapters.owner_overview()]
         self.assertEqual(sorted(order, key=["first_party", "partial_first_party", "generic_ax"].index), order)
 

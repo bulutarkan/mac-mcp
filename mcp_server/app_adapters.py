@@ -64,7 +64,7 @@ _ACTIONS = {
     "Reminders": ("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"),
     "Preview": ("list_documents", "open_document"),
     "System Settings": ("list_panes", "open_pane"),
-    "Messages": ("find_chats", "send_message"),
+    "Messages": ("find_chats", "read_messages", "search_messages", "send_message"),
     "Xcode": ("list_workspaces",),
     "Contacts": ("find_contacts",),
     "Shortcuts": ("list_shortcuts", "run_shortcut"),
@@ -81,6 +81,8 @@ _READ_ACTIONS = {
     "list_panes",
     "list_reminders",
     "find_chats",
+    "read_messages",
+    "search_messages",
     "list_workspaces",
     "find_free_time",
     "plan_day",
@@ -113,10 +115,11 @@ _SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
     "Messages": {
         "aliases": ("messages", "imessage", "imessages"),
         "bundle_paths": ("/System/Applications/Messages.app",),
-        "native_api": "AppleScript dictionary (chats, participants, send); it does not expose message text",
+        "native_api": "AppleScript dictionary (chats, participants, send); message text is read from the Messages "
+                      "database by Mac MCP Messages Reader, which needs Full Disk Access",
         "tasks": {
             "find_conversation": "first_party: find_chats (query matches chat name, participant name or handle)",
-            "read_conversation": "generic_ax: the open transcript is exposed as AX text",
+            "read_conversation": "first_party: read_messages and search_messages (read-only)",
             "send_message": "first_party: send_message to an existing chat; the person confirms it first by default",
         },
     },
@@ -167,8 +170,9 @@ def support_matrix() -> Dict[str, Any]:
     for name, entry in _SUPPORT_MATRIX.items():
         extra = {"native_api": entry["native_api"], "tasks": dict(entry["tasks"])}
         if name in rows:
-            # Some tasks are first-party, the rest keep their generic path.
-            rows[name].update(support="partial_first_party", **extra)
+            # Some tasks are first-party, the rest keep their generic path; when none is left, all are built in.
+            partial = any(not how.startswith("first_party") for how in entry["tasks"].values())
+            rows[name].update(support="partial_first_party" if partial else "first_party", **extra)
         else:
             rows[name] = {"support": "generic_ax", **extra}
     return rows
@@ -1907,6 +1911,26 @@ return outText'''
     }
 
 
+def _messages_read(action: str, *, item_id: Optional[str], query: Optional[str], limit: int,
+                   cursor: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> Dict[str, Any]:
+    """Message text from the Messages database, read-only (#261); see messages_reader."""
+    from . import messages_reader, privacy_policy
+
+    # The owner's exclusions hold here as for looking at the Messages window (Settings › Privacy).
+    try:
+        privacy_policy.check_app("Messages", "com.apple.MobileSMS")
+    except privacy_policy.PrivacyBlocked as exc:
+        raise AppAdapterError(exc.code, str(exc.detail), retryable=False) from exc
+    try:
+        if action == "read_messages":
+            return messages_reader.read_messages(item_id, query, limit=limit, cursor=cursor,
+                                                 date_from=date_from, date_to=date_to)
+        return messages_reader.search_messages(str(query or ""), item_id=item_id, limit=limit, cursor=cursor,
+                                               date_from=date_from, date_to=date_to)
+    except messages_reader.MessagesError as exc:
+        raise AppAdapterError(exc.code, str(exc), **exc.extra) from exc
+
+
 def _xcode_list_workspaces(*, limit: int, timeout_s: float) -> Dict[str, Any]:
     """Open Xcode projects and workspaces with their schemes and targets."""
     script = f'''set rs to ASCII character 30
@@ -2132,6 +2156,7 @@ def mac_app(
     target_app: Optional[str] = None,
     url: Optional[str] = None,
     window_ids: Optional[List[int]] = None,
+    cursor: Optional[str] = None,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -2343,11 +2368,13 @@ def mac_app(
                 else _preview_open(str(path or ""), preserve_focus=preserve_focus, timeout_s=timeout)
             )
         elif canonical == "Messages":
-            payload = (
-                _messages_send(settings, item_id, query, body, timeout_s=timeout)
-                if normalized_action == "send_message"
-                else _messages_find_chats(query, limit=bounded, timeout_s=timeout)
-            )
+            if normalized_action == "send_message":
+                payload = _messages_send(settings, item_id, query, body, timeout_s=timeout)
+            elif normalized_action in {"read_messages", "search_messages"}:
+                payload = _messages_read(normalized_action, item_id=item_id, query=query, limit=bounded,
+                                         cursor=cursor, date_from=date_from, date_to=date_to)
+            else:
+                payload = _messages_find_chats(query, limit=bounded, timeout_s=timeout)
         elif canonical == "Xcode":
             payload = _xcode_list_workspaces(limit=bounded, timeout_s=timeout)
         elif canonical == "System Settings":

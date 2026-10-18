@@ -48,6 +48,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/PrivacyPane.swift"
   "${SCRIPT_DIR}/Sources/McpServersPane.swift"
   "${SCRIPT_DIR}/Sources/McpConnectorsSection.swift"
+  "${SCRIPT_DIR}/Sources/MessagesAccessSection.swift"
   "${SCRIPT_DIR}/Sources/ScheduledTasksPane.swift"
   "${SCRIPT_DIR}/Sources/ScheduledTaskWatchdog.swift"
   "${SCRIPT_DIR}/Sources/AutomationPane.swift"
@@ -137,6 +138,24 @@ cp "${SCRIPT_DIR}/BrowserVisualCompanion/manifest.json" "${EXTENSION_RESOURCES}/
 cp "${SCRIPT_DIR}/BrowserVisualCompanion/visual.js" "${EXTENSION_RESOURCES}/visual.js"
 /usr/bin/plutil -lint "${EXTENSION_CONTENTS}/Info.plist" >/dev/null
 /usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${EXTENSION}" >/dev/null
+
+# Mac MCP Messages Reader (#261): the one app the owner gives Full Disk Access to so agents can read
+# Messages; it opens only ~/Library/Messages/chat.db, read-only. Signed like the app, so the grant
+# survives rebuilds.
+READER="${CONTENTS}/Helpers/Mac MCP Messages Reader.app"
+mkdir -p "${READER}/Contents/MacOS"
+xcrun swiftc -O -target "${ARCH}-apple-macos13.0" -module-name MacMCPMessagesReader -lsqlite3 \
+  "${SCRIPT_DIR}/MessagesReader/main.swift" -o "${READER}/Contents/MacOS/MacMCPMessagesReader"
+/usr/bin/plutil -create xml1 "${READER}/Contents/Info.plist"
+for pair in "CFBundleExecutable string MacMCPMessagesReader" "CFBundleIdentifier string ${APP_BUNDLE_ID}.messages-reader" \
+            "CFBundleName string Mac MCP Messages Reader" "CFBundlePackageType string APPL" \
+            "CFBundleShortVersionString string 1.0" "CFBundleVersion string 1" "LSUIElement bool YES" \
+            "LSMinimumSystemVersion string 13.0"; do
+  read -r key kind value <<<"${pair}"
+  /usr/bin/plutil -insert "${key}" -"${kind}" "${value}" "${READER}/Contents/Info.plist"
+done
+/usr/bin/plutil -lint "${READER}/Contents/Info.plist" >/dev/null
+/usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${READER}" >/dev/null
 
 if [[ ! -f "${ICON_SOURCE}" ]]; then
   printf 'App icon source is missing: %s\n' "${ICON_SOURCE}" >&2

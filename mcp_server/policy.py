@@ -327,7 +327,7 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
         "capabilities", "selection", "find_notes", "find_messages",
         "find_events", "list_documents", "list_panes", "list_reminders",
         "find_chats", "list_workspaces", "find_free_time", "find_contacts", "list_shortcuts", "plan_day",
-        "list_desktops",
+        "list_desktops", "read_messages", "search_messages",
     }
     # A shortcut runs whatever its actions do, like a command.
     if action == "run_shortcut":

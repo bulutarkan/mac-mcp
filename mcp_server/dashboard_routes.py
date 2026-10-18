@@ -497,6 +497,14 @@ def create_dashboard_routes(
         from . import app_adapters
         return JSONResponse({"ok": True, "apps": app_adapters.owner_overview()})
 
+    async def messages_access(request: Request) -> Response:
+        """Whether Mac MCP Messages Reader can read Messages yet (#261); reads no message."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import messages_reader
+        return JSONResponse({"ok": True, **await asyncio.to_thread(messages_reader.access)})
+
     async def attention(request: Request) -> Response:
         """What needs the owner: requests waiting for an answer and recently blocked calls.
 
@@ -1711,6 +1719,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/attention", attention, methods=["GET"]),
         Route("/dashboard/api/apps/support", apps_support, methods=["GET"]),
+        Route("/dashboard/api/apps/messages-access", messages_access, methods=["GET"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),

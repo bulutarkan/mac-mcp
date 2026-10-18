@@ -12,7 +12,7 @@ enum SettingsSearchIndex {
         "permissions": "permissions safety approvals security profile read only trusted access saved logins passwords sign in keychain import",
         "scheduled": "scheduled tasks schedule cron recurring automation automate timer daily weekly monthly script run later approval review ai task recipe recipes saved steps shortcuts siri replay",
         "privacy": "privacy pause observation private mode incognito exclude never observe apps sites do not observe stores data kept retention where data goes recipients providers",
-        "apps": "apps mail messages imessage email send confirm confirmation ask before sending xcode notes calendar shortcuts shortcut allowed",
+        "apps": "apps mail messages imessage email send confirm confirmation ask before sending read search messages full disk access xcode notes calendar shortcuts shortcut allowed",
         "mcpServers": "mcp servers server tools connect add exa github notion slack google drive service sign in token stdio remote url command json claude desktop cursor integration plugin extension",
         "connections": "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel https remote ai clients connect claude code chatgpt codex opencode setup config",
         "voice": "voice audio microphone speaker groq language consent recording transcription",

@@ -1415,8 +1415,12 @@ def create_app():
             "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, System Settings, Messages, Xcode and Mission Control. "
             "Common action=capabilities reports app-specific actions; app='all' lists every app's support with the "
             "reliable path per task (Slack and VS Code use generic AX). Messages: find_chats (query matches chat name, "
-            "person or handle; message text is not exposed)|send_message (body, plus item_id = a chat_id from find_chats "
-            "or a query matching exactly one chat). Xcode: list_workspaces (projects, schemes, targets). "
+            "person or handle)|read_messages (item_id = a chat_id from find_chats, or query = a chat name, number or "
+            "person; newest first, cursor = next_cursor for older ones, optional date_from/date_to)|search_messages "
+            "(query = words in the text, optional item_id to stay in one chat, date_from/date_to, cursor); both read "
+            "only, every message carries chat_id, sender and date, and need Full Disk Access for Mac MCP Messages "
+            "Reader (MESSAGES_FULL_DISK_ACCESS_REQUIRED: the owner turns it on, do not work around it)|send_message "
+            "(body, plus item_id = a chat_id from find_chats or a query matching exactly one chat). Xcode: list_workspaces (projects, schemes, targets). "
             "These read actions never launch the app; a closed app returns APP_NOT_RUNNING. "
             "Finder: selection|select_file. "
             "Notes: find_notes|open_note|create_note (title, optional body/folder/account)|append_to_note (item_id or "
@@ -1504,6 +1508,7 @@ def create_app():
         target_app: Optional[str] = None,
         url: Optional[str] = None,
         window_ids: Optional[List[int]] = None,
+        cursor: Optional[str] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1547,6 +1552,7 @@ def create_app():
                 target_app=target_app,
                 url=url,
                 window_ids=window_ids,
+                cursor=cursor,
             ),
         )
 
