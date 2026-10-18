@@ -923,7 +923,8 @@ struct SettingsView: View {
                     }
                     .padding(.bottom, 8)
                 }
-                .onAppear { proxy.scrollTo(selection) }
+                // On a new window the rows are not laid out yet when onAppear runs.
+                .onAppear { DispatchQueue.main.async { proxy.scrollTo(selection) } }
                 .onChange(of: selection) { item in proxy.scrollTo(item) }
             }
 
