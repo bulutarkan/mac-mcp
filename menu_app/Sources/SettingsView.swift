@@ -912,6 +912,7 @@ struct SettingsView: View {
                                         .padding(.horizontal, 17)
                                         .padding(.top, 10)
                                         .padding(.bottom, 2)
+                                        .accessibilityLabel(title)
                                         .accessibilityAddTraits(.isHeader)
                                 }
                                 ForEach(items) { item in
