@@ -16,6 +16,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case privacy
     case apps
     case mcpServers
+    case macs
     case connections
     case voice
     case advanced
@@ -35,6 +36,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .privacy: return "Privacy"
         case .apps: return "Apps"
         case .mcpServers: return "MCP Servers"
+        case .macs: return "Macs"
         case .connections: return "Connections"
         case .voice: return "Voice"
         case .advanced: return "Advanced"
@@ -54,6 +56,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .privacy: return "hand.raised"
         case .apps: return "square.grid.2x2"
         case .mcpServers: return "point.3.connected.trianglepath.dotted"
+        case .macs: return "desktopcomputer"
         case .connections: return "network"
         case .voice: return "waveform.and.mic"
         case .advanced: return "wrench.and.screwdriver"
@@ -71,13 +74,13 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .start, .general: return .overview
         case .agents, .scheduled, .activity, .usage: return .agents
         case .permissions, .privacy: return .safety
-        case .apps, .mcpServers, .connections, .voice: return .connect
+        case .apps, .mcpServers, .macs, .connections, .voice: return .connect
         case .advanced, .help: return .support
         }
     }
 }
 
-/// A few plain headings so fourteen sidebar destinations scan quickly (#250). The first
+/// A few plain headings so fifteen sidebar destinations scan quickly (#250). The first
 /// group has no heading, like the top of System Settings.
 enum SettingsSectionGroup: String, CaseIterable, Identifiable {
     case overview
@@ -1005,6 +1008,7 @@ struct SettingsView: View {
         case .privacy: PrivacyPane(state: state)
         case .apps: appsPane
         case .mcpServers: McpServersPane(state: state)
+        case .macs: MacsPane(state: state)
         case .connections: connectionsPane
         case .voice: voicePane
         case .advanced: advancedPane

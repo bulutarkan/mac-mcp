@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Your other Macs (#147)
+- **Settings › Macs** pairs your Macs so each sees the others' state and, when allowed, runs their recipes. No server in between: each Mac is reached at its own address (Cloudflare, ngrok or a custom HTTPS URL, whichever it uses).
+- Pairing: the Mac to be added shows a one-time link and 8-character code (2 minutes); the other Mac presents it; its owner sees who asks and a 6-digit check both Macs show, and allows or refuses. Only then is a credential issued, chosen as "status" or "status and recipes". The Mac MCP API key is never shared.
+- Agents use the `fleet` tool (`list`, `recipes`, `run_recipe`); a recipe runs on the other Mac under its own permission profile and approvals. Either Mac can end it at any time.
+
 ### Undo for changes in Notes, Reminders, Calendar and Mail (#259)
 - What an agent changes in your apps can be undone, like file changes. A changed note, reminder, event or email gets its old state back; a note, reminder, event or draft Mac MCP made is removed (notes go to Recently Deleted); a deleted reminder is made again (new id). The change's result carries an `undo_id`, and `mac_app` `action=undo` puts it back.
 - Undo never overwrites an edit made since: if the item changed after Mac MCP changed it, nothing is changed (`force=true` overrides, classed as destructive). Notes with attachments are not recorded, since writing their old text back could lose them.

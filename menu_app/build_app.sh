@@ -47,6 +47,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/LoginItem.swift"
   "${SCRIPT_DIR}/Sources/PrivacyPane.swift"
   "${SCRIPT_DIR}/Sources/McpServersPane.swift"
+  "${SCRIPT_DIR}/Sources/MacsPane.swift"
   "${SCRIPT_DIR}/Sources/McpConnectorsSection.swift"
   "${SCRIPT_DIR}/Sources/MessagesAccessSection.swift"
   "${SCRIPT_DIR}/Sources/ScheduledTasksPane.swift"

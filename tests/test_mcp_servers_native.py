@@ -13,7 +13,7 @@ class McpServersPaneWiringTests(unittest.TestCase):
         self.pane = (SOURCES / "McpServersPane.swift").read_text(encoding="utf-8")
 
     def test_pane_is_a_settings_section_reachable_by_link(self) -> None:
-        self.assertIn("    case apps\n    case mcpServers\n    case connections\n", self.view)
+        self.assertIn("    case apps\n    case mcpServers\n    case macs\n    case connections\n", self.view)
         self.assertIn('case .mcpServers: return "MCP Servers"', self.view)
         self.assertIn("case .mcpServers: McpServersPane(state: state)", self.view)
         self.assertIn('"mcpServers": "mcp servers', (SOURCES / "SettingsSearch.swift").read_text(encoding="utf-8"))

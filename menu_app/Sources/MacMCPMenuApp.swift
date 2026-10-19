@@ -22,7 +22,8 @@ struct MacMCPMenuApp: App {
         LiveIslandController.shared.attach(appState)
         MenuAppDelegate.openSettings = { [weak appState] pane in
             let aliases: [String: SettingsSection] = ["scheduled-tasks": .scheduled, "automation": .scheduled,
-                                                      "recipes": .scheduled, "mcp-servers": .mcpServers]
+                                                      "recipes": .scheduled, "mcp-servers": .mcpServers,
+                                                      "fleet": .macs]
             guard let appState, let section = aliases[pane] ?? SettingsSection(rawValue: pane) else { return }
             // Automation holds Scheduled Tasks and Recipes; a link names the tab it wants.
             if section == .scheduled { AutomationNavigation.shared.tab = pane == "recipes" ? .recipes : .tasks }
