@@ -79,6 +79,8 @@ from .tools_snapshot import unified_read_snapshot
 from .computer_plan import ComputerPlanError, _unwrap_tool_result, derive_computer_plan_resources, execute_computer_plan
 from .app_adapters import mac_app
 from . import agent_message_bridge, tools_team_messages
+from . import fleet, fleet_client
+from .fleet_routes import create_fleet_routes
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
@@ -976,6 +978,36 @@ def create_app():
                 unread_only=unread_only, limit=limit, dedupe_key=dedupe_key,
             ),
         )
+
+    @mcp.tool(
+        name="fleet",
+        description=(
+            "The owner's other Macs, paired in Settings > Macs (#147). action=list: each Mac's name, state, whether it "
+            "answers, its Mac MCP version and what this Mac may do there (refresh=true asks each one now). "
+            "action=recipes (mac = its name or peer_id): the active recipes that Mac lets this one run. "
+            "action=run_recipe (mac, recipe_id, values): runs it there, under that Mac's own permission profile and "
+            "approvals; an unanswered call may or may not have run, so check before running it again. Pairing, "
+            "allowing and removing Macs is the owner's, in Settings."
+        ),
+    )
+    async def _fleet(action: str = "list", mac: Optional[str] = None, recipe_id: Optional[str] = None,
+                     values: Optional[Dict[str, Any]] = None, refresh: bool = False) -> Dict[str, Any]:
+        verb = str(action or "list").strip().lower()
+        try:
+            if verb == "list":
+                peers = await fleet_client.refresh_all(force=bool(refresh))
+                return {"ok": True, "this_mac": fleet.identity()["name"], "count": len(peers), "macs": peers}
+            if not mac:
+                raise fleet.FleetError("FLEET_ARGUMENT_INVALID", f"action={verb} needs mac (a name or peer_id).")
+            if verb == "recipes":
+                return await fleet_client.recipes(mac)
+            if verb == "run_recipe":
+                if not recipe_id:
+                    raise fleet.FleetError("FLEET_ARGUMENT_INVALID", "action=run_recipe needs recipe_id.")
+                return await fleet_client.run_recipe(mac, recipe_id, values)
+            raise fleet.FleetError("FLEET_ARGUMENT_INVALID", "action is list, recipes or run_recipe.")
+        except fleet.FleetError as exc:
+            return {"ok": False, "error": exc.code.lower(), "reason_code": exc.code, "message": str(exc)}
 
     @mcp.tool(
         name="list_agents",
@@ -2975,6 +3007,8 @@ def create_app():
     app.router.routes.extend(external_mcp_routes.create_routes(lambda request: _dashboard_guard(request, dashboard_token)))
     app.router.routes.extend(agent_message_bridge.routes())
     app.router.routes.extend(create_mobile_routes(telemetry, settings, dashboard_token, mcp.steering))
+    app.router.routes.extend(create_fleet_routes(lambda request: _dashboard_guard(request, dashboard_token),
+                                                 recipe_runner=run_recipe_for_launcher))
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI

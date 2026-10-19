@@ -321,6 +321,15 @@ def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _fleet_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    # Running a recipe on another Mac acts there; that Mac's own profile and approvals decide what runs.
+    if str(arguments.get("action") or "list").strip().lower() == "run_recipe":
+        return RiskOverride(capabilities=_caps(Capability.NETWORK_ACCESS, Capability.EXTERNAL_SIDE_EFFECT),
+                            destructive=False, sensitive=True)
+    return RiskOverride(capabilities=_caps(Capability.READ, Capability.NETWORK_ACCESS), destructive=False,
+                        sensitive=True, requested_access_mode=AccessMode.READ_ONLY)
+
+
 def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     action = str(arguments.get("action") or "capabilities").strip().lower().replace("-", "_")
     read_actions = {
@@ -646,6 +655,8 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     # Messages between agents write only Mac MCP's own coordination store, never the owner's data,
     # so even a read-only team member may tell its teammates something (#208).
     "team_messages": _r("team_messages", "agents", _caps(Capability.READ), sensitive=True),
+    "fleet": _r("fleet", "meta", _caps(Capability.READ, Capability.NETWORK_ACCESS, Capability.EXTERNAL_SIDE_EFFECT),
+                sensitive=True, resolver=_fleet_risk),
     "list_agents": _r("list_agents", "agents", _caps(Capability.READ), sensitive=True),
     "get_agent": _r("get_agent", "agents", _caps(Capability.READ), sensitive=True),
     "agent_action": _r("agent_action", "agents", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.AGENT_DELEGATION), destructive=True, sensitive=True, resolver=_agent_action_risk),
