@@ -283,6 +283,13 @@ class HelperSourceTests(unittest.TestCase):
         self.assertLess(opening.index("waitChange("), opening.index("waitStill(mirror, limit: 0.8, minimum: 0.15)"))
         self.assertNotIn("usleep(650_000)", opening)
 
+    def test_the_owners_pointer_is_hidden_only_while_input_runs(self) -> None:
+        forward = HELPER[HELPER.index("func bringForward("):HELPER.index("func stillForward(")]
+        back = HELPER[HELPER.index("func putBack("):HELPER.index("func putBack(") + 600]
+        self.assertIn("pointerHidden(true)", forward)
+        self.assertIn("pointerHidden(false)", back)
+        self.assertIn('"SetsCursorInBackground"', HELPER)
+
     def test_a_second_tap_only_when_the_first_changed_nothing(self) -> None:
         self.assertIn("if let openAt, !changed {", HELPER)
 

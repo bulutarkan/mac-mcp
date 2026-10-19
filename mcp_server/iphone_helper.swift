@@ -510,6 +510,22 @@ struct Forward {
     let lock: Int32
 }
 
+/// Hides the owner's pointer while the agent's input moves it (the agent cursor shows where the iPhone is touched).
+/// macOS hides the pointer only for the app in front, unless a connection asks to set it in the background; the
+/// window server shows it again if this process ends without doing so.
+typealias ConnectionID = Int32
+let skyLight = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
+func pointerHidden(_ hidden: Bool) {
+    guard let skyLight,
+          let defaultConnection = dlsym(skyLight, "SLSMainConnectionID") ?? dlsym(skyLight, "CGSMainConnectionID"),
+          let setProperty = dlsym(skyLight, "SLSSetConnectionProperty") ?? dlsym(skyLight, "CGSSetConnectionProperty") else { return }
+    typealias MainConnection = @convention(c) () -> ConnectionID
+    typealias SetProperty = @convention(c) (ConnectionID, ConnectionID, CFString, CFTypeRef) -> Int32
+    let connection = unsafeBitCast(defaultConnection, to: MainConnection.self)()
+    _ = unsafeBitCast(setProperty, to: SetProperty.self)(connection, connection, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
+    _ = hidden ? CGDisplayHideCursor(CGMainDisplayID()) : CGDisplayShowCursor(CGMainDisplayID())
+}
+
 func bringForward(_ mirror: Mirror) throws -> Forward {
     try? FileManager.default.createDirectory(atPath: (lockPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
     let lock = open(lockPath, O_CREAT | O_RDWR, 0o600)
@@ -519,6 +535,7 @@ func bringForward(_ mirror: Mirror) throws -> Forward {
         throw StepError(code: "MAC_SCREEN_LOCKED", message: "This Mac's screen is locked; iPhone Mirroring takes no input until it is unlocked.")
     }
     let previous = NSWorkspace.shared.frontmostApplication
+    pointerHidden(true)
     let forward = Forward(previous: previous, cursor: CGEvent(source: nil)?.location,
                           wasFront: previous?.processIdentifier == mirror.app.processIdentifier, lock: lock)
     if !forward.wasFront {
@@ -551,6 +568,7 @@ func stillForward(_ mirror: Mirror) -> Bool {
 func putBack(_ forward: Forward) {
     usleep(40_000)
     if let cursor = forward.cursor { CGWarpMouseCursorPosition(cursor); CGAssociateMouseAndMouseCursorPosition(1) }
+    pointerHidden(false)
     if !forward.wasFront, let previous = forward.previous { previous.activate() }
     if forward.lock >= 0 { flock(forward.lock, LOCK_UN); close(forward.lock) }
 }
