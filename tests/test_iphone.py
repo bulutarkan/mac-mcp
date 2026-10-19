@@ -221,6 +221,7 @@ class HelperSourceTests(unittest.TestCase):
     def test_a_closed_mirror_is_opened_without_taking_focus_and_waited_for(self) -> None:
         self.assertIn("configuration.activates = false", HELPER)
         self.assertIn('object["opened_mirroring"] = true', HELPER)
+        self.assertIn("waitStill(mirror, limit: 3.0, minimum: 1.0)", HELPER)  # past the fade-in blur
 
     def test_opening_an_app_waits_for_the_screen_not_a_fixed_time(self) -> None:
         opening = HELPER[HELPER.index('case "open_app":'):HELPER.index('case "wait":')]

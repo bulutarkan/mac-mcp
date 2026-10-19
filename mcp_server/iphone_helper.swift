@@ -102,10 +102,12 @@ func requireMirror() -> Mirror {
         guard let mirror = findMirror() else { continue }
         guard AXIsProcessTrusted() else { return mirror }
         let message = mirrorMessage(mirror)
-        if message.isEmpty || !message.joined(separator: " ").lowercased().contains("connecting") {
-            usleep(300_000)  // the first frame of the iPhone's screen
+        if message.isEmpty {
+            // The iPhone's screen fades in from a blur: wait until it holds still before anyone looks at it.
+            _ = waitStill(mirror, limit: 3.0, minimum: 1.0)
             return mirror
         }
+        if !message.joined(separator: " ").lowercased().contains("connecting") { return mirror }
     }
     fail("IPHONE_MIRRORING_NOT_OPEN", "iPhone Mirroring did not connect to the iPhone (it must be locked, nearby and on the same Apple Account).")
 }
