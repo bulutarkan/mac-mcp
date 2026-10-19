@@ -41,7 +41,7 @@ class IPhoneCase(unittest.TestCase):
         self.answer = {"ok": True, "connected": True, "width": 390, "height": 845, "hash": "00ff",
                        "image_base64": base64.b64encode(b"\xff\xd8jpeg").decode()}
 
-        def fake_run(args, timeout_s=30.0, stdin=None):
+        def fake_run(args, timeout_s=30.0, stdin=None, on_event=None):
             self.calls.append(args + ([json.loads(stdin)] if stdin else []))
             return dict(self.answer)
         helper = patch.object(iphone, "_run", side_effect=fake_run)
@@ -141,6 +141,14 @@ class ActionTests(IPhoneCase):
         iphone.run("act", steps=[{"type": "tap_text", "text": "Automator", "open": True}, {"type": "tap", "x": 1, "y": 1, "open": False}])
         self.assertEqual(True, self.calls[0][1]["steps"][0]["open"])
         for bad in ({"type": "tap", "x": 1, "y": 1, "open": "yes"}, {"type": "home", "open": True}):
+            self.assertEqual("iphone_argument_invalid", iphone.run("act", steps=[bad])["error"], bad)
+        self.assertEqual(1, len(self.calls))
+
+    def test_keyboard_shortcuts_and_back(self) -> None:
+        iphone.run("act", steps=[{"type": "key", "key": "t", "modifiers": ["cmd"]}, {"type": "back"}])
+        self.assertEqual([{"type": "key", "key": "t", "modifiers": ["cmd"]}, {"type": "back"}], self.calls[0][1]["steps"])
+        for bad in ({"type": "key", "key": "w", "modifiers": ["cmd"]}, {"type": "key", "key": "q", "modifiers": ["Cmd"]},
+                    {"type": "key", "key": "t", "modifiers": ["hyper"]}, {"type": "key", "key": "t", "modifiers": "cmd"}):
             self.assertEqual("iphone_argument_invalid", iphone.run("act", steps=[bad])["error"], bad)
         self.assertEqual(1, len(self.calls))
 
@@ -244,6 +252,24 @@ class ToolInvokeImageTests(unittest.TestCase):
         self.assertNotIn("AAAA", result[0])
 
 
+class CursorTests(unittest.TestCase):
+    def test_each_input_reaches_the_agent_cursor_as_it_happens(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        script = folder / "helper"
+        script.write_text("#!/bin/sh\ncat >/dev/null\n"
+                          "echo '{\"event\": {\"action\": \"Tapping\", \"pid\": 42, \"x\": 500.5, \"y\": 300, \"press\": true}}'\n"
+                          "echo '{\"event\": {\"action\": \"Typing\", \"pid\": 42, \"press\": false}}'\n"
+                          "printf '{\"ok\": true, \"done\": 2}'\n")
+        script.chmod(0o700)
+        shown = []
+        with patch.object(iphone, "_helper", return_value=str(script)), \
+                patch("mcp_server.observability.publish_native_pointer", side_effect=lambda **kw: shown.append(kw)):
+            result = iphone._run(["act"], stdin="{}", on_event=iphone._show_cursor)
+        self.assertEqual({"ok": True, "done": 2}, result)
+        self.assertEqual([("Tapping", 42, (500.5, 300.0), True), ("Typing", 42, None, False)],
+                         [(kw["action"], kw["pid"], kw["point"], kw["press"]) for kw in shown])
+
+
 class HelperSourceTests(unittest.TestCase):
     def test_a_closed_mirror_is_opened_without_taking_focus_and_waited_for(self) -> None:
         self.assertIn("configuration.activates = false", HELPER)
@@ -251,8 +277,10 @@ class HelperSourceTests(unittest.TestCase):
         self.assertIn("waitStill(mirror, limit: 3.0, minimum: 1.0)", HELPER)  # past the fade-in blur
 
     def test_opening_an_app_waits_for_the_screen_not_a_fixed_time(self) -> None:
-        opening = HELPER[HELPER.index('case "open_app":'):HELPER.index('case "wait":')]
+        opening = HELPER[HELPER.index("func spotlight("):HELPER.index("/// One step of a batch.")]
         self.assertIn("waitChange(", opening)
+        # and the field is ready before the first letter goes in
+        self.assertLess(opening.index("waitChange("), opening.index("waitStill(mirror, limit: 0.8, minimum: 0.15)"))
         self.assertNotIn("usleep(650_000)", opening)
 
     def test_a_second_tap_only_when_the_first_changed_nothing(self) -> None:

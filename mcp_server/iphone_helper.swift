@@ -626,7 +626,18 @@ func point(_ step: [String: Any], _ mirror: Mirror, _ shot: Shot, x xKey: String
     return try desktopPoint(mirror, shot, x: x, y: y)
 }
 
+/// One line per input as it happens, before the final result, so Mac MCP can show the agent cursor where the
+/// iPhone is touched ("Tapping", "Typing"): {"event": {"action", "pid", "x", "y", "press"}}. Desktop points.
+var announcePID: pid_t = 0
+func announce(_ action: String, at point: CGPoint? = nil, press: Bool = false) {
+    var event: [String: Any] = ["action": action, "pid": announcePID, "press": press]
+    if let point { event["x"] = Double(point.x); event["y"] = Double(point.y) }
+    guard let data = try? JSONSerialization.data(withJSONObject: ["event": event]) else { return }
+    FileHandle.standardOutput.write(data + Data("\n".utf8))
+}
+
 func tap(_ at: CGPoint, times: Int = 1, hold: useconds_t = 0) {
+    announce("Tapping", at: at, press: true)
     mouse(.mouseMoved, at)
     usleep(25_000)
     for tap in 1...times {
@@ -634,6 +645,19 @@ func tap(_ at: CGPoint, times: Int = 1, hold: useconds_t = 0) {
         if hold > 0 { usleep(hold) }
         mouse(.leftMouseUp, at, clicks: Int64(tap))
     }
+}
+
+/// Home, then Spotlight with `query` typed and its results shown (Return opens the top one).
+func spotlight(_ mirror: Mirror, _ shot: inout Shot, _ query: String) throws {
+    press(CGKeyCode(kVK_ANSI_1), modifiers: [command_])
+    shot = waitStill(mirror, limit: 0.8)
+    let home = differenceHash(shot.image)
+    press(CGKeyCode(kVK_ANSI_3), modifiers: [command_])
+    shot = waitChange(mirror, from: home, limit: 1.2)
+    // Spotlight starts to show before its field takes keys: typing now would lose the first letter.
+    shot = waitStill(mirror, limit: 0.8, minimum: 0.15)
+    _ = type(query)
+    shot = waitStill(mirror, limit: 1.2, minimum: 0.25)
 }
 
 /// One step of a batch. Returns what it did; throws when it could not.
@@ -667,6 +691,7 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
         let from = try point(step, mirror, shot), to = try point(step, mirror, shot, x: "to_x", y: "to_y")
         let steps = 18
         let pause = useconds_t(max(80, min(2000, value(step, "duration_ms") ?? 300)) * 1000) / useconds_t(steps)
+        announce("Swiping", at: from, press: true)
         mouse(.mouseMoved, from)
         mouse(.leftMouseDown, from)
         for index in 1...steps {
@@ -680,6 +705,7 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
         let phoneHeight = outputWidth * shot.screen.height / shot.screen.width
         let at = try desktopPoint(mirror, shot, x: value(step, "x") ?? outputWidth / 2, y: value(step, "y") ?? phoneHeight / 2)
         let dy = value(step, "dy") ?? -300, dx = value(step, "dx") ?? 0
+        announce("Scrolling", at: at)
         mouse(.mouseMoved, at)
         let parts = 10
         for _ in 0..<parts {
@@ -690,32 +716,73 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
         guard let text = step["text"] as? String, !text.isEmpty, !text.contains("\n") else {
             throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "type needs one line of text (a key step with return submits).")
         }
+        announce("Typing")
         let asText = type(text)
         if !asText.isEmpty { done["sent_as_text"] = asText }
         if step["submit"] as? Bool == true { press(CGKeyCode(kVK_Return)) }
         settleFor = 0.6
     case "key":
-        let name = (step["key"] as? String ?? "").lowercased()
-        guard let code = namedKeys[name] else {
-            throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "key is one of: " + namedKeys.keys.sorted().joined(separator: ", "))
+        // A named key or one character, with modifiers: {key: "l", modifiers: ["cmd"]} is ⌘L. Many iPhone apps answer
+        // a hardware keyboard's shortcuts (⌘F find, ⌘L address, ⌘T new tab, ⌘N new, ⌘[ back).
+        let name = step["key"] as? String ?? ""
+        var code: CGKeyCode?
+        var shifted = false
+        if let named = namedKeys[name.lowercased()] {
+            code = CGKeyCode(named)
+        } else if name.count == 1, let character = name.first, let found = keyMap()[character] ?? keyMap()[Character(name.lowercased())] {
+            code = found.0
+            shifted = found.1 && !(found.2)
         }
-        press(CGKeyCode(code))
+        guard let code else {
+            throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "key is one character or one of: " + namedKeys.keys.sorted().joined(separator: ", "))
+        }
+        var modifiers: [(CGKeyCode, CGEventFlags)] = []
+        for modifier in (step["modifiers"] as? [String] ?? []).map({ $0.lowercased() }) {
+            switch modifier {
+            case "cmd", "command": modifiers.append(command_)
+            case "shift": modifiers.append(shift_)
+            case "option", "alt": modifiers.append(option_)
+            case "ctrl", "control": modifiers.append((CGKeyCode(kVK_Control), .maskControl))
+            default: throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "modifiers are cmd, shift, option and ctrl.")
+            }
+        }
+        if shifted && !modifiers.contains(where: { $0.0 == shift_.0 }) { modifiers.append(shift_) }
+        // iPhone Mirroring keeps ⌘ with these keys for itself on the Mac (⌘W closes its window, ⌘Q quits it, ⌘H hides
+        // it); its own ⌘1–3 are the home, app_switcher and spotlight steps.
+        if modifiers.contains(where: { $0.0 == command_.0 }),
+           ["w", "q", "h", "m", ",", "1", "2", "3", "+", "-", "0"].contains(name.lowercased()) {
+            throw StepError(code: "IPHONE_ARGUMENT_INVALID",
+                            message: "⌘\(name.uppercased()) belongs to iPhone Mirroring on the Mac, not the iPhone; use home, app_switcher or spotlight for ⌘1–3.")
+        }
+        announce("Pressing keys")
+        press(code, modifiers: modifiers)
     case "home", "app_switcher", "spotlight":
         // iPhone Mirroring's View menu: Home Screen ⌘1, App Switcher ⌘2, Spotlight ⌘3.
+        announce(kind == "home" ? "Going home" : kind == "spotlight" ? "Searching" : "Switching apps")
         let code = kind == "home" ? kVK_ANSI_1 : kind == "app_switcher" ? kVK_ANSI_2 : kVK_ANSI_3
         press(CGKeyCode(code), modifiers: [command_])
+    case "back":
+        // The app's own back button, read where iOS puts it: a "<" at the top left. iPhone Mirroring passes no edge
+        // swipe, ⌘[ or Escape back, and a blind tap there could press something else, so it is tapped only when seen.
+        let phoneHeight = outputWidth * shot.screen.height / shot.screen.width
+        // Read the whole header strip (Vision misses a lone character in a tiny region), then keep its left part.
+        let header = CGRect(x: 0, y: 0, width: outputWidth, height: phoneHeight * 0.2)
+        let marks: Set<Character> = ["<", "‹", "〈", "❮"]
+        guard let button = recognize(shot.image, phoneWidth: outputWidth, within: header)
+                .first(where: { ($0["x"] as? Int ?? 999) < Int(outputWidth * 0.3)
+                    && (($0["text"] as? String ?? "").trimmingCharacters(in: .whitespaces).first.map(marks.contains) ?? false) }),
+              let x = button["x"] as? Int, let y = button["y"] as? Int else {
+            throw StepError(code: "IPHONE_BACK_NOT_FOUND", message: "No back button (“<”) at the top left of this screen.")
+        }
+        announce("Going back", at: try desktopPoint(mirror, shot, x: Double(x), y: Double(y)), press: true)
+        tap(try desktopPoint(mirror, shot, x: Double(x), y: Double(y)))
     case "open_app":
         guard let name = step["app"] as? String, !name.isEmpty else {
             throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "open_app needs app.")
         }
+        announce("Opening an app")
         // Each step waits for the screen to answer instead of a fixed time: home, Spotlight open, results shown.
-        press(CGKeyCode(kVK_ANSI_1), modifiers: [command_])
-        shot = waitStill(mirror, limit: 0.8)
-        let home = differenceHash(shot.image)
-        press(CGKeyCode(kVK_ANSI_3), modifiers: [command_])
-        shot = waitChange(mirror, from: home, limit: 1.2)
-        _ = type(name)
-        shot = waitStill(mirror, limit: 1.2, minimum: 0.25)
+        try spotlight(mirror, &shot, name)
         press(CGKeyCode(kVK_Return))
         settleFor = 2.5
     case "wait":
@@ -869,6 +936,7 @@ case "act":
              ["message": message])
     }
     let first = differenceHash(shot.image)
+    announcePID = mirror.app.processIdentifier
     var results: [[String: Any]] = []
     var failure: [String: Any]?
     let forward: Forward

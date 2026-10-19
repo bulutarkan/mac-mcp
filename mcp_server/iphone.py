@@ -17,7 +17,7 @@ import json
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from mcp.server.fastmcp.utilities.types import Image
 
@@ -35,7 +35,10 @@ READ_ACTIONS = frozenset({"status", "see", "read", "find"})
 INPUT_ACTIONS = IPHONE_INPUT_ACTIONS
 # Step types of action=act (one call, one moment in front, the screen after all of them).
 STEP_TYPES = frozenset({"tap", "tap_text", "double_tap", "long_press", "swipe", "scroll", "type", "key", "home",
-                        "app_switcher", "spotlight", "open_app", "wait", "wait_for_text", "expect_text"})
+                        "app_switcher", "spotlight", "open_app", "wait", "wait_for_text", "expect_text", "back"})
+KEY_MODIFIERS = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control"})
+# ⌘ with these stays on the Mac: iPhone Mirroring's own window, app and View menu shortcuts.
+MIRRORING_KEYS = frozenset({"w", "q", "h", "m", ",", "1", "2", "3", "+", "-", "0"})
 REGION_BANDS = ("header", "top", "middle", "bottom", "footer")
 MAX_STEPS = 40
 ACTIONS = READ_ACTIONS | INPUT_ACTIONS
@@ -84,23 +87,55 @@ def _helper() -> str:
         return _executable
 
 
-def _run(args: List[str], timeout_s: float = 30.0, stdin: Optional[str] = None) -> Dict[str, Any]:
+def _run(args: List[str], timeout_s: float = 30.0, stdin: Optional[str] = None,
+         on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+    """Run the helper. It prints one {"event": ...} line per input as it happens, then its result."""
     try:
         executable = _helper()
     except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
         raise IPhoneError("IPHONE_HELPER_UNAVAILABLE", f"The iPhone helper could not be built: {exc}") from exc
     try:
-        proc = subprocess.run([executable, *args], input=stdin if stdin is not None else "", capture_output=True,
-                              text=True, timeout=timeout_s, check=False)
-    except subprocess.TimeoutExpired as exc:
-        raise IPhoneError("IPHONE_HELPER_TIMEOUT", "The iPhone helper timed out.") from exc
+        proc = subprocess.Popen([executable, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+    except OSError as exc:
+        raise IPhoneError("IPHONE_HELPER_UNAVAILABLE", str(exc)) from exc
+    timer = threading.Timer(timeout_s, proc.kill)
+    timer.start()
+    lines: List[str] = []
     try:
-        payload = json.loads(proc.stdout or "")
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(stdin or "")
+        proc.stdin.close()
+        for line in proc.stdout:
+            if line.startswith('{"event"'):
+                if on_event is not None:
+                    try:
+                        on_event(json.loads(line)["event"])
+                    except (ValueError, KeyError, TypeError):
+                        pass
+                continue
+            lines.append(line)
+        proc.wait()
+    finally:
+        timer.cancel()
+    if proc.returncode is not None and proc.returncode < 0:
+        raise IPhoneError("IPHONE_HELPER_TIMEOUT", "The iPhone helper timed out.")
+    try:
+        payload = json.loads("".join(lines) or "")
     except json.JSONDecodeError as exc:
-        raise IPhoneError("IPHONE_HELPER_FAILED", (proc.stderr or "no answer").strip()[:300]) from exc
+        raise IPhoneError("IPHONE_HELPER_FAILED", ((proc.stderr.read() if proc.stderr else "") or "no answer").strip()[:300]) from exc
     if not isinstance(payload, dict):
         raise IPhoneError("IPHONE_HELPER_FAILED", "The iPhone helper gave no answer.")
     return payload
+
+
+def _show_cursor(event: Dict[str, Any]) -> None:
+    """The desktop agent cursor, over iPhone Mirroring where the iPhone is touched ("Tapping", "Typing")."""
+    from .observability import publish_native_pointer
+
+    point = (float(event["x"]), float(event["y"])) if "x" in event and "y" in event else None
+    publish_native_pointer(action=str(event.get("action") or "Using the iPhone"), target="iPhone",
+                           pid=int(event.get("pid") or 0) or None, point=point, press=bool(event.get("press")))
 
 
 def status() -> Dict[str, Any]:
@@ -182,6 +217,14 @@ def check_steps(steps: Any) -> List[Dict[str, Any]]:
             raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index}: open goes with tap or tap_text.")
         if "region" in step:
             step["region"] = check_region(step["region"], f"Step {index}: region")
+        if kind == "key" and "modifiers" in step:
+            modifiers = step["modifiers"]
+            if not isinstance(modifiers, list) or not all(isinstance(m, str) and m.lower() in KEY_MODIFIERS for m in modifiers):
+                raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index}: modifiers are cmd, shift, option and ctrl.")
+            if {m.lower() for m in modifiers} & {"cmd", "command"} and str(step.get("key") or "").lower() in MIRRORING_KEYS:
+                raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index}: ⌘{str(step['key']).upper()} belongs to iPhone "
+                                  "Mirroring on the Mac (⌘W would close its window); home, app_switcher and spotlight "
+                                  "are ⌘1–3.")
         wanted = {"tap_text": "text", "wait_for_text": "text", "expect_text": "text", "type": "text", "key": "key",
                   "open_app": "app"}.get(kind)
         if wanted and not (isinstance(step.get(wanted), str) and step[wanted].strip()):
@@ -242,7 +285,8 @@ def run(action: str = "see", *, steps: Any = None, x: Any = None, y: Any = None,
                               "or used until it is unlocked.")
         if batch is not None:
             payload = _run(["act"], timeout_s=30.0 + 8.0 * len(batch),
-                           stdin=json.dumps({"steps": batch, "image": bool(image), "ocr": bool(ocr), "region": area}))
+                           stdin=json.dumps({"steps": batch, "image": bool(image), "ocr": bool(ocr), "region": area}),
+                           on_event=_show_cursor)
         elif verb == "connect":
             payload = _run(["connect", "--image", "1" if image else "0"] + (["--ocr", "1"] if ocr else []), timeout_s=60.0)
         elif verb == "find":
