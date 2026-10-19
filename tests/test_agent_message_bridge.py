@@ -88,10 +88,20 @@ class ProviderSetupTests(Fixture):
         self.assertFalse((home / "hooks.json").exists())
         self.assertFalse((self.dir / "hook" / "team-hook-headers").exists())
 
-    def test_codex_full_mode_never_touches_the_owner_codex_home(self) -> None:
-        bridge = bridge_mod.prepare("agt_x", self.meta("codex", access_mode="full"), {}, hook_dir=self.dir / "hook")
-        self.assertEqual(("inbox_only", "codex_full_mode_uses_owner_config"), (bridge.mode, bridge.reason))
-        self.assertFalse((self.dir / "hook").exists())
+    def test_codex_full_mode_runs_on_a_private_copy_of_the_owner_config(self) -> None:
+        owner = self.dir / "owner-codex"
+        owner.mkdir()
+        (owner / "config.toml").write_text('model = "gpt-test"\n')
+        (owner / "auth.json").write_text("{}")
+        before = (owner / "config.toml").read_text()
+        agents = self.dir / "agents"
+        with patch.dict("os.environ", {"CODEX_HOME": str(owner)}), patch.object(tools_agents, "AGENTS_DIR", agents):
+            (agents / "agt_full").mkdir(parents=True)
+            home = tools_agents._full_codex_message_home("agt_full", {"cwd": str(self.dir)})
+        self.assertNotEqual(owner.resolve(), home.resolve())
+        self.assertIn('model = "gpt-test"', (home / "config.toml").read_text())
+        self.assertEqual(before, (owner / "config.toml").read_text())
+        self.assertFalse((owner / "hooks.json").exists())
 
     def test_opencode_gets_a_plugin_in_its_private_config(self) -> None:
         config = self.dir / "cfg" / "opencode"
@@ -109,15 +119,26 @@ class ProviderSetupTests(Fixture):
         self.assertIn("format=text", plugin)
         self.assertIn("catch (_error) {}", plugin)  # a failed fetch never breaks the tool
 
-    def test_restricted_opencode_keeps_pure_mode_and_uses_the_inbox(self) -> None:
+    def test_restricted_opencode_drops_pure_only_while_messages_are_on(self) -> None:
         config = self.dir / "cfg" / "opencode"
         bridge = bridge_mod.prepare("agt_o", self.meta("opencode"), {}, hook_dir=self.dir / "hook", opencode_config=config)
-        self.assertEqual(("inbox_only", "opencode_pure_mode_loads_no_plugins"), (bridge.mode, bridge.reason))
-        self.assertFalse(config.exists())
+        self.assertEqual("hook", bridge.mode)
         command = tools_agents._build_provider_command(
             {"provider": "opencode", "binary": "opencode", "access_mode": "read_only", "cwd": str(self.dir)}, "p",
             self.dir / "r.txt")
         self.assertIn("--pure", command)
+        self.assertNotIn("--pure", bridge_mod.apply_args("opencode", command, bridge.args, bridge.drop_flags))
+
+    def test_the_settings_switch_turns_everything_off(self) -> None:
+        with patch.dict("os.environ", {"MAC_MCP_TEAM_MESSAGES": ""}), \
+                patch("mcp_server.runtime_settings.load_runtime_settings", return_value={"subagents": {"team_messages": False}}):
+            self.assertFalse(tm.enabled())
+            self.assertIsNone(bridge_mod.prepare("agt_c", self.meta("claude"), {}, hook_dir=self.dir / "hook"))
+            self.as_caller(tm.Caller(member_id="session:lead", label="lead"))
+            self.assertEqual("team_messages_off", tools_team_messages.team_messages(action="inbox")["error"])
+        with patch.dict("os.environ", {"MAC_MCP_TEAM_MESSAGES": ""}), \
+                patch("mcp_server.runtime_settings.load_runtime_settings", return_value={}):
+            self.assertTrue(tm.enabled())  # on by default
 
     def test_unproven_providers_and_agents_outside_teams(self) -> None:
         bridge = bridge_mod.prepare("agt_g", self.meta("grok"), {}, hook_dir=self.dir / "hook")

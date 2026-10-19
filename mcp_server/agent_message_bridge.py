@@ -7,15 +7,13 @@ model's next step. The running tool is never interrupted and no new user turn is
 
 Proven per provider with a real model (the note was repeated back):
 - Claude Code: a PostToolUse hook in a --settings file; hookSpecificOutput.additionalContext.
-- Codex: hooks.json in the agent's private CODEX_HOME (restricted modes only). Codex runs only
-  trusted hooks, so this one hook is marked trusted through Codex's own app-server API
-  (hooks/list, config/batchWrite), never with --dangerously-bypass-hook-trust, which would also
-  trust hooks a repository brings. In full mode Codex uses the owner's own ~/.codex, which Mac MCP
-  does not change, so that agent gets messages only in its Mac MCP tool results.
-- OpenCode in full mode: a plugin named by path in the agent's private opencode.jsonc;
-  tool.execute.after appends the note to the tool output the model reads. A restricted OpenCode
-  agent runs with --pure, which loads no plugin at all (so a repository cannot bring one into the
-  sandbox); it stays inbox-only rather than lose that protection.
+- Codex: hooks.json in the agent's private CODEX_HOME. Codex runs only trusted hooks, so this one
+  hook is marked trusted through Codex's own app-server API (hooks/list, config/batchWrite), never
+  by skipping Codex's hook trust. A full-mode agent normally runs on the owner's own ~/.codex,
+  which Mac MCP never writes; with messages on it runs on a private copy of the owner's config.
+- OpenCode: a plugin named by path in the agent's private opencode.jsonc; tool.execute.after
+  appends the note to the tool output the model reads. A restricted OpenCode agent normally runs
+  with --pure (no plugins); with messages on it runs without it, inside the same sandbox.
 Other providers (Grok, Kimi) are "inbox_only" until their hook is proven: they see messages in
 Mac MCP tool results and with team_messages action=inbox.
 
@@ -52,8 +50,7 @@ PROVEN_PROVIDERS = ("claude", "codex", "opencode")
 
 
 def enabled() -> bool:
-    """Team messages are on unless MAC_MCP_TEAM_MESSAGES=0 (kept as a quick off switch)."""
-    return os.getenv("MAC_MCP_TEAM_MESSAGES", "1").strip().lower() not in {"0", "false", "off", "no"}
+    return tm.enabled()
 
 
 @dataclass
@@ -63,6 +60,7 @@ class Bridge:
     mode: str  # hook | inbox_only
     reason: Optional[str] = None
     args: List[str] = field(default_factory=list)
+    drop_flags: List[str] = field(default_factory=list)
     files: List[Path] = field(default_factory=list)
 
     def public(self) -> Dict[str, Any]:
@@ -117,12 +115,6 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
     if provider not in PROVEN_PROVIDERS:
         bridge.reason = "provider_hook_unverified"
         return bridge
-    if provider == "codex" and access_mode == "full":
-        bridge.reason = "codex_full_mode_uses_owner_config"
-        return bridge
-    if provider == "opencode" and access_mode != "full":
-        bridge.reason = "opencode_pure_mode_loads_no_plugins"
-        return bridge
 
     ttl = float(meta.get("timeout_s") or 3600) + 600
     token = store.issue_hook_token(member_id, ttl)
@@ -159,10 +151,13 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
             bridge.files.append(plugin)
             # Named in the agent's own config by path: a plugin/ folder needs a dependency install that the
             # agent's sandbox refuses, and then OpenCode does not load it.
-            config_path = opencode_config / "opencode.jsonc"
+            config_path = _private_dir(opencode_config) / "opencode.jsonc"
             config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
             config["plugin"] = [*(config.get("plugin") or []), plugin.as_uri()]
             _private_file(config_path, json.dumps(config, ensure_ascii=False, indent=2))
+            if access_mode != "full":
+                # --pure loads no plugin at all; with messages on, the agent runs without it (its sandbox stays).
+                bridge.drop_flags = ["--pure"]
         bridge.mode = "hook"
         return bridge
     except Exception as exc:  # a broken hook must never stop the agent; it falls back to the inbox
@@ -251,8 +246,10 @@ def trust_codex_hooks(*, codex_home: Path, hooks_path: Path, cwd: str, env: Dict
             proc.kill()
 
 
-def apply_args(provider: str, cmd: List[str], args: List[str]) -> List[str]:
+def apply_args(provider: str, cmd: List[str], args: List[str], drop_flags: Optional[List[str]] = None) -> List[str]:
     """Put the hook arguments where the CLI reads options: before Claude's '--', else before the prompt."""
+    if drop_flags:
+        cmd = [part for part in cmd if part not in drop_flags]
     if not args:
         return cmd
     if provider == "claude" and "--" in cmd:

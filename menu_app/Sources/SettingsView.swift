@@ -1041,6 +1041,8 @@ struct SettingsView: View {
 
                 concurrencyCard
 
+                teamMessagesCard
+
                 retentionCard
 
                 AgentsFoldingSection(title: "Providers") {
@@ -3339,6 +3341,45 @@ struct SettingsView: View {
             }
             .padding(4)
         }
+    }
+
+    private var teamMessagesCard: some View {
+        GroupBox {
+            Toggle(isOn: teamMessagesBinding) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Messages Between Agents")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Agents in a team, and the app that started the team, can message each other while they work. A message reaches an agent once, after its next tool call, and never interrupts it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .padding(4)
+        }
+    }
+
+    private var teamMessagesBinding: Binding<Bool> {
+        Binding(
+            get: { settings.teamMessagesEnabled },
+            set: { value in
+                settings.teamMessagesEnabled = value
+                do {
+                    try settings.save()
+                    saveFeedback = SettingsSaveFeedback(
+                        scope: .agents,
+                        message: value ? "Agents can message each other · applies to new agents" : "Messages between agents are off",
+                        isError: false
+                    )
+                } catch {
+                    settings.load()
+                    saveFeedback = SettingsSaveFeedback(
+                        scope: .agents, message: "Could not save: \(error.localizedDescription)", isError: true
+                    )
+                }
+            }
+        )
     }
 
     private var retentionCard: some View {

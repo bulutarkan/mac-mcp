@@ -40,6 +40,9 @@ def team_messages(action: str = "inbox", body: Optional[str] = None, to: Optiona
                   kind: str = "update", reply_to: Optional[str] = None, room: Optional[str] = None,
                   team_id: Optional[str] = None, unread_only: bool = True, limit: int = 10,
                   dedupe_key: Optional[str] = None) -> Dict[str, Any]:
+    if not tm.enabled():
+        return {"ok": False, "error": "team_messages_off",
+                "message": "Messages between agents are turned off in Mac MCP Settings › Agents."}
     caller = tm.current_caller()
     if caller is None:
         return {"ok": False, "error": "no_identity", "message": "team messages need an MCP session or agent credential"}

@@ -107,12 +107,15 @@ struct MenuSettings: Codable {
         var maxActive: Int?
         /// Days a finished agent's local files are kept; 0 keeps them (the server's default is 30).
         var retentionDays: Int?
+        /// Agents in a team may message each other (#208); on unless set to false.
+        var teamMessages: Bool? = nil
 
         enum CodingKeys: String, CodingKey {
             case providers
             case defaultAgent = "default"
             case maxActive = "max_active"
             case retentionDays = "retention_days"
+            case teamMessages = "team_messages"
         }
     }
 
@@ -203,6 +206,7 @@ final class SettingsStore: ObservableObject {
     static let defaultAgentRetentionDays = 30
     @Published var maxActiveAgents = SettingsStore.defaultMaxActiveAgents
     @Published var agentRetentionDays = SettingsStore.defaultAgentRetentionDays
+    @Published var teamMessagesEnabled = true
     @Published var hasGroqKey = false
     @Published var decisionAccelerationEnabled = false
     @Published var decisionAccelerationScope = "both"
@@ -323,6 +327,7 @@ final class SettingsStore: ObservableObject {
         defaultAgentReasoning = current.subagents?.defaultAgent?.reasoning ?? ""
         maxActiveAgents = min(16, max(1, current.subagents?.maxActive ?? Self.defaultMaxActiveAgents))
         agentRetentionDays = min(3650, max(0, current.subagents?.retentionDays ?? Self.defaultAgentRetentionDays))
+        teamMessagesEnabled = current.subagents?.teamMessages ?? true
         if cliPath.isEmpty { cliPath = defaultCLIPath() }
     }
 
@@ -370,7 +375,8 @@ final class SettingsStore: ObservableObject {
                     .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
                 },
                 maxActive: min(16, max(1, maxActiveAgents)),
-                retentionDays: min(3650, max(0, agentRetentionDays))
+                retentionDays: min(3650, max(0, agentRetentionDays)),
+                teamMessages: teamMessagesEnabled
             ),
             apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend),
                         shortcuts: .init(allowed: allowedShortcuts)),

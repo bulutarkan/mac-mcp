@@ -2576,6 +2576,11 @@ def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
             pass
     deny_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in _RESTRICTED_READ_DENY_ROOTS)
     read_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in sorted(allowed_read, key=lambda item: str(item)))
+    # Like the Codex and Claude boundaries: the folders above an allowed path may be stat'ed (not listed or
+    # read). Bun resolves a module's real path that way, so without it OpenCode cannot load a plugin (#208).
+    metadata_specs = " ".join(
+        f'(literal "{_sbpl_quote(path)}")' for path in _boundary_metadata_ancestors(sorted(allowed_read, key=str))
+    )
     write_roots = {state_root, (_agent_dir(agent_id) / "provider_config").resolve(strict=False)}
     if access_mode == "workspace_write":
         write_roots.update(Path(raw).expanduser().resolve(strict=False) for raw in (scope.path_roots or ()))
@@ -2589,7 +2594,8 @@ def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
         "(allow default)\n"
         f"(deny file-read* {deny_specs})\n"
         f"(allow file-read* {read_specs})\n"
-        "(deny file-write*)\n"
+        + (f"(allow file-read-metadata {metadata_specs})\n" if metadata_specs else "")
+        + "(deny file-write*)\n"
         f"(allow file-write* {write_specs})\n"
         f"{_DEV_NULL_WRITE}\n"
         f"{exec_denies}\n",
@@ -7519,11 +7525,30 @@ def _capture_provider_stream(agent_id: str, stream, path: Path, parse_events: bo
         pass
 
 
+def _full_codex_message_home(agent_id: str, meta: Dict[str, Any]) -> Path:
+    """A full-mode Codex agent in a team runs on a private copy of the owner's Codex config (#208).
+
+    Its message hook needs Codex's hook trust, which Codex reads only from its config file; Mac MCP
+    never writes the owner's ~/.codex, so the agent gets its own copy with the owner's sign-in.
+    """
+    root = _restricted_codex_state(agent_id, meta)
+    codex_home = root / "codex-home"
+    source_home = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex")).expanduser().resolve(strict=False)
+    owner_config = source_home / "config.toml"
+    if owner_config.is_file():
+        shutil.copy2(owner_config, codex_home / "config.toml")
+        (codex_home / "config.toml").chmod(0o600)
+    _untrust_owner_codex_home_as_project(codex_home, meta, source_home)
+    return codex_home
+
+
 def _prepare_message_bridge(agent_id: str, meta: Dict[str, Any], env: Dict[str, str]) -> Optional[agent_message_bridge.Bridge]:
     """Team messages in the agent's own CLI (#208), with files where its sandbox already reads."""
     if not meta.get("team_id"):
         return None
     provider = str(meta.get("provider") or "").lower()
+    if provider == "codex" and not env.get("CODEX_HOME") and team_messages.enabled():
+        env["CODEX_HOME"] = str(_full_codex_message_home(agent_id, meta))
     codex_home = Path(env["CODEX_HOME"]) if provider == "codex" and env.get("CODEX_HOME") else None
     hook_dir = (codex_home.parent / "team-hook") if codex_home is not None else (_agent_dir(agent_id) / "provider_config" / "team")
     opencode_config = Path(env["XDG_CONFIG_HOME"]) / "opencode" if provider == "opencode" and env.get("XDG_CONFIG_HOME") else None
@@ -7589,7 +7614,8 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
             mcp_config_path=claude_mcp_config if claude_mcp_config is not None and claude_mcp_config.is_file() else None,
         )
         if message_bridge is not None:
-            cmd = agent_message_bridge.apply_args(str(meta.get("provider") or "").lower(), cmd, message_bridge.args)
+            cmd = agent_message_bridge.apply_args(str(meta.get("provider") or "").lower(), cmd, message_bridge.args,
+                                                  message_bridge.drop_flags)
         cmd, boundary_profile = _provider_process_command(agent_id, meta, cmd)
         proc = subprocess.Popen(
             cmd, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL,

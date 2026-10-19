@@ -85,6 +85,22 @@ def current_caller() -> Optional[Caller]:
     return _CALLER.get()
 
 
+def enabled() -> bool:
+    """Settings › Agents › Messages Between Agents (subagents.team_messages, on by default).
+    MAC_MCP_TEAM_MESSAGES=0/1 overrides it."""
+    import os
+
+    override = os.getenv("MAC_MCP_TEAM_MESSAGES", "").strip().lower()
+    if override:
+        return override not in {"0", "false", "off", "no"}
+    try:
+        from .runtime_settings import load_runtime_settings
+
+        return (load_runtime_settings().get("subagents") or {}).get("team_messages", True) is not False
+    except Exception:
+        return True
+
+
 def team_room(team_id: str) -> str:
     return f"team:{team_id}"
 
@@ -501,7 +517,7 @@ def attach(result: Any, messages: Sequence[Dict[str, Any]]) -> Any:
 def deliver_with_result(result: Any) -> Any:
     """Claim the caller's unseen messages for this tool result (channel mcp_result)."""
     caller = current_caller()
-    if caller is None or not store().is_member_anywhere(caller.member_id):
+    if caller is None or not store().is_member_anywhere(caller.member_id) or not enabled():
         return result
     try:
         messages = store().claim(caller.member_id, channel="mcp_result")
