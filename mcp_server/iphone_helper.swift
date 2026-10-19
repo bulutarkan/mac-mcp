@@ -641,12 +641,14 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
     let kind = (step["type"] as? String ?? "").lowercased().replacingOccurrences(of: "-", with: "_")
     var done: [String: Any] = ["type": kind]
     var settleFor = 1.2
+    var openAt: CGPoint?  // open: true taps here again when the first tap only selected
     let before = differenceHash(shot.image)
     switch kind {
     case "tap", "double_tap", "long_press":
         let at = try point(step, mirror, shot)
         let hold = kind == "long_press" ? useconds_t(max(300, min(5000, value(step, "duration_ms") ?? 800)) * 1000) : 0
         tap(at, times: kind == "double_tap" ? 2 : 1, hold: hold)
+        if kind == "tap" && step["open"] as? Bool == true { openAt = at }
     case "tap_text":
         guard let wanted = step["text"] as? String, !wanted.isEmpty else {
             throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "tap_text needs text.")
@@ -657,7 +659,9 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
             throw StepError(code: "IPHONE_TEXT_NOT_FOUND",
                             message: "“\(wanted)” is not on the iPhone screen\(step["region"] == nil ? "" : " in that region").")
         }
-        tap(try desktopPoint(mirror, shot, x: Double(x), y: Double(y)))
+        let at = try desktopPoint(mirror, shot, x: Double(x), y: Double(y))
+        tap(at)
+        if step["open"] as? Bool == true { openAt = at }
         done["tapped"] = ["text": match["text"] ?? wanted, "x": x, "y": y]
     case "swipe":
         let from = try point(step, mirror, shot), to = try point(step, mirror, shot, x: "to_x", y: "to_y")
@@ -754,7 +758,14 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
     default:
         throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "Unknown step type “\(kind)”.")
     }
-    let (after, changed) = settle(mirror, before: before, limit: value(step, "settle_ms").map { $0 / 1000 } ?? settleFor)
+    var (after, changed) = settle(mirror, before: before, limit: value(step, "settle_ms").map { $0 / 1000 } ?? settleFor)
+    // Files and other pointer-aware lists select a row on the first click and open it on the next: tap again only
+    // when the first tap left the screen as it was, so a button is never pressed twice.
+    if let openAt, !changed {
+        tap(openAt)
+        (after, changed) = settle(mirror, before: before, limit: settleFor)
+        done["tapped_again"] = true
+    }
     shot = after
     done["changed"] = changed
     return done

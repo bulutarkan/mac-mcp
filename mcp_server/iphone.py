@@ -176,6 +176,10 @@ def check_steps(steps: Any) -> List[Dict[str, Any]]:
         for name in ("x", "y", "to_x", "to_y", "dx", "dy", "duration_ms", "ms", "timeout_ms", "settle_ms", "index"):
             if name in step and not _number(step[name]):
                 raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index}: {name} must be a number.")
+        if "open" in step and not isinstance(step["open"], bool):
+            raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index}: open is true or false.")
+        if "open" in step and kind not in {"tap", "tap_text"}:
+            raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index}: open goes with tap or tap_text.")
         if "region" in step:
             step["region"] = check_region(step["region"], f"Step {index}: region")
         wanted = {"tap_text": "text", "wait_for_text": "text", "expect_text": "text", "type": "text", "key": "key",

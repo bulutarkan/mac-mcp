@@ -137,6 +137,13 @@ class ActionTests(IPhoneCase):
         batch = self.calls[2][1]
         self.assertEqual(({"top": 120.0}, "header", "bottom"), (batch["steps"][0]["region"], batch["steps"][1]["region"], batch["region"]))
 
+    def test_open_taps_a_row_again_only_when_asked(self) -> None:
+        iphone.run("act", steps=[{"type": "tap_text", "text": "Automator", "open": True}, {"type": "tap", "x": 1, "y": 1, "open": False}])
+        self.assertEqual(True, self.calls[0][1]["steps"][0]["open"])
+        for bad in ({"type": "tap", "x": 1, "y": 1, "open": "yes"}, {"type": "home", "open": True}):
+            self.assertEqual("iphone_argument_invalid", iphone.run("act", steps=[bad])["error"], bad)
+        self.assertEqual(1, len(self.calls))
+
     def test_regions_are_checked_before_anything_runs(self) -> None:
         for bad in ("left half", {"middle": 3}, {"top": "x"}, ["top"]):
             self.assertEqual("iphone_argument_invalid", iphone.run("read", region=bad)["error"], bad)
@@ -247,6 +254,9 @@ class HelperSourceTests(unittest.TestCase):
         opening = HELPER[HELPER.index('case "open_app":'):HELPER.index('case "wait":')]
         self.assertIn("waitChange(", opening)
         self.assertNotIn("usleep(650_000)", opening)
+
+    def test_a_second_tap_only_when_the_first_changed_nothing(self) -> None:
+        self.assertIn("if let openAt, !changed {", HELPER)
 
     def test_text_is_read_only_where_asked(self) -> None:
         self.assertIn("request.regionOfInterest = interest", HELPER)
