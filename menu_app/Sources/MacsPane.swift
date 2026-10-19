@@ -106,6 +106,9 @@ struct MacsPane: View {
     @MacMCPState private var invitePermission = "status"
     @MacMCPState private var invitation: (link: String, code: String, expiresAt: Double)?
     @MacMCPState private var pasted = ""
+    @MacMCPState private var typedAddress = ""
+    @MacMCPState private var typedCode = ""
+    @MacMCPState private var addIssue = ""
     @MacMCPState private var busy = false
     @MacMCPState private var renaming: String?
     @MacMCPState private var removingPeer: FleetPeer?
@@ -236,7 +239,7 @@ struct MacsPane: View {
 
     private func invitationView(_ invitation: (link: String, code: String, expiresAt: Double)) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("On the other Mac, open Settings › Macs › Add a Mac and paste this link:")
+            Text("On the other Mac, open Settings › Macs and paste this link under Your Macs:")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text(invitation.link).font(.system(.caption, design: .monospaced)).lineLimit(1).truncationMode(.middle)
@@ -246,9 +249,20 @@ struct MacsPane: View {
                     NSPasteboard.general.setString(invitation.link, forType: .string)
                 }
             }
-            Text("Or type this Mac's address and the code:").font(.caption).foregroundStyle(.secondary)
-            Text(invitation.code).font(.system(size: 22, weight: .semibold, design: .monospaced)).tracking(2)
-                .textSelection(.enabled)
+            Text("Or type both of these there (the code alone does not say which Mac it is for):")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 22) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Address").font(.caption2).foregroundStyle(.secondary)
+                    Text(Self.typedForm(of: thisURL)).font(.system(size: 17, weight: .semibold, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Code").font(.caption2).foregroundStyle(.secondary)
+                    Text(invitation.code).font(.system(size: 17, weight: .semibold, design: .monospaced)).tracking(2)
+                        .textSelection(.enabled)
+                }
+            }
             HStack {
                 Text("Works once, until " + Date(timeIntervalSince1970: invitation.expiresAt).formatted(date: .omitted, time: .shortened)
                      + ". You still allow the Mac before it can see anything.")
@@ -267,11 +281,25 @@ struct MacsPane: View {
         GroupBox("Your Macs") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    TextField("Paste an invitation link, or an address and code", text: $pasted)
+                    TextField("Paste the invitation link from the other Mac", text: $pasted)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { Task { await add() } }
+                }
+                HStack {
+                    Text("or type its").font(.caption).foregroundStyle(.secondary)
+                    TextField("Address", text: $typedAddress)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { Task { await add() } }
+                    TextField("Code", text: $typedCode)
+                        .textFieldStyle(.roundedBorder).frame(width: 130)
+                        .onSubmit { Task { await add() } }
                     Button("Add a Mac") { Task { await add() } }
-                        .disabled(busy || pasted.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(busy || (pasted.trimmingCharacters(in: .whitespaces).isEmpty
+                                           && typedCode.trimmingCharacters(in: .whitespaces).isEmpty))
+                }
+                if !addIssue.isEmpty {
+                    Label(addIssue, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if peers.isEmpty {
                     Text(loaded ? "No other Macs yet. Invite this Mac from the other one, then add it here."
@@ -335,6 +363,11 @@ struct MacsPane: View {
         permission == "recipes" ? "see this Mac's status and run its recipes" : "see this Mac's status"
     }
 
+    /// What to type for this Mac's address: the host for HTTPS (https:// is assumed), the whole URL otherwise.
+    static func typedForm(of url: String) -> String {
+        url.hasPrefix("https://") ? String(url.dropFirst("https://".count)) : url
+    }
+
     static func span(_ seconds: Double) -> String {
         let minutes = Int(seconds / 60)
         if minutes < 60 { return "\(max(1, minutes)) min" }
@@ -393,16 +426,29 @@ struct MacsPane: View {
     }
 
     private func add() async {
-        let text = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let link = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let address = typedAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = typedCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text: String
+        if !link.isEmpty {
+            text = link
+        } else if !address.isEmpty && !code.isEmpty {
+            text = address + " " + code
+        } else {
+            addIssue = code.isEmpty ? "Paste the link, or type the other Mac's address and its code."
+                                    : "Also type the other Mac's address (shown next to the code there)."
+            return
+        }
         busy = true
+        addIssue = ""
         let result = await state.taskAPI("dashboard/api/fleet/peers/add", body: ["invitation": text])
         busy = false
         if result.ok {
             pasted = ""
-            message = ""
+            typedAddress = ""
+            typedCode = ""
         } else {
-            message = result.object["message"] as? String ?? "Couldn’t add that Mac."
+            addIssue = result.object["message"] as? String ?? "Couldn’t add that Mac."
         }
         await load()
     }
