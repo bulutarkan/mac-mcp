@@ -35,6 +35,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from . import paths
 from .data_guard import redact_sensitive_text
 from .private_storage import PRIVATE_FILE_MODE, ensure_private_dir
+from .sqlite_wal import enable_wal
 
 BODY_LIMIT = 1500
 NOTE_BODY_LIMIT = 400
@@ -144,7 +145,7 @@ class Store:
         ensure_private_dir(path.parent)
         conn = sqlite3.connect(path, timeout=10, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        enable_wal(conn)
         conn.execute("PRAGMA busy_timeout=5000")
         try:
             path.chmod(PRIVATE_FILE_MODE)

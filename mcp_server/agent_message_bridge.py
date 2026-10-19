@@ -346,20 +346,26 @@ def apply_args(provider: str, cmd: List[str], args: List[str], drop_flags: Optio
 def cleanup(bridge: Optional[Bridge]) -> None:
     if bridge is None:
         return
-    tm.store().revoke_hook_tokens(bridge.member_id)
-    tm.store().set_push_file(bridge.member_id, None)
-    for path in bridge.files:
+    for path in bridge.files:  # the token file goes first, whatever the database says
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+    tm.store().revoke_hook_tokens(bridge.member_id)
+    tm.store().set_push_file(bridge.member_id, None)
 
 
 def finish(bridge: Optional[Bridge], *, terminal: bool) -> None:
-    """After an attempt: revoke the hook; a finished agent also leaves the room."""
-    cleanup(bridge)
-    if bridge is not None and terminal:
-        tm.store().leave(bridge.room_id, bridge.member_id)
+    """After an attempt: revoke the hook; a finished agent also leaves the room.
+
+    Messaging never fails an agent: if the store cannot be written, the hook token still
+    expires on its own and the agent's own result stands."""
+    try:
+        cleanup(bridge)
+        if bridge is not None and terminal:
+            tm.store().leave(bridge.room_id, bridge.member_id)
+    except Exception as exc:
+        LOG.warning("team messages cleanup for %s failed: %s", bridge.member_id if bridge else None, exc)
 
 
 # ---------------------------------------------------------------------------

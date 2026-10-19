@@ -17,6 +17,7 @@ from fastapi import HTTPException, status
 from .policy import PolicyContext, environment_policy_context
 from .policy_scope import ResourceScope
 from .security import Settings, authenticate
+from .sqlite_wal import enable_wal
 
 DEFAULT_SCOPED_AUTH_DB = Path.home() / ".mac-mcp" / "state" / "scoped_credentials.sqlite3"
 _TOKEN_PREFIX = "mcpagt_"
@@ -58,7 +59,7 @@ class ScopedCredentialStore:
         except OSError:
             pass
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        enable_wal(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS scoped_credentials (

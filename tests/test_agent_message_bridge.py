@@ -4,6 +4,7 @@ from __future__ import annotations
 import tests._state_isolation  # noqa: F401  (must precede mcp_server imports)
 import asyncio
 import json
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -154,6 +155,14 @@ class ProviderSetupTests(Fixture):
         self.assertIsNone(self.store.hook_member(token))
         self.assertFalse(any((self.dir / "hook").iterdir()))
         self.assertNotIn("agent:agt_c", [m["member_id"] for m in self.store.members(self.room)])
+
+    def test_a_store_that_cannot_be_written_never_fails_the_agent(self) -> None:
+        bridge = bridge_mod.prepare("agt_d", self.meta("claude"), {}, hook_dir=self.dir / "hook")
+        locked = sqlite3.OperationalError("database is locked")
+        with patch.object(self.store, "revoke_hook_tokens", side_effect=locked), \
+                self.assertLogs(bridge_mod.LOG, level="WARNING"):
+            bridge_mod.finish(bridge, terminal=True)  # no exception
+        self.assertFalse(any((self.dir / "hook").iterdir()))  # the token file is gone all the same
 
 
 class MoreProviderTests(Fixture):
