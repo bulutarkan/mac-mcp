@@ -23,6 +23,10 @@ from fastapi import HTTPException, Request, status
 from . import paths
 
 BASE_DIR = Path(__file__).resolve().parent
+# MCP_SESSION_IDLE_TIMEOUT_S: default 30 minutes, clamped to 1 minute .. 24 hours.
+SESSION_IDLE_TIMEOUT_DEFAULT_S = 1800
+SESSION_IDLE_TIMEOUT_MIN_S = 60
+SESSION_IDLE_TIMEOUT_MAX_S = 86400
 HOME_DIR = Path(os.getenv("MAC_MCP_HOME", str(Path.home()))).expanduser().resolve()
 
 
@@ -99,6 +103,11 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Like _int, but clamps the result into [minimum, maximum]."""
+    return min(max(_int(name, default), minimum), maximum)
+
+
 def _strlist(name: str, default: List[str]) -> List[str]:
     raw = os.getenv(name)
     if raw is None:
@@ -130,6 +139,8 @@ class Settings:
     max_js_result_chars: int
     max_html_chars: int
     max_wait_s: int
+    # Streamable HTTP transport sessions idle longer than this are closed.
+    session_idle_timeout_s: int
 
 
 def load_settings() -> Settings:
@@ -163,6 +174,12 @@ def load_settings() -> Settings:
         max_js_result_chars=_int("MAX_JS_RESULT_CHARS", 20000),
         max_html_chars=_int("MAX_HTML_CHARS", 200000),
         max_wait_s=_int("MAX_WAIT_S", 120),
+        session_idle_timeout_s=_bounded_int(
+            "MCP_SESSION_IDLE_TIMEOUT_S",
+            SESSION_IDLE_TIMEOUT_DEFAULT_S,
+            SESSION_IDLE_TIMEOUT_MIN_S,
+            SESSION_IDLE_TIMEOUT_MAX_S,
+        ),
     )
 
 

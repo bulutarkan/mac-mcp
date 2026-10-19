@@ -8,6 +8,7 @@
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
 ### Fixes
+- The idle time after which a streamable HTTP session is closed is now configurable with `MCP_SESSION_IDLE_TIMEOUT_S` (seconds, 60 to 86400, default 1800 as before). A client that waited longer between tool calls, for example ChatGPT during a long task, kept using the closed session and got `400` errors shown as `-32603`.
 - A Mail draft made by `create_draft` keeps the message id it returns: Mail saved the draft again under a new id when the compose window closed, so `update_message` and `open_message` could no longer find it. A draft whose id Mail had not assigned yet no longer fails as `MAIL_DRAFT_FAILED` after the draft was in fact saved.
 
 ## [2.2.1] - 2026-10-19

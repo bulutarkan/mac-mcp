@@ -2886,7 +2886,11 @@ def create_app():
     # ChatGPT currently opens a fresh stateful transport for many tool calls. Keep
     # those protocol transports bounded while logical steering sessions (derived
     # from request metadata when available) can remain visible independently.
-    mcp.session_manager.session_idle_timeout = 1800.0
+    # The timeout is configurable (MCP_SESSION_IDLE_TIMEOUT_S, default 1800): a
+    # client that sits idle longer than this (e.g. a model thinking for a long
+    # time or waiting on a background task) keeps using its old session ID, and
+    # the server answers 400, which ChatGPT surfaces as a persistent -32603.
+    mcp.session_manager.session_idle_timeout = float(settings.session_idle_timeout_s)
     app.add_middleware(SecurityMiddleware)
 
     async def health(request: Request) -> Response:
