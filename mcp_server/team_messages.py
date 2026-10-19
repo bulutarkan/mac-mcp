@@ -42,6 +42,8 @@ NOTE_MESSAGES = 5
 ROOM_HISTORY = 1000
 RETENTION_S = 7 * 24 * 3600
 SEND_RATE_PER_MIN = 20
+# A delegated agent's messages per team: enough for what matters, not for chatting.
+AGENT_MESSAGE_BUDGET = 10
 ROOM_NAME_LIMIT = 40
 ACTIVE_TTL_S = 2.0
 KINDS = ("update", "question", "blocker", "reply")
@@ -264,6 +266,15 @@ class Store:
                 if recent >= SEND_RATE_PER_MIN:
                     raise TeamMessageError("rate_limited", f"at most {SEND_RATE_PER_MIN} messages a minute; send fewer, "
                                                            "longer updates")
+                budget_left = None
+                if sender.agent_id:
+                    used = conn.execute("SELECT COUNT(*) FROM messages WHERE room_id = ? AND sender_id = ?",
+                                        (room_id, sender.member_id)).fetchone()[0]
+                    if used >= AGENT_MESSAGE_BUDGET:
+                        raise TeamMessageError("message_budget_used",
+                                               f"you have sent {AGENT_MESSAGE_BUDGET} messages to this team, the most an "
+                                               "agent may; put anything else in your final answer")
+                    budget_left = AGENT_MESSAGE_BUDGET - used - 1
                 message_id = "msg_" + uuid.uuid4().hex[:16]
                 conn.execute(
                     "INSERT INTO messages (message_id, room_id, sender_id, sender_label, recipient_id, kind, body, "
@@ -281,6 +292,8 @@ class Store:
             out["clipped_to"] = BODY_LIMIT
         if warning:
             out["warning"] = warning
+        if budget_left is not None:
+            out["messages_left"] = budget_left
         return out
 
     def _unheard(self, conn: sqlite3.Connection, room_id: str, sender_id: str, recipient: Optional[str]) -> Optional[str]:

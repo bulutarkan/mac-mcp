@@ -93,6 +93,17 @@ class SendAndClaimTests(StoreFixture):
         inbox = self.store.inbox(A1.member_id, room_id=ROOM)["messages"]
         self.assertEqual({"write the summary in Turkish"}, {m["body"] for m in inbox if m.get("from_lead")})
 
+    def test_an_agent_has_a_message_budget_and_sessions_do_not(self) -> None:
+        with patch.object(tm, "AGENT_MESSAGE_BUDGET", 3), patch.object(tm, "SEND_RATE_PER_MIN", 100):
+            left = [self.store.send(ROOM, A1, f"m{i}")["messages_left"] for i in range(3)]
+            self.assertEqual([2, 1, 0], left)
+            with self.assertRaises(tm.TeamMessageError) as used:
+                self.store.send(ROOM, A1, "one too many")
+            self.assertEqual("message_budget_used", used.exception.code)
+            self.assertIn("messages_left", self.store.send(ROOM, A2, "another agent has its own budget"))
+            for i in range(5):
+                self.assertNotIn("messages_left", self.store.send(ROOM, LEAD, f"lead {i}"))
+
     def test_idempotent_send_returns_the_first_message(self) -> None:
         first = self.store.send(ROOM, A1, "once", idempotency_key="k-123456")
         again = self.store.send(ROOM, A1, "once", idempotency_key="k-123456")
@@ -114,13 +125,13 @@ class SendAndClaimTests(StoreFixture):
 
     def test_senders_are_rate_limited(self) -> None:
         for index in range(tm.SEND_RATE_PER_MIN):
-            self.store.send(ROOM, A1, f"m{index}")
+            self.store.send(ROOM, LEAD, f"m{index}")
         with self.assertRaises(tm.TeamMessageError) as limited:
-            self.store.send(ROOM, A1, "one too many")
+            self.store.send(ROOM, LEAD, "one too many")
         self.assertEqual("rate_limited", limited.exception.code)
 
     def test_concurrent_claims_on_two_channels_show_each_message_once(self) -> None:
-        with patch.object(tm, "SEND_RATE_PER_MIN", 10_000):
+        with patch.object(tm, "SEND_RATE_PER_MIN", 10_000), patch.object(tm, "AGENT_MESSAGE_BUDGET", 10_000):
             for index in range(200):
                 self.store.send(ROOM, A2, f"m{index}")
         seen: list = []
