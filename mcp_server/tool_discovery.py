@@ -70,6 +70,7 @@ TOOL_USE_CASES: Dict[str, Tuple[str, ...]] = {
     "spawn_agents": ("start subagents", "delegate task", "parallel agents", "team of agents"),
     "wait_agents": ("wait for agents", "collect agent results"),
     "team_messages": ("message teammates", "agent to agent messages", "team inbox", "talk to other agents"),
+    "iphone": ("iphone", "phone", "my phone", "iphone mirroring", "tap on phone", "telefon", "ios app"),
     "fleet": ("other macs", "my macs", "another mac", "run on other mac", "remote mac status"),
     "memory_search": ("recall memory", "remember fact", "search memory"),
     "knowledge_search": ("search my documents", "what does the contract say", "find in pdfs", "search folder contents"),

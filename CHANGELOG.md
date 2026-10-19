@@ -1,11 +1,16 @@
 ## Unreleased
 
 ### Your other Macs (#147)
-- **Settings › Macs** connects your Macs so an agent on one can use the others: run commands, read and change files, use apps and the browser there. No server in between: each Mac is reached at its own address (Cloudflare, ngrok or a custom HTTPS URL, whichever it uses).
-- Pairing: the Mac to be added shows a one-time link, or its address and an 8-character code (2 minutes); the other Mac presents it; its owner gets a notification with who asks and a 6-digit check both Macs show, and allows or refuses in Settings › Macs. Only then is a credential issued. The Mac MCP API key is never shared.
+- **Settings › Devices** connects your Macs so an agent on one can use the others: run commands, read and change files, use apps and the browser there. No server in between: each Mac is reached at its own address (Cloudflare, ngrok or a custom HTTPS URL, whichever it uses).
+- Pairing: the Mac to be added shows a one-time link, or its address and an 8-character code (2 minutes); the other Mac presents it; its owner gets a notification with who asks and a 6-digit check both Macs show, and allows or refuses in Settings › Devices. Only then is a credential issued. The Mac MCP API key is never shared.
 - Three access levels: **Full access**, **Read only** (tools that change something are hidden and refused) and **Status only**. A Mac's own profile in Permissions & Safety comes first: full access on a Read Only Mac reads only, and both Macs say so.
 - **Busy**: one toggle stops a Mac taking anything from other Macs without removing them; the others show it in orange.
 - Agents use the `fleet` tool: `list`, `tools` (or a search of that Mac's tools), `call`, `recipes`, `run_recipe`. Everything runs on the other Mac under its own permission profile and approvals. Either Mac can end it at any time.
+
+### Your iPhone
+- **Settings › Devices** (formerly Macs) now has an **iPhone** section, next to your Macs; each folds away. Agents use your iPhone through iPhone Mirroring: no app on the phone, no cable.
+- Access is yours to choose: **Full access** (tap, type, scroll, open apps), **Read only** (the default: see the screen and read its text) or **Off**. This Mac's own Permissions & Safety setting still comes first, and Privacy's pause and excluded apps apply.
+- The `iphone` tool sees the screen (no picture when nothing changed), reads its text with positions (Apple Vision, Turkish and English) and, with full access, runs a whole job in one call with `act`: open an app, tap a text, type (Turkish letters included), scroll, swipe, wait for a text, and get the screen back after the last step, or where it stopped.
 
 ### Undo for changes in Notes, Reminders, Calendar and Mail (#259)
 - What an agent changes in your apps can be undone, like file changes. A changed note, reminder, event or email gets its old state back; a note, reminder, event or draft Mac MCP made is removed (notes go to Recently Deleted); a deleted reminder is made again (new id). The change's result carries an `undo_id`, and `mac_app` `action=undo` puts it back.

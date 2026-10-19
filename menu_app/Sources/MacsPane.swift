@@ -1,7 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Settings › Macs (#147): the owner's Macs, side by side. Each Mac is a card with its picture, whether
+/// Settings › Devices (#147): the owner's Macs, side by side, and their iPhone (IPhoneSection.swift), each in a
+/// section that folds away. Each Mac is a card with its picture, whether
 /// it is online, busy or offline, and what this Mac may do there. A Mac is added with an invitation
 /// from the other one (a link, or its address and a code), allowed there after a 6-digit check, and
 /// can be stopped at any time. Busy keeps every pairing but lets no other Mac use this one.
@@ -237,6 +238,8 @@ struct MacsPane: View {
     @MacMCPState private var removingPeer: FleetPeer?
     @MacMCPState private var stoppingClient: FleetClient?
     @MacMCPState private var hovered: String?
+    @AppStorage("MacMCP.devices.macsOpen") private var macsOpen = true
+    @AppStorage("MacMCP.devices.iphoneOpen") private var iphoneOpen = true
 
     private var available: Bool { thisMac["available"] as? Bool ?? true }
     private var profile: String { thisMac["profile"] as? String ?? "standard" }
@@ -253,12 +256,17 @@ struct MacsPane: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(requests) { request in requestCard(request) }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 12)], spacing: 12) {
-                    thisMacCard
-                    ForEach(peers) { peer in peerCard(peer) }
-                    addCard
+                DeviceSection(title: "Macs", symbol: "laptopcomputer", summary: macsSummary, isOpen: $macsOpen) {
+                    macsControls
+                } content: {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 12)], spacing: 12) {
+                        thisMacCard
+                        ForEach(peers) { peer in peerCard(peer) }
+                        addCard
+                    }
+                    if !clients.isEmpty { whoCanUse }
                 }
-                if !clients.isEmpty { whoCanUse }
+                IPhoneSection(state: state, profile: profile, isOpen: $iphoneOpen)
                 Spacer(minLength: 0)
             }
             .padding(22)
@@ -299,22 +307,25 @@ struct MacsPane: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("Macs").font(.title2.weight(.semibold))
-                    Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
-                        .buttonStyle(.borderless)
-                        .help("How do my Macs work together?")
-                        .accessibilityLabel("How do my Macs work together?")
-                        .popover(isPresented: $showInfo, arrowEdge: .bottom) { AutomationExplainer.macs(profile: profile) }
-                }
-                Text("Use all your Macs from the AI app connected to this one.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            VStack(alignment: .trailing, spacing: 8) {
-                HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Devices").font(.title2.weight(.semibold))
+            Text("Use your Macs and your iPhone from the AI app connected to this Mac.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    private var macsSummary: String {
+        peers.isEmpty ? "Only this Mac yet" : "This Mac and \(peers.count) more"
+    }
+
+    private var macsControls: some View {
+        HStack(spacing: 10) {
+            Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
+                .buttonStyle(.borderless)
+                .help("How do my Macs work together?")
+                .accessibilityLabel("How do my Macs work together?")
+                .popover(isPresented: $showInfo, arrowEdge: .bottom) { AutomationExplainer.macs(profile: profile) }
+            HStack(spacing: 8) {
                     Text(available ? "Available" : "Busy").font(.callout.weight(.medium))
                         .foregroundStyle(available ? Color.green : Color.orange)
                     Toggle("Available to my other Macs", isOn: Binding(get: { available }, set: { value in
@@ -324,17 +335,16 @@ struct MacsPane: View {
                     .help(available ? "Your other Macs can use this one. Turn off to be Busy."
                                     : "Busy: no other Mac can use this one. Turn on to be available.")
                     .accessibilityLabel("Available to my other Macs")
-                }
-                Button {
-                    inviting = true
-                } label: {
-                    Label("Invite a Mac", systemImage: "person.badge.plus")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(thisURL.isEmpty || !available)
-                .help(thisURL.isEmpty ? "Turn on a public address in Connections first."
-                                      : available ? "Let another of your Macs use this one." : "Turn Available on to invite a Mac.")
             }
+            Button {
+                inviting = true
+            } label: {
+                Label("Invite a Mac", systemImage: "person.badge.plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(thisURL.isEmpty || !available)
+            .help(thisURL.isEmpty ? "Turn on a public address in Connections first."
+                                  : available ? "Let another of your Macs use this one." : "Turn Available on to invite a Mac.")
         }
     }
 
@@ -641,7 +651,7 @@ struct InviteMacSheet: View {
 
     private func invitationView(_ invitation: FleetInvitation) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("On the other Mac, open Mac MCP › Settings › Macs and choose Add a Mac.", systemImage: "1.circle.fill")
+            Label("On the other Mac, open Mac MCP › Settings › Devices and choose Add a Mac.", systemImage: "1.circle.fill")
                 .font(.callout)
             VStack(alignment: .leading, spacing: 6) {
                 Label("Paste this link there:", systemImage: "2.circle.fill").font(.callout)
@@ -759,7 +769,7 @@ struct AddMacSheet: View {
 
     private var entry: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("On the other Mac, open Mac MCP › Settings › Macs and choose Invite a Mac.", systemImage: "1.circle.fill")
+            Label("On the other Mac, open Mac MCP › Settings › Devices and choose Invite a Mac.", systemImage: "1.circle.fill")
                 .font(.callout)
             Label("Paste its link here:", systemImage: "2.circle.fill").font(.callout)
             TextField("Invitation link", text: $link).textFieldStyle(.roundedBorder)

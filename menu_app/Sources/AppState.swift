@@ -967,7 +967,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// A Mac asking to connect gets one native notification; clicking it opens Settings › Macs, where
+    /// A Mac asking to connect gets one native notification; clicking it opens Settings › Devices, where
     /// the request waits. Answered or expired requests take theirs back (#147).
     func checkFleetRequests() async {
         let result = await taskAPI("dashboard/api/fleet/requests")
@@ -1959,7 +1959,7 @@ final class AppState: ObservableObject {
 
     /// Where the update alert leads: the Updates card in Settings › General (set by the app).
     var presentUpdate: (() -> Void)?
-    /// Opens Settings › Macs, where a Mac asking to connect waits (#147).
+    /// Opens Settings › Devices, where a Mac asking to connect waits (#147).
     var presentFleetRequests: (() -> Void)?
 
     func showUpdate() {

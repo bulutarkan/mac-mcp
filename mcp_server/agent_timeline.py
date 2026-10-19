@@ -48,6 +48,7 @@ _TOOL_WORDS = {
     "knowledge_search": "Searched your folders",
     "team_messages": "Messaged teammates",
     "fleet": "Used another Mac",
+    "iphone": "Used the iPhone",
     "screenshot": "Took a screenshot",
 }
 _CLAUDE_TOOLS = {

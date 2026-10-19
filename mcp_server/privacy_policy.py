@@ -32,7 +32,7 @@ _cache: Dict[str, Any] = {"at": -1.0, "value": None}
 # not observing the screen, so those keep working; anything that reads what is on
 # screen, in a page or on the clipboard, listens, or starts an agent stops.
 PAUSED_TOOLS = frozenset({
-    "mac_observe", "mac_act", "mac_snapshot", "mac_app", "screenshot", "clipboard_get",
+    "mac_observe", "mac_act", "mac_snapshot", "iphone", "mac_app", "screenshot", "clipboard_get",
     "browser_observe", "browser_find", "browser_act", "browser_do", "browser_list_tabs",
     "browser_get_html", "browser_get_snapshot", "browser_screenshot", "browser_execute_js",
     "browser_click_selector", "browser_type_selector", "browser_wait_for_selector", "browser_scroll",

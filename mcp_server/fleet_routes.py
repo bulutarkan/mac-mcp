@@ -16,7 +16,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import fleet, fleet_client
+import asyncio
+
+from . import fleet, fleet_client, iphone
 from .observability import publish_live_event
 from .request_client import client_address
 from .security import AuthFailureLimiter
@@ -275,7 +277,39 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
             return denied
         return JSONResponse({"ok": True, "this_mac": fleet.rename(str(body.get("name") or ""))})
 
+    # ── The iPhone, in the same Devices pane ─────────────────────────────────
+    async def iphone_status(request: Request) -> Response:
+        denied = dashboard_guard(request)
+        if denied:
+            return denied
+        return JSONResponse(await asyncio.to_thread(iphone.status))
+
+    async def iphone_access(request: Request) -> Response:
+        body, denied = await owner_body(request)
+        if denied:
+            return denied
+        try:
+            iphone.set_access(str(body.get("access") or ""))
+        except iphone.IPhoneError as exc:
+            return JSONResponse({"ok": False, "error": exc.code.lower(), "message": str(exc)}, status_code=400)
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse({"ok": False, "error": "iphone_access_persist_failed"}, status_code=500)
+        return JSONResponse(await asyncio.to_thread(iphone.status))
+
+    async def iphone_open(request: Request) -> Response:
+        _, denied = await owner_body(request)
+        if denied:
+            return denied
+        try:
+            result = await asyncio.to_thread(iphone.open_mirroring)
+        except iphone.IPhoneError as exc:
+            return JSONResponse({"ok": False, "error": exc.code.lower(), "message": str(exc)}, status_code=502)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 409)
+
     return [
+        Route("/dashboard/api/iphone", iphone_status, methods=["GET"]),
+        Route("/dashboard/api/iphone/access", iphone_access, methods=["POST"]),
+        Route("/dashboard/api/iphone/open", iphone_open, methods=["POST"]),
         Route("/fleet/pair", pair, methods=["POST"]),
         Route("/fleet/pair/status", pair_status, methods=["POST"]),
         Route("/fleet/status", status, methods=["GET"]),

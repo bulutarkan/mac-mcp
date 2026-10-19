@@ -35,6 +35,7 @@ from .observability import ObservedFastMCP, TelemetryManager, _tool_can_mutate, 
 from . import error_contract
 from .tool_summaries import ADVANCED_BROWSER_TOOLS, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import tool_discovery
+from . import iphone
 from .browser_schemas import (
     ActReturnState, BrowserActions, DoReturnState, ObserveScope, OptionalBrowserActions, VisualMode,
 )
@@ -147,7 +148,7 @@ MCP_AGENT_INSTRUCTIONS = (
     "Long or parallel work -> spawn_agents, then wait_agents. Agents working at the same time talk through "
     "team_messages: you and the team you start (you are its lead) can message each other while it runs, for example "
     "to pass on a change of plan instead of restarting it, and Mac MCP sessions can join a named room; their messages "
-    "reach you on their own after your tool calls. The owner's other Macs -> fleet. "
+    "reach you on their own after your tool calls. The owner's other Macs -> fleet; their iPhone -> iphone. "
     "Missing information or a decision only the person can "
     "make -> ask_user; a sign-in, 2FA or captcha step -> browser_checkpoint. "
     "Tools named <server>__<tool> come from MCP servers the owner added and follow the same rules. "
@@ -983,7 +984,7 @@ def create_app():
     @mcp.tool(
         name="fleet",
         description=(
-            "Work on the owner's other Macs, paired in Settings > Macs (#147), without connecting to each one. "
+            "Work on the owner's other Macs, paired in Settings > Devices (#147), without connecting to each one. "
             "action=list: each Mac's name, model, whether it is online, busy or offline, and what this Mac may do "
             "there (status, read_only or full, never more than that Mac's own permission setting; refresh=true asks "
             "each one now). With read_only or full access: action=tools (mac = its name or peer_id; optional query "
@@ -1019,6 +1020,36 @@ def create_app():
             raise fleet.FleetError("FLEET_ARGUMENT_INVALID", "action is list, tools, call, recipes or run_recipe.")
         except fleet.FleetError as exc:
             return {"ok": False, "error": exc.code.lower(), "reason_code": exc.code, "message": str(exc)}
+
+    @mcp.tool(
+        name="iphone",
+        description=(
+            "The owner's iPhone, through iPhone Mirroring on this Mac (Settings > Devices > iPhone). action=see returns "
+            "the screen (pass previous_hash from the last result: an unchanged screen comes back as unchanged, with no "
+            "image); read returns its text with positions instead (cheaper, Vision OCR); find (text) gives where a text "
+            "is. Coordinates are phone points, origin top left, in the size see returns. With full access, do a whole "
+            "job in one call with action=act and steps, run back to back with the screen after them (and where a step "
+            "failed): tap/double_tap/long_press {x,y}, tap_text {text, index?} (taps text read on screen), swipe "
+            "{x,y,to_x,to_y} for pages and sliders, scroll {dy, x?, y?} for lists (negative dy scrolls down), type "
+            "{text, submit?} into the focused field, key {key: return|escape|delete|tab|space|arrows}, home, "
+            "app_switcher, spotlight, open_app {app}, wait {ms}, wait_for_text {text, timeout_ms?}. E.g. "
+            "[{type:'open_app',app:'Safari'},{type:'tap_text',text:'Search'},{type:'type',text:'weather',submit:true},"
+            "{type:'wait_for_text',text:'Weather'}]. Confirm a field is focused (tap_text, wait_for_text) before typing "
+            "into it. The single actions (tap, type, open_app, ...) are one-step act. connect resumes after the owner "
+            "used the phone (it must be locked again). image=false skips the picture, ocr=true adds the screen's text. "
+            "Input brings iPhone Mirroring forward for the moment it takes and puts the owner's app and pointer back. "
+            "Access is the owner's: off, read_only (default) or full, never more than this Mac's permission profile; "
+            "action=status shows it and whether iPhone Mirroring is open and connected."
+        ),
+    )
+    def _iphone(action: str = "see", steps: Optional[List[Dict[str, Any]]] = None, x: Optional[float] = None,
+                y: Optional[float] = None, to_x: Optional[float] = None, to_y: Optional[float] = None,
+                text: Optional[str] = None, key: Optional[str] = None, app: Optional[str] = None,
+                dx: Optional[float] = None, dy: Optional[float] = None, duration_ms: Optional[int] = None,
+                ocr: bool = False, image: bool = True, previous_hash: Optional[str] = None) -> Any:
+        return _log(audit_logger, "iphone", lambda: iphone.run(
+            action, steps=steps, x=x, y=y, to_x=to_x, to_y=to_y, text=text, key=key, app=app, dx=dx, dy=dy,
+            duration_ms=duration_ms, ocr=ocr, image=image, previous_hash=previous_hash))
 
     @mcp.tool(
         name="list_agents",

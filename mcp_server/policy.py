@@ -321,6 +321,21 @@ def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+# iphone actions that act on the iPhone (iphone.py uses the same set).
+IPHONE_INPUT_ACTIONS = frozenset({"act", "tap", "double_tap", "long_press", "swipe", "scroll", "type", "key", "home",
+                                  "app_switcher", "spotlight", "open_app", "connect"})
+
+
+def _iphone_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "see").strip().lower().replace("-", "_")
+    # Tapping, typing and opening apps act on the iPhone; seeing and reading its screen do not. Steps always act.
+    if action in IPHONE_INPUT_ACTIONS or arguments.get("steps") is not None:
+        return RiskOverride(capabilities=_caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY,
+                                               Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True)
+    return RiskOverride(capabilities=_caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), destructive=False,
+                        sensitive=True, requested_access_mode=AccessMode.READ_ONLY)
+
+
 def _fleet_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     action = str(arguments.get("action") or "list").strip().lower()
     # A tool run on another Mac carries that tool's own risk here too, so this Mac's approval rules apply
@@ -715,6 +730,9 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     ),
     "mac_snapshot": _r("mac_snapshot", "macos", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY, Capability.BROWSER_CONTROL), sensitive=True),
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
+    "iphone": _r("iphone", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY,
+                                                Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True,
+                 resolver=_iphone_risk),
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_mac_act_risk),
     "mac_app": _r("mac_app", "accessibility", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY), sensitive=True, resolver=_mac_app_risk),
     "recipe": _r("recipe", "meta", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True, resolver=_recipe_risk),
