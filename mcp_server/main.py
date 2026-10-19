@@ -1042,16 +1042,21 @@ def create_app():
         description=(
             "The owner's iPhone, through iPhone Mirroring on this Mac (Settings > Devices > iPhone). action=see returns "
             "the screen (pass previous_hash from the last result: an unchanged screen comes back as unchanged, with no "
-            "image); read returns its text with positions instead (cheaper, Vision OCR); find (text) gives where a text "
-            "is. Coordinates are phone points, origin top left, in the size see returns. With full access, do a whole "
+            "image); read returns its text with positions (Vision OCR); find (text, or texts for several) gives where "
+            "they are. region limits reading to part of the screen, faster and fewer words: header, top, middle, bottom, "
+            "footer or {top,bottom,left,right}; a picture costs less than the text of a busy screen, so read a region "
+            "rather than all of it. Coordinates are phone points, origin top left, in the size see returns. With full "
+            "access, do a whole "
             "job in one call with action=act and steps, run back to back with the screen after them (and where a step "
-            "failed): tap/double_tap/long_press {x,y}, tap_text {text, index?} (taps text read on screen), swipe "
+            "failed): tap/double_tap/long_press {x,y}, tap_text {text, index?, region?} (taps text read on screen), swipe "
             "{x,y,to_x,to_y} for pages and sliders, scroll {dy, x?, y?} for lists (negative dy scrolls down), type "
             "{text, submit?} into the focused field, key {key: return|escape|delete|tab|space|arrows}, home, "
-            "app_switcher, spotlight, open_app {app}, wait {ms}, wait_for_text {text, timeout_ms?}. E.g. "
-            "[{type:'open_app',app:'Safari'},{type:'tap_text',text:'Search'},{type:'type',text:'weather',submit:true},"
-            "{type:'wait_for_text',text:'Weather'}]. Confirm a field is focused (tap_text, wait_for_text) before typing "
-            "into it. The single actions (tap, type, open_app, ...) are one-step act. connect resumes after the owner "
+            "app_switcher, spotlight, open_app {app}, wait {ms}, wait_for_text {text, timeout_ms?, region?}, expect_text "
+            "{text, region?, absent?} (stops the job unless the screen shows it now). Put checks inside the job instead "
+            "of separate calls, e.g. a message in one call: [{type:'open_app',app:'WhatsApp'},{type:'tap_text',"
+            "text:'Search'},{type:'type',text:'Ayşe'},{type:'tap_text',text:'Ayşe',region:{top:120}},{type:"
+            "'expect_text',text:'Ayşe',region:'header'},<tap the message box>,{type:'type',text:'Merhaba'},{type:"
+            "'expect_text',text:'Merhaba',region:'footer'},<tap send>]. The single actions (tap, type, open_app, ...) are one-step act. connect resumes after the owner "
             "used the phone (it must be locked again). A closed iPhone Mirroring is opened (without taking focus) and "
             "waited for; when it asks for the Mac's password, only the owner can enter it. image=false skips the "
             "picture, ocr=true adds the screen's text. "
@@ -1064,10 +1069,11 @@ def create_app():
                 y: Optional[float] = None, to_x: Optional[float] = None, to_y: Optional[float] = None,
                 text: Optional[str] = None, key: Optional[str] = None, app: Optional[str] = None,
                 dx: Optional[float] = None, dy: Optional[float] = None, duration_ms: Optional[int] = None,
-                ocr: bool = False, image: bool = True, previous_hash: Optional[str] = None) -> Any:
+                ocr: bool = False, image: bool = True, previous_hash: Optional[str] = None,
+                region: Optional[Any] = None, texts: Optional[List[str]] = None) -> Any:
         return _log(audit_logger, "iphone", lambda: iphone.run(
             action, steps=steps, x=x, y=y, to_x=to_x, to_y=to_y, text=text, key=key, app=app, dx=dx, dy=dy,
-            duration_ms=duration_ms, ocr=ocr, image=image, previous_hash=previous_hash))
+            duration_ms=duration_ms, ocr=ocr, image=image, previous_hash=previous_hash, region=region, texts=texts))
 
     @mcp.tool(
         name="list_agents",

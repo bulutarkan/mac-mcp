@@ -35,7 +35,8 @@ READ_ACTIONS = frozenset({"status", "see", "read", "find"})
 INPUT_ACTIONS = IPHONE_INPUT_ACTIONS
 # Step types of action=act (one call, one moment in front, the screen after all of them).
 STEP_TYPES = frozenset({"tap", "tap_text", "double_tap", "long_press", "swipe", "scroll", "type", "key", "home",
-                        "app_switcher", "spotlight", "open_app", "wait", "wait_for_text"})
+                        "app_switcher", "spotlight", "open_app", "wait", "wait_for_text", "expect_text"})
+REGION_BANDS = ("header", "top", "middle", "bottom", "footer")
 MAX_STEPS = 40
 ACTIONS = READ_ACTIONS | INPUT_ACTIONS
 
@@ -141,6 +142,19 @@ def _number(value: Any) -> bool:
         return False
 
 
+def check_region(value: Any, where: str = "region") -> Any:
+    """A part of the screen: a band name, or {top, bottom, left, right} in phone points."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in REGION_BANDS:
+        return value.strip().lower()
+    if isinstance(value, dict) and value and set(value) <= {"top", "bottom", "left", "right"} \
+            and all(_number(item) for item in value.values()):
+        return {key: float(item) for key, item in value.items()}
+    raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"{where} is one of {', '.join(REGION_BANDS)}, or "
+                      "{top, bottom, left, right} in phone points.")
+
+
 def check_steps(steps: Any) -> List[Dict[str, Any]]:
     """Refuses a batch before anything reaches the iPhone when a step is malformed."""
     if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_STEPS:
@@ -162,7 +176,10 @@ def check_steps(steps: Any) -> List[Dict[str, Any]]:
         for name in ("x", "y", "to_x", "to_y", "dx", "dy", "duration_ms", "ms", "timeout_ms", "settle_ms", "index"):
             if name in step and not _number(step[name]):
                 raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index}: {name} must be a number.")
-        wanted = {"tap_text": "text", "wait_for_text": "text", "type": "text", "key": "key", "open_app": "app"}.get(kind)
+        if "region" in step:
+            step["region"] = check_region(step["region"], f"Step {index}: region")
+        wanted = {"tap_text": "text", "wait_for_text": "text", "expect_text": "text", "type": "text", "key": "key",
+                  "open_app": "app"}.get(kind)
         if wanted and not (isinstance(step.get(wanted), str) and step[wanted].strip()):
             raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index} ({kind}) needs {wanted}.")
         if kind == "type" and "\n" in step["text"]:
@@ -184,7 +201,7 @@ def _result(payload: Dict[str, Any], access: Dict[str, Any]) -> Any:
 def run(action: str = "see", *, steps: Any = None, x: Any = None, y: Any = None, to_x: Any = None,
         to_y: Any = None, text: Optional[str] = None, key: Optional[str] = None, app: Optional[str] = None,
         dx: Any = None, dy: Any = None, duration_ms: Any = None, ocr: bool = False, image: bool = True,
-        previous_hash: Optional[str] = None) -> Any:
+        previous_hash: Optional[str] = None, region: Any = None, texts: Optional[List[str]] = None) -> Any:
     verb = str(action or "see").strip().lower().replace("-", "_")
     if steps is not None and verb == "see":
         verb = "act"
@@ -208,26 +225,31 @@ def run(action: str = "see", *, steps: Any = None, x: Any = None, y: Any = None,
         elif verb in INPUT_ACTIONS and verb != "connect":
             batch = check_steps([_step(verb, x=x, y=y, to_x=to_x, to_y=to_y, text=text, key=key, app=app, dx=dx,
                                        dy=dy, duration_ms=duration_ms)])
-        if verb == "find" and not (text and text.strip()):
-            raise IPhoneError("IPHONE_ARGUMENT_INVALID", "action=find needs text to look for on the screen.")
+        wanted = [item for item in (texts or ([text] if text else [])) if isinstance(item, str) and item.strip()]
+        if verb == "find" and not wanted:
+            raise IPhoneError("IPHONE_ARGUMENT_INVALID", "action=find needs text (or texts) to look for on the screen.")
+        if len(wanted) > 20:
+            raise IPhoneError("IPHONE_ARGUMENT_INVALID", "find looks for up to 20 texts at once.")
+        area = check_region(region)
+        area_args = ["--region", area if isinstance(area, str) else json.dumps(area)] if area is not None else []
         privacy_policy.check_app(MIRROR_APP, MIRROR_BUNDLE_ID)
         if screen_lock.is_screen_locked():
             raise IPhoneError("MAC_SCREEN_LOCKED", "This Mac's screen is locked, so iPhone Mirroring cannot be seen "
                               "or used until it is unlocked.")
         if batch is not None:
             payload = _run(["act"], timeout_s=30.0 + 8.0 * len(batch),
-                           stdin=json.dumps({"steps": batch, "image": bool(image), "ocr": bool(ocr)}))
+                           stdin=json.dumps({"steps": batch, "image": bool(image), "ocr": bool(ocr), "region": area}))
         elif verb == "connect":
             payload = _run(["connect", "--image", "1" if image else "0"] + (["--ocr", "1"] if ocr else []), timeout_s=60.0)
         elif verb == "find":
-            payload = _run(["find", str(text)])
+            payload = _run(["find", "--texts", json.dumps(wanted)] + area_args)
         else:
             args = [verb]
             if verb == "see" and previous_hash:
                 args += ["--previous", str(previous_hash)]
             if verb == "see" and ocr:
                 args += ["--ocr", "1"]
-            payload = _run(args)
+            payload = _run(args + area_args)
         if not payload.get("ok"):
             message = str(payload.pop("error", "") or "The iPhone helper refused that.")
             if payload.get("image_base64"):  # a batch that stopped part way still shows where it stopped

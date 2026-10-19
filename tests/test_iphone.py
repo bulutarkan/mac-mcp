@@ -125,6 +125,26 @@ class ActionTests(IPhoneCase):
         self.assertIn("Step 2 failed", body["message"])
         self.assertTrue(picture.data)
 
+    def test_reading_part_of_the_screen_and_several_texts_at_once(self) -> None:
+        self.answer = {"ok": True, "matches": {}}
+        iphone.run("read", region="footer")
+        iphone.run("find", texts=["Ozan", "Send"], region={"top": 600})
+        iphone.run("act", steps=[{"type": "tap_text", "text": "Ayşe", "region": {"top": 120}},
+                                 {"type": "expect_text", "text": "Ayşe", "region": "header"},
+                                 {"type": "expect_text", "text": "Error", "absent": True}], ocr=True, region="bottom")
+        self.assertEqual(["read", "--region", "footer"], self.calls[0])
+        self.assertEqual(["find", "--texts", '["Ozan", "Send"]', "--region", '{"top": 600.0}'], self.calls[1])
+        batch = self.calls[2][1]
+        self.assertEqual(({"top": 120.0}, "header", "bottom"), (batch["steps"][0]["region"], batch["steps"][1]["region"], batch["region"]))
+
+    def test_regions_are_checked_before_anything_runs(self) -> None:
+        for bad in ("left half", {"middle": 3}, {"top": "x"}, ["top"]):
+            self.assertEqual("iphone_argument_invalid", iphone.run("read", region=bad)["error"], bad)
+            self.assertEqual("iphone_argument_invalid", iphone.run(
+                "act", steps=[{"type": "expect_text", "text": "a", "region": bad}])["error"], bad)
+        self.assertEqual("iphone_argument_invalid", iphone.run("act", steps=[{"type": "expect_text"}])["error"])
+        self.assertEqual([], self.calls)
+
     def test_missing_or_bad_arguments_never_reach_the_iphone(self) -> None:
         for action, extra in (("tap", {"x": 5}), ("swipe", {"x": 1, "y": 1}), ("type", {}), ("key", {}),
                               ("open_app", {}), ("tap", {"x": "left", "y": 2}), ("wipe", {}), ("find", {}),
@@ -227,6 +247,10 @@ class HelperSourceTests(unittest.TestCase):
         opening = HELPER[HELPER.index('case "open_app":'):HELPER.index('case "wait":')]
         self.assertIn("waitChange(", opening)
         self.assertNotIn("usleep(650_000)", opening)
+
+    def test_text_is_read_only_where_asked(self) -> None:
+        self.assertIn("request.regionOfInterest = interest", HELPER)
+        self.assertIn('case "expect_text":', HELPER)
 
     def test_input_is_bounded_to_the_phone_screen_and_one_at_a_time(self) -> None:
         self.assertIn("IPHONE_POINT_OUTSIDE_SCREEN", HELPER)

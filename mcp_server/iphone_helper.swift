@@ -314,21 +314,48 @@ func hex(_ value: UInt64) -> String { String(format: "%016llx", value) }
 
 // MARK: Reading text
 
-func recognize(_ image: CGImage, phoneWidth: Double, fast: Bool = false) -> [[String: Any]] {
+/// A part of the screen in phone points: {top, bottom, left, right} (any may be left out), or a band by name.
+/// Reading only that part is faster, and returns fewer words for the agent to pay for.
+func region(_ spec: Any?, phoneHeight: Double) -> CGRect? {
+    if let name = spec as? String {
+        let bands: [String: (Double, Double)] = ["header": (0, 0.2), "top": (0, 0.4), "middle": (0.3, 0.7),
+                                                 "bottom": (0.6, 1), "footer": (0.82, 1)]
+        guard let (from, to) = bands[name.lowercased()] else { return nil }
+        return CGRect(x: 0, y: from * phoneHeight, width: outputWidth, height: (to - from) * phoneHeight)
+    }
+    guard let box = spec as? [String: Any] else { return nil }
+    func side(_ key: String, _ fallback: Double) -> Double {
+        (box[key] as? NSNumber)?.doubleValue ?? (box[key] as? String).flatMap(Double.init) ?? fallback
+    }
+    let top = max(0, side("top", 0)), bottom = min(phoneHeight, side("bottom", phoneHeight))
+    let left = max(0, side("left", 0)), right = min(outputWidth, side("right", outputWidth))
+    guard bottom > top + 4, right > left + 4 else { return nil }
+    return CGRect(x: left, y: top, width: right - left, height: bottom - top)
+}
+
+/// The screen's text with where each piece is (its center, in phone points), top to bottom.
+func recognize(_ image: CGImage, phoneWidth: Double, fast: Bool = false, within area: CGRect? = nil) -> [[String: Any]] {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = fast ? .fast : .accurate
     request.usesLanguageCorrection = !fast
     request.recognitionLanguages = ["tr-TR", "en-US"]
-    try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
     let phoneHeight = phoneWidth * Double(image.height) / Double(image.width)
+    // Vision's region of interest is normalized with a bottom-left origin.
+    var interest = CGRect(x: 0, y: 0, width: 1, height: 1)
+    if let area {
+        interest = CGRect(x: area.minX / phoneWidth, y: 1 - area.maxY / phoneHeight,
+                          width: area.width / phoneWidth, height: area.height / phoneHeight)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        request.regionOfInterest = interest
+    }
+    try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
     var rows: [[String: Any]] = []
     for observation in request.results ?? [] {
         guard let candidate = observation.topCandidates(1).first else { continue }
-        let box = observation.boundingBox  // normalized, bottom-left origin
-        let x = box.midX * phoneWidth, y = (1 - box.midY) * phoneHeight
-        rows.append(["text": candidate.string, "x": Int(x.rounded()), "y": Int(y.rounded()),
-                     "w": Int((box.width * phoneWidth).rounded()), "h": Int((box.height * phoneHeight).rounded()),
-                     "confidence": Double(String(format: "%.2f", candidate.confidence)) ?? 0])
+        let box = observation.boundingBox  // normalized within the region of interest
+        let midX = interest.minX + box.midX * interest.width, midY = interest.minY + box.midY * interest.height
+        rows.append(["text": candidate.string, "x": Int((midX * phoneWidth).rounded()),
+                     "y": Int(((1 - midY) * phoneHeight).rounded())])
     }
     return rows.sorted { (($0["y"] as? Int ?? 0), ($0["x"] as? Int ?? 0)) < (($1["y"] as? Int ?? 0), ($1["x"] as? Int ?? 0)) }
 }
@@ -338,7 +365,7 @@ func fold(_ text: String) -> String {
         .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func look(_ mirror: Mirror, image wantImage: Bool, ocr wantText: Bool, previous: String?) -> [String: Any] {
+func look(_ mirror: Mirror, image wantImage: Bool, ocr wantText: Bool, previous: String?, area: Any? = nil) -> [String: Any] {
     let shot = capture(mirror)
     let phone = scaled(shot.image, width: outputWidth)
     let hash = hex(differenceHash(shot.image))
@@ -353,8 +380,20 @@ func look(_ mirror: Mirror, image wantImage: Bool, ocr wantText: Bool, previous:
         return out
     }
     if wantImage { out["image_base64"] = jpeg(phone, quality: number("quality") ?? 0.6).base64EncodedString() }
-    if wantText { out["text"] = recognize(shot.image, phoneWidth: outputWidth) }
+    if wantText {
+        let phoneHeight = Double(phone.height)
+        out["text"] = recognize(shot.image, phoneWidth: outputWidth, within: region(area, phoneHeight: phoneHeight))
+    }
     return out
+}
+
+func phoneHeight(_ shot: Shot) -> Double { outputWidth * shot.screen.height / shot.screen.width }
+
+/// Options carry a region as JSON (--region '{"top":700}') or a band name (--region footer).
+func optionRegion() -> Any? {
+    guard let raw = options["region"] else { return nil }
+    if let data = raw.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) { return object }
+    return raw
 }
 
 // MARK: Input
@@ -564,9 +603,10 @@ func waitStill(_ mirror: Mirror, limit: Double, minimum: Double = 0) -> Shot {
     return shot
 }
 
-func findText(_ shot: Shot, _ wanted: String, index: Int, exact: Bool) -> [String: Any]? {
+func findText(_ shot: Shot, _ wanted: String, index: Int, exact: Bool, area: Any? = nil) -> [String: Any]? {
     let target = fold(wanted)
-    let rows = recognize(shot.image, phoneWidth: outputWidth).filter {
+    let within = region(area, phoneHeight: phoneHeight(shot))
+    let rows = recognize(shot.image, phoneWidth: outputWidth, within: within).filter {
         let text = fold($0["text"] as? String ?? "")
         return exact ? text == target : text.contains(target)
     }
@@ -612,9 +652,10 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
             throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "tap_text needs text.")
         }
         let index = Int(value(step, "index") ?? 0)
-        guard let match = findText(shot, wanted, index: index, exact: step["exact"] as? Bool ?? false),
+        guard let match = findText(shot, wanted, index: index, exact: step["exact"] as? Bool ?? false, area: step["region"]),
               let x = match["x"] as? Int, let y = match["y"] as? Int else {
-            throw StepError(code: "IPHONE_TEXT_NOT_FOUND", message: "“\(wanted)” is not on the iPhone screen.")
+            throw StepError(code: "IPHONE_TEXT_NOT_FOUND",
+                            message: "“\(wanted)” is not on the iPhone screen\(step["region"] == nil ? "" : " in that region").")
         }
         tap(try desktopPoint(mirror, shot, x: Double(x), y: Double(y)))
         done["tapped"] = ["text": match["text"] ?? wanted, "x": x, "y": y]
@@ -685,7 +726,8 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
         let target = fold(wanted)
         repeat {
             shot = capture(mirror)
-            if let match = recognize(shot.image, phoneWidth: outputWidth, fast: true)
+            if let match = recognize(shot.image, phoneWidth: outputWidth, fast: true,
+                                     within: region(step["region"], phoneHeight: phoneHeight(shot)))
                 .first(where: { fold($0["text"] as? String ?? "").contains(target) }) {
                 done["found"] = ["text": match["text"] ?? wanted, "x": match["x"] ?? 0, "y": match["y"] ?? 0]
                 return done
@@ -693,6 +735,22 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
             usleep(250_000)
         } while Date() < deadline
         throw StepError(code: "IPHONE_TEXT_NOT_FOUND", message: "“\(wanted)” did not show up on the iPhone.")
+    case "expect_text":
+        // A check inside a job: the screen must (or, with absent, must not) show this text right now, or the job stops
+        // before its next step, e.g. before sending a message to the wrong chat.
+        guard let wanted = step["text"] as? String, !wanted.isEmpty else {
+            throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "expect_text needs text.")
+        }
+        let found = findText(shot, wanted, index: 0, exact: step["exact"] as? Bool ?? false, area: step["region"])
+        let absent = step["absent"] as? Bool ?? false
+        if absent, let found {
+            throw StepError(code: "IPHONE_EXPECTATION_FAILED", message: "“\(found["text"] ?? wanted)” is on the screen, so the job stopped here.")
+        }
+        if !absent && found == nil {
+            throw StepError(code: "IPHONE_EXPECTATION_FAILED", message: "“\(wanted)” is not on the screen\(step["region"] == nil ? "" : " in that region"), so the job stopped here.")
+        }
+        if let found { done["found"] = found }
+        return done
     default:
         throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "Unknown step type “\(kind)”.")
     }
@@ -735,15 +793,25 @@ case "status":
 
 case "see", "read":
     let mirror = requireMirror()
-    emit(look(mirror, image: command == "see", ocr: command == "read" || options["ocr"] == "1", previous: options["previous"]))
+    emit(look(mirror, image: command == "see", ocr: command == "read" || options["ocr"] == "1", previous: options["previous"],
+              area: optionRegion()))
 
 case "find":
+    // Several texts at once: --texts '["Ozan","Send"]', or one as the argument.
     let mirror = requireMirror()
-    let wanted = fold(positional.dropFirst().joined(separator: " "))
+    var wanted: [String] = []
+    if let raw = options["texts"], let data = raw.data(using: .utf8), let list = try? JSONSerialization.jsonObject(with: data) as? [String] {
+        wanted = list
+    } else {
+        wanted = [positional.dropFirst().joined(separator: " ")]
+    }
+    wanted = wanted.filter { !fold($0).isEmpty }
     guard !wanted.isEmpty else { fail("IPHONE_ARGUMENT_INVALID", "Say which text to find.") }
     let shot = capture(mirror)
-    let rows = recognize(shot.image, phoneWidth: outputWidth).filter { fold($0["text"] as? String ?? "").contains(wanted) }
-    emit(["ok": true, "matches": rows])
+    let rows = recognize(shot.image, phoneWidth: outputWidth, within: region(optionRegion(), phoneHeight: phoneHeight(shot)))
+    var matches: [String: Any] = [:]
+    for text in wanted { matches[text] = rows.filter { fold($0["text"] as? String ?? "").contains(fold(text)) } }
+    emit(wanted.count == 1 ? ["ok": true, "matches": matches[wanted[0]] ?? []] : ["ok": true, "matches": matches])
 
 case "open-mirroring":
     if let app = NSRunningApplication.runningApplications(withBundleIdentifier: mirrorBundleID).first {
@@ -810,7 +878,8 @@ case "act":
         }
     }
     putBack(forward)
-    var out = look(mirror, image: body["image"] as? Bool ?? true, ocr: body["ocr"] as? Bool ?? false, previous: nil)
+    var out = look(mirror, image: body["image"] as? Bool ?? true, ocr: body["ocr"] as? Bool ?? false, previous: nil,
+                   area: body["region"])
     out["steps"] = results
     out["done"] = results.count
     out["changed"] = (out["hash"] as? String) != hex(first)
