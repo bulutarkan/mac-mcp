@@ -607,5 +607,14 @@ class ParentTypedResultTests(unittest.TestCase):
         self.assertNotIn("RAW_PROVIDER_TEXT_SHOULD_NOT_BE_PARENT_CONTEXT", json.dumps(row))
 
 
+class ResultContractInstructionTests(unittest.TestCase):
+    def test_summary_carries_the_answer_in_its_language(self) -> None:
+        from mcp_server.agent_results import result_contract_instruction
+
+        text = result_contract_instruction()
+        self.assertIn("put your actual answer or result there, not a description of what you did", text)
+        self.assertIn("in the language your answer uses", text)
+
+
 if __name__ == "__main__":
     unittest.main()

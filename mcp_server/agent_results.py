@@ -68,7 +68,8 @@ def result_contract_instruction(*, detailed: bool = False, evidence_required: bo
         "Return a provider-independent typed handoff. Your final response MUST end with the marker "
         f"{RESULT_ENVELOPE_MARKER} followed by one JSON object (optionally in a json code fence). "
         "The JSON schema is: "
-        '{"schema_version":1,"outcome":"success|partial_failure|failure","summary":"...",'
+        '{"schema_version":1,"outcome":"success|partial_failure|failure",'
+        '"summary":"<your answer itself, in the same language as your answer above>",'
         '"claims":[{"id":"c1","statement":"...","key":"optional-stable-key","value":"optional-value"}],'
         '"evidence":[{"id":"e1","ref":"stable-reference","summary":"...","claim_ids":["c1"]}],'
         '"artifacts":[{"id":"a1","ref":"path-or-uri","description":"...","sha256":"optional"}],'
@@ -77,7 +78,9 @@ def result_contract_instruction(*, detailed: bool = False, evidence_required: bo
         '"provenance":{},'
         '"quality_gate":{"decision":"pass|fail","feedback":"optional"},'
         '"resolutions":[{"key":"conflicting-claim-key","accepted_value":"...","reason":"..."}]'
-        "}. Omit quality_gate and resolutions unless you are reviewing other tasks; a reviewer settles "
+        "}. summary is what the agent that started you reads first: put your actual answer or result there, not a "
+        "description of what you did, written in the language your answer uses (the task, or a later update to "
+        "it, may ask for one). Omit quality_gate and resolutions unless you are reviewing other tasks; a reviewer settles "
         "conflicting claim values with resolutions. outcome=success means no errors. "
         "Do not put raw logs, chain-of-thought, secrets, tokens, cookies, or full tool transcripts in the envelope. "
         + detail
