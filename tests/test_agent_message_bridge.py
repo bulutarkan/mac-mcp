@@ -95,12 +95,29 @@ class ProviderSetupTests(Fixture):
 
     def test_opencode_gets_a_plugin_in_its_private_config(self) -> None:
         config = self.dir / "cfg" / "opencode"
-        bridge = bridge_mod.prepare("agt_o", self.meta("opencode"), {}, hook_dir=self.dir / "hook", opencode_config=config)
-        plugin = (config / "plugin" / "mac-mcp-team-messages.js").read_text()
+        config.mkdir(parents=True)
+        (config / "opencode.jsonc").write_text(json.dumps({"mcp": {"mac-mcp": {"type": "remote"}}}))
+        bridge = bridge_mod.prepare("agt_o", self.meta("opencode", access_mode="full"), {}, hook_dir=self.dir / "hook",
+                                    opencode_config=config)
+        plugin_path = self.dir / "hook" / "mac-mcp-team-messages.js"
+        written = json.loads((config / "opencode.jsonc").read_text())
+        self.assertEqual([plugin_path.as_uri()], written["plugin"])
+        self.assertIn("mac-mcp", written["mcp"])  # the rest of the agent's config stays
+        plugin = plugin_path.read_text()
         self.assertEqual("hook", bridge.mode)
         self.assertIn('"tool.execute.after"', plugin)
         self.assertIn("format=text", plugin)
         self.assertIn("catch (_error) {}", plugin)  # a failed fetch never breaks the tool
+
+    def test_restricted_opencode_keeps_pure_mode_and_uses_the_inbox(self) -> None:
+        config = self.dir / "cfg" / "opencode"
+        bridge = bridge_mod.prepare("agt_o", self.meta("opencode"), {}, hook_dir=self.dir / "hook", opencode_config=config)
+        self.assertEqual(("inbox_only", "opencode_pure_mode_loads_no_plugins"), (bridge.mode, bridge.reason))
+        self.assertFalse(config.exists())
+        command = tools_agents._build_provider_command(
+            {"provider": "opencode", "binary": "opencode", "access_mode": "read_only", "cwd": str(self.dir)}, "p",
+            self.dir / "r.txt")
+        self.assertIn("--pure", command)
 
     def test_unproven_providers_and_agents_outside_teams(self) -> None:
         bridge = bridge_mod.prepare("agt_g", self.meta("grok"), {}, hook_dir=self.dir / "hook")

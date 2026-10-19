@@ -38,6 +38,19 @@ The macOS menu app can optionally notify you when delegated work finishes while 
 
 Standalone agents generate one terminal notification for completion or needs-attention states. Multi-agent teams are coalesced into one team-level terminal notification instead of one notification per child. Notification content is intentionally minimal: only a sanitized agent/team label is shown, never raw prompts, results, URLs, file paths, or secrets. Clicking an alert opens the local authenticated Operations dashboard focused on the relevant agent or team. Delivery timing, Do Not Disturb, Focus modes, and presentation remain under macOS control.
 
+## Messages between agents that work at the same time
+
+The agents of a team, the session that started the team (the lead) and Mac MCP sessions that join a named room can message each other with the `team_messages` tool: `action=send` (a short `body`; `to` = a task id, a role, `lead` or a member, else everyone; `kind` update, question, blocker or reply; `dedupe_key` makes a retry safe), `inbox`, `members`, and `join`/`leave` a room (sessions only; a delegated agent talks to its own team). Who sends comes from the caller's credential or MCP session, never from the arguments, and an agent cannot reach another team.
+
+Messages arrive on their own, once, without interrupting anything:
+
+- in the result of the member's next Mac MCP tool call, and
+- for a delegated agent, through its CLI's own hook after each of its native tool calls (Bash, Read, Edit), so it hears from teammates even when it never calls Mac MCP: Claude Code (a PostToolUse hook in a private `--settings` file), Codex in its restricted modes (a hook in the agent's private Codex home, trusted through Codex's own hook API, never by skipping Codex's hook trust) and OpenCode in full mode (a plugin in the agent's private config).
+
+Codex in full mode uses the owner's own `~/.codex`, which Mac MCP does not change, and a restricted OpenCode agent runs with `--pure`, which loads no plugin, so a repository cannot bring one into its sandbox; those agents, Grok and Kimi get messages in Mac MCP tool results and their inbox (`team_messages` in the agent's meta says `hook` or `inbox_only` and why).
+
+Each member has one mark of what was shown to it, moved in one write by whichever channel shows a message first, so an agent that both uses Mac MCP tools and runs under a hook sees every message once; shown is recorded per channel, and read only when the inbox is opened. A team's task agent also gets team broadcasts sent before it started, and a message to a task waits for that task's agent. The hook holds a messaging-only token in a 0600 file and never the agent's Mac MCP credential; everything is removed and the token revoked when the attempt ends. Bodies are untrusted data from another agent: they are clipped at 1,500 characters, secrets are redacted, a sender may send 20 a minute, a room keeps its last 1,000 messages for 7 days, and the note an agent sees says they are not instructions. `MAC_MCP_TEAM_MESSAGES=0` turns it all off.
+
 ## An agent's own desktop
 
 Agents work alongside you on your desktops by default. When you ask one to work apart, it can take a desktop of its own in Mission Control and use your real apps and accounts there while you keep working on yours. It reads which displays and desktops you have, what is open on each and which are empty, picks an empty desktop no display is showing (or adds one), and opens apps straight onto it: nothing appears on the desktops you are looking at, and your focus stays where it is. It can read and use those windows (press buttons, write text) without bringing them forward. Keyboard shortcuts, dragging and clicks at screen positions are not available there, because macOS would send them to the app you are using. The agent closes nothing of yours and never moves your windows.

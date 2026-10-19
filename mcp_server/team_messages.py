@@ -43,6 +43,7 @@ ROOM_HISTORY = 1000
 RETENTION_S = 7 * 24 * 3600
 SEND_RATE_PER_MIN = 20
 ROOM_NAME_LIMIT = 40
+ACTIVE_TTL_S = 2.0
 KINDS = ("update", "question", "blocker", "reply")
 CHANNELS = ("mcp_result", "hook", "inbox")
 _HOOK_TOKEN_PREFIX = "mcpmsg_"
@@ -104,8 +105,10 @@ class Store:
         self._path = path
         self._lock = threading.RLock()
         self._ready = False
-        # Members in at least one room, so a tool call from anyone else skips the database.
+        # Members in at least one room, so a tool call from anyone else skips the database. Agents
+        # join from worker processes too, so the set is read again after ACTIVE_TTL_S.
         self._active: Optional[set] = None
+        self._active_at = 0.0
 
     @property
     def path(self) -> Path:
@@ -130,13 +133,15 @@ class Store:
 
     # -- rooms and members ---------------------------------------------------
     def join(self, room_id: str, member_id: str, *, label: str, kind: str, task_id: Optional[str] = None,
-             role: Optional[str] = None) -> Dict[str, Any]:
+             role: Optional[str] = None, from_start: bool = False) -> Dict[str, Any]:
+        """Add a member. from_start: a team task's agent also gets broadcasts sent before it started
+        (the lead often writes to the team right after starting it); others get them from now on."""
         now = time.time()
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("INSERT OR IGNORE INTO rooms (room_id, created_at) VALUES (?, ?)", (room_id, now))
-            joined_seq = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM messages WHERE room_id = ?",
-                                      (room_id,)).fetchone()[0]
+            joined_seq = 0 if from_start else conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE room_id = ?", (room_id,)).fetchone()[0]
             existing = conn.execute("SELECT left_at FROM members WHERE room_id = ? AND member_id = ?",
                                     (room_id, member_id)).fetchone()
             if existing is None:
@@ -175,11 +180,12 @@ class Store:
 
     def is_member_anywhere(self, member_id: str) -> bool:
         with self._lock:
-            if self._active is None:
+            if self._active is None or time.monotonic() - self._active_at > ACTIVE_TTL_S:
                 try:
                     with closing(self._connect()) as conn:
                         rows = conn.execute("SELECT DISTINCT member_id FROM members WHERE left_at IS NULL")
                         self._active = {row[0] for row in rows}
+                        self._active_at = time.monotonic()
                 except sqlite3.Error:
                     return False
             return member_id in self._active

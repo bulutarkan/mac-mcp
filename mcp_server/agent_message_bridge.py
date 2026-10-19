@@ -12,8 +12,10 @@ Proven per provider with a real model (the note was repeated back):
   (hooks/list, config/batchWrite), never with --dangerously-bypass-hook-trust, which would also
   trust hooks a repository brings. In full mode Codex uses the owner's own ~/.codex, which Mac MCP
   does not change, so that agent gets messages only in its Mac MCP tool results.
-- OpenCode: a plugin in the agent's private config folder; tool.execute.after appends the note
-  to the tool output the model reads.
+- OpenCode in full mode: a plugin named by path in the agent's private opencode.jsonc;
+  tool.execute.after appends the note to the tool output the model reads. A restricted OpenCode
+  agent runs with --pure, which loads no plugin at all (so a repository cannot bring one into the
+  sandbox); it stays inbox-only rather than lose that protection.
 Other providers (Grok, Kimi) are "inbox_only" until their hook is proven: they see messages in
 Mac MCP tool results and with team_messages action=inbox.
 
@@ -110,13 +112,16 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
     task_id = str(meta.get("team_task_id") or "").strip() or None
     role = str(meta.get("role") or "").strip() or None
     label = " ".join(part for part in (f"task {task_id}" if task_id else agent_id, f"({role})" if role else "") if part)
-    store.join(room_id, member_id, label=label, kind="agent", task_id=task_id, role=role)
+    store.join(room_id, member_id, label=label, kind="agent", task_id=task_id, role=role, from_start=True)
     bridge = Bridge(member_id=member_id, room_id=room_id, mode="inbox_only")
     if provider not in PROVEN_PROVIDERS:
         bridge.reason = "provider_hook_unverified"
         return bridge
     if provider == "codex" and access_mode == "full":
         bridge.reason = "codex_full_mode_uses_owner_config"
+        return bridge
+    if provider == "opencode" and access_mode != "full":
+        bridge.reason = "opencode_pure_mode_loads_no_plugins"
         return bridge
 
     ttl = float(meta.get("timeout_s") or 3600) + 600
@@ -150,9 +155,14 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
                 return bridge
         elif provider == "opencode":
             assert opencode_config is not None
-            plugin_dir = _private_dir(opencode_config / "plugin")
-            plugin = _private_file(plugin_dir / "mac-mcp-team-messages.js", _opencode_plugin(headers, hook_url(meta, "text")))
+            plugin = _private_file(folder / "mac-mcp-team-messages.js", _opencode_plugin(headers, hook_url(meta, "text")))
             bridge.files.append(plugin)
+            # Named in the agent's own config by path: a plugin/ folder needs a dependency install that the
+            # agent's sandbox refuses, and then OpenCode does not load it.
+            config_path = opencode_config / "opencode.jsonc"
+            config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+            config["plugin"] = [*(config.get("plugin") or []), plugin.as_uri()]
+            _private_file(config_path, json.dumps(config, ensure_ascii=False, indent=2))
         bridge.mode = "hook"
         return bridge
     except Exception as exc:  # a broken hook must never stop the agent; it falls back to the inbox

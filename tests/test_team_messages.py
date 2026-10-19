@@ -54,6 +54,15 @@ class SendAndClaimTests(StoreFixture):
         self.store.join(ROOM, late.member_id, label=late.label, kind="agent", task_id="c")
         self.assertEqual(["for task c"], [m["body"] for m in self.store.claim(late.member_id, channel="hook")])
 
+    def test_a_task_agent_gets_team_broadcasts_sent_before_it_started(self) -> None:
+        self.store.send(ROOM, LEAD, "lead: use the v2 schema")
+        late = tm.Caller(member_id="agent:agt_4", label="task c", agent_id="agt_4", team_id="team_x")
+        self.store.join(ROOM, late.member_id, label=late.label, kind="agent", task_id="c", from_start=True)
+        self.assertEqual(["lead: use the v2 schema"], [m["body"] for m in self.store.claim(late.member_id, channel="hook")])
+        session = tm.Caller(member_id="session:other", label="other")
+        self.store.join(ROOM, session.member_id, label=session.label, kind="session")
+        self.assertEqual([], self.store.claim(session.member_id, channel="mcp_result"))
+
     def test_idempotent_send_returns_the_first_message(self) -> None:
         first = self.store.send(ROOM, A1, "once", idempotency_key="k-123456")
         again = self.store.send(ROOM, A1, "once", idempotency_key="k-123456")
@@ -124,6 +133,15 @@ class InboxAndDeliveryTests(StoreFixture):
         self.store.send(ROOM, A2, "private to lead", to="lead")
         bodies = [m["body"] for m in self.store.inbox(A1.member_id)["messages"]]
         self.assertEqual(["mine"], bodies)
+
+
+class ActiveMemberTests(StoreFixture):
+    def test_a_join_from_another_process_is_seen_within_the_ttl(self) -> None:
+        self.assertFalse(self.store.is_member_anywhere("agent:agt_other"))
+        other_process = tm.Store(self.store.path)  # an agent worker writes through its own Store
+        other_process.join(ROOM, "agent:agt_other", label="task c", kind="agent", task_id="c")
+        with patch.object(tm, "ACTIVE_TTL_S", 0.0):
+            self.assertTrue(self.store.is_member_anywhere("agent:agt_other"))
 
 
 class HookTokenTests(StoreFixture):
