@@ -238,6 +238,24 @@ def chats() -> Dict[int, Dict[str, Any]]:
     return out
 
 
+def list_chats(query: Optional[str], *, limit: int) -> Dict[str, Any]:
+    """Conversations, most recent first, for find_chats while Messages is closed. Handles, not contact names."""
+    known = sorted(chats().values(), key=lambda chat: -int(chat["last_date"] or 0))
+    needle = " ".join(str(query or "").split())
+    folded, digits = _fold(needle), _digits(needle)
+    rows = [chat for chat in known if not needle or folded in _fold(chat["name"])
+            or any(folded in _fold(handle) for handle in chat["handles"])
+            or (len(digits) >= 6 and any(_digits(handle).endswith(digits[-9:]) for handle in chat["handles"]))]
+    return {
+        "ok": True, "count": len(rows[:limit]), "matched": len(rows), "truncated": len(rows) > limit,
+        "chats": [{"chat_id": chat["chat_id"], "name": chat["name"], "participants": [], "handles": chat["handles"],
+                   "last_message": _when(chat["last_date"])} for chat in rows[:limit]],
+        "source": "messages_database",
+        "note": "Messages is closed, so chats are listed from its database with numbers and addresses, not contact "
+                "names. Read one with read_messages (item_id = chat_id) or search with search_messages.",
+    }
+
+
 def _same_chat(chat: Dict[str, Any], wanted: str) -> bool:
     """find_chats ids (from Messages scripting) and chat.db guids name a chat by its identifier."""
     wanted = wanted.strip()

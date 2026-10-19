@@ -24,6 +24,8 @@ DEFAULTS = {
     "MAC_MCP_DASHBOARD_TOKEN_FILE": os.path.join(ROOT, "state", "dashboard-token"),
     "MAC_MCP_CLI_PATH": os.path.join(ROOT, "bin", "mac-mcp"),
     "MAC_MCP_SKIP_MENU_APP_INSTALL": "1",
+    # Never the owner's Messages: a test that wants the reader patches messages_reader itself.
+    "MAC_MCP_MESSAGES_READER": os.path.join(ROOT, "no-messages-reader.app"),
 }
 _KEEP = os.environ.get("MAC_MCP_TEST_AMBIENT_ENV") == "1"
 for _name, _value in DEFAULTS.items():

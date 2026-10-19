@@ -101,7 +101,7 @@ class MessagesAdapterTests(unittest.TestCase):
         self.assertEqual(["Ada Lovelace", "Charles Babbage"], team["participants"])
         self.assertEqual(["TikTok"], brand["handles"])
         self.assertEqual([], brand["participants"])
-        self.assertIn("does not expose message text", result["note"])
+        self.assertIn("read_messages", result["note"])
         self.assertNotIn("send", script.lower().replace("ascii", ""))
 
     def test_query_matches_name_person_or_handle_and_limit_bounds_the_list(self) -> None:
@@ -113,6 +113,7 @@ class MessagesAdapterTests(unittest.TestCase):
         self.assertTrue(limited["truncated"])
 
     def test_reading_never_launches_messages(self) -> None:
+        # Without Messages Reader access a closed Messages stays closed and says so.
         with patch.object(app_adapters, "_run", return_value=app_adapters._NOT_RUNNING) as run:
             result = mac_app(SETTINGS, app="Messages", action="find_chats")
         script = run.call_args.args[0]
@@ -120,6 +121,25 @@ class MessagesAdapterTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual("APP_NOT_RUNNING", result["reason_code"])
         self.assertFalse(result["retryable"])
+
+    def test_a_closed_messages_lists_chats_from_its_database(self) -> None:
+        from mcp_server import messages_reader
+
+        known = {
+            1: {"rowid": 1, "chat_id": "any;-;+905551112233", "identifier": "+905551112233", "name": "+905551112233",
+                "handles": ["+905551112233"], "service": "iMessage", "last_date": 100},
+            2: {"rowid": 2, "chat_id": "any;+;chat9", "identifier": "chat9", "name": "Aile",
+                "handles": ["+905551112233", "a@example.com"], "service": "iMessage", "last_date": 900},
+        }
+        with patch.object(app_adapters, "_run", return_value=app_adapters._NOT_RUNNING), \
+                patch.object(messages_reader, "chats", return_value=known):
+            listed = mac_app(SETTINGS, app="Messages", action="find_chats")
+            found = mac_app(SETTINGS, app="Messages", action="find_chats", query="0555 111 22 33", limit=1)
+        self.assertTrue(listed["ok"])
+        self.assertEqual("messages_database", listed["source"])
+        self.assertEqual(["Aile", "+905551112233"], [chat["name"] for chat in listed["chats"]])  # newest first
+        self.assertEqual([], listed["chats"][0]["participants"])
+        self.assertEqual((2, 1, True), (found["matched"], found["count"], found["truncated"]))
 
 
 class XcodeAdapterTests(unittest.TestCase):

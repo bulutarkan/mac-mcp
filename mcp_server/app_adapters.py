@@ -1892,7 +1892,14 @@ set AppleScript's text item delimiters to ""
 return outText'''
     raw = _run(script, timeout_s=timeout_s, code="MESSAGES_LIST_FAILED")
     if raw == _NOT_RUNNING:
-        raise _not_running("Messages", "use mac_observe on its window once it is open")
+        # Closed Messages is not opened: its database lists the chats when Messages Reader may read it.
+        from . import messages_reader, privacy_policy
+
+        try:
+            privacy_policy.check_app("Messages", "com.apple.MobileSMS")
+            return messages_reader.list_chats(query, limit=limit)
+        except (messages_reader.MessagesError, privacy_policy.PrivacyBlocked):
+            raise _not_running("Messages", "use mac_observe on its window once it is open") from None
     needle = " ".join(str(query or "").split()).lower()
     chats = []
     for row in _parse_records(raw, ("chat_id", "name", "participants", "handles")):
@@ -1907,7 +1914,7 @@ return outText'''
     return {
         "ok": True, "count": len(chats[:limit]), "matched": len(chats), "chats": chats[:limit],
         "truncated": len(chats) > limit,
-        "note": "Messages scripting does not expose message text; open the conversation and read it with mac_observe.",
+        "note": "Read a chat with read_messages (item_id = chat_id) or search with search_messages.",
     }
 
 
