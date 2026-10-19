@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 from concurrent.futures import Future
@@ -391,6 +392,26 @@ def _auth_for(server: ServerConfig) -> Tuple[Dict[str, str], Any]:
     return _CREDENTIALS(server)
 
 
+async def in_time(awaitable: Any, timeout: float) -> Any:
+    """asyncio.wait_for, but always in the calling task.
+
+    Before Python 3.12, wait_for runs the coroutine in a task of its own; the anyio scopes a session
+    opens there are then closed from the caller's exit stack, in another task, which anyio refuses
+    ("Attempted to exit cancel scope in a different task"). asyncio.timeout (3.11) and its backport
+    async_timeout (3.10) cancel this task at the deadline instead, opening no scope of their own.
+    """
+    if sys.version_info >= (3, 12):
+        return await asyncio.wait_for(awaitable, timeout)
+    if sys.version_info >= (3, 11):
+        deadline = asyncio.timeout(timeout)
+    else:  # pragma: no cover - Python 3.10 only
+        from async_timeout import timeout as backport
+
+        deadline = backport(timeout)
+    async with deadline:
+        return await awaitable
+
+
 async def _open_session(stack: contextlib.AsyncExitStack, server: ServerConfig,
                         message_handler: Optional[Callable[..., Any]] = None, *, log_name: Optional[str] = None,
                         auth: Any = None):
@@ -607,7 +628,7 @@ class Manager:
 
         try:
             async with contextlib.AsyncExitStack() as stack:
-                session, tools, server_info = await asyncio.wait_for(
+                session, tools, server_info = await in_time(
                     _open_session(stack, server, on_message), CONNECT_TIMEOUT_S,
                 )
                 connection.session, connection.tools, connection.server_info = session, tools, server_info
@@ -722,7 +743,7 @@ async def probe(server: ServerConfig, timeout: float = CONNECT_TIMEOUT_S) -> Dic
     try:
         async with contextlib.AsyncExitStack() as stack:
             # A test connection keeps its own log so it never truncates the live server's.
-            _, tools, server_info = await asyncio.wait_for(
+            _, tools, server_info = await in_time(
                 _open_session(stack, server, log_name=f"{server.name}.test"), timeout,
             )
     except BaseException as exc:

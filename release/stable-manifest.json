@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "af543366616423f653d71d217752ec4c39cf8c42",
+  "base_commit": "61c5e93c9399b6b112d974a884d4358ac3180166",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -97,8 +97,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "0ffd7998b81860afd38a4fb46124b7fcdb4a8850b2b5f9baaa72d0dd30baf2ac",
-      "size": 114889
+      "sha256": "3c62c19a17c6ebb6bff22d922fbcd1f42740b71ea12bab7ed46ddfb436b13018",
+      "size": 115240
     },
     {
       "mode": "100644",
@@ -823,8 +823,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/external_mcp.py",
-      "sha256": "e7799d68e8d04cd8ed3e046817947b19be019801bca88f111ba31e7951eb9b88",
-      "size": 38196
+      "sha256": "23cbf06322f619050bf7e451de2c3771ddf1540d57d8338b7b663796beb98635",
+      "size": 39084
     },
     {
       "mode": "100644",
@@ -931,8 +931,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/mcp_connectors.py",
-      "sha256": "e81e949f3b4590c32bd843d309d5c7f2dbbf83e11d87521404f4635a33e7dd52",
-      "size": 27419
+      "sha256": "a0bb311f4209bbbab2c28aebe0eb47703e0b920b95740d8de5999b9d8ad6d5af",
+      "size": 27423
     },
     {
       "mode": "100644",
@@ -1375,8 +1375,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_files.py",
-      "sha256": "7750b9cc5b09db08cfbd946b4c031d3a7e4b80f3ffd978d712745b9ffa14b316",
-      "size": 38799
+      "sha256": "012804be985c8d0629e49e6ec508978a0e3a4ecda25657a241c6351830843b3a",
+      "size": 39513
     },
     {
       "mode": "100644",
@@ -3325,8 +3325,8 @@
     {
       "mode": "100644",
       "path": "tests/test_hot_paths.py",
-      "sha256": "9087152b3fee1e184978c10621942aa4af1217f3fcc463c659f438e04e8bfbd0",
-      "size": 7289
+      "sha256": "1c02ccaf8fa093520f75146c770d8601e9adbf50856f1dfc0ffdd2f520655ddd",
+      "size": 8181
     },
     {
       "mode": "100644",
@@ -3397,8 +3397,8 @@
     {
       "mode": "100644",
       "path": "tests/test_knowledge.py",
-      "sha256": "17d4d3735b19fdba6d566d76274c08b3d1261a6e8d7fb3b41c77ab3668b8671d",
-      "size": 24182
+      "sha256": "c191fbe3ea522800417aa72faefcfa4bb643feff4c649bcf067de322a5f6ae1f",
+      "size": 24233
     },
     {
       "mode": "100644",
@@ -4511,10 +4511,10 @@
       "size": 508
     }
   ],
-  "generated_at": "2026-10-19T10:22:06Z",
-  "payload_sha256": "fecd9704b471ec1589d3c937609f813ab600689934f4f357498a6959189f4873",
+  "generated_at": "2026-10-19T10:41:25Z",
+  "payload_sha256": "323a7b8dfce4a06b60fcbf74a6d5802274bd2498bb2f11bbb1e402f2d4116c8e",
   "product": "mac-mcp",
-  "release_id": "stable-2.2.1-r2",
+  "release_id": "stable-2.2.1-r3",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

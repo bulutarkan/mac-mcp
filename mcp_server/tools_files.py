@@ -769,6 +769,22 @@ FIND_DEFAULT_LIMIT = 200
 FIND_MAX_LIMIT = 1_000
 
 
+def _match_parts(names: tuple, rule: tuple) -> bool:
+    """PurePath(*names).full_match("/".join(rule)) for Python before 3.13, which has no full_match:
+    each part matches one name, and ** matches any number of names, none included."""
+    if not rule:
+        return not names
+    if rule[0] == "**":
+        return any(_match_parts(names[skip:], rule[1:]) for skip in range(len(names) + 1))
+    return bool(names) and fnmatch.fnmatchcase(names[0], rule[0]) and _match_parts(names[1:], rule[1:])
+
+
+def _full_match(names: tuple, rule: str) -> bool:
+    if hasattr(PurePath, "full_match"):
+        return PurePath(*names).full_match(rule)
+    return _match_parts(names, tuple(part for part in rule.split("/") if part))
+
+
 def _walk_in_order(root: Path, pattern: str, after: Optional[tuple]) -> Iterator[tuple[Path, tuple]]:
     """What root.rglob(pattern) finds, in relative-path order, one at a time (#255).
 
@@ -789,7 +805,7 @@ def _walk_in_order(root: Path, pattern: str, after: Optional[tuple]) -> Iterator
             if after is not None and parts < after[:len(parts)]:
                 continue  # this entry and all it holds come before the cursor
             child = folder / name
-            if fnmatch.fnmatchcase(name, pattern) if simple else PurePath(*parts).full_match(rule):
+            if fnmatch.fnmatchcase(name, pattern) if simple else _full_match(parts, rule):
                 yield child, parts
             if child.is_dir() and not child.is_symlink():  # like rglob: symlinked folders are not entered
                 yield from visit(child, parts)

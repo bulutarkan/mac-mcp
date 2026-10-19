@@ -35,6 +35,8 @@
 - Two agents starting at the same moment on a fresh install no longer make one of them fail with "database is locked".
 - An external MCP tool with a `description` or `idempotency_key` parameter no longer breaks the tool list.
 - On Python 3.10, an error from a connected MCP server is reported instead of stopping the connection code with a NameError (2.2.1 r2).
+- On Python 3.10 and 3.11, connecting your own MCP servers and services (Connect a Service, the Test button, `mac-mcp mcp test`) works instead of failing with "Attempted to exit cancel scope in a different task" (2.2.1 r3).
+- On Python 3.10 to 3.12, `find_files` with a folder in its pattern (`**/*.md`, `docs/*`) works instead of failing (2.2.1 r3).
 
 ### Permissions & Safety in plain words (#246)
 - Settings › Permissions & Safety now starts with two plain answers you can change in place: **What AI apps can do** (Trusted, Standard or Read Only, each said in one sentence) and **When Mac MCP asks you first** (Off, Critical or High Risk, likewise). Saved logins follow; the policy terms (allowed capabilities, destructive families, the agent access ceiling, headless behavior, timeouts) are under **Details**. Warnings about an invalid setting stay at the top.

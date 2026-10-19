@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePath
 from unittest.mock import patch
 
 from mcp_server import folder_triggers
@@ -20,6 +20,21 @@ from mcp_server import tools_files
 from tests.test_scheduled_tasks import AUTH, DashboardApiTests, StoreCase
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class FullMatchFallbackTests(unittest.TestCase):
+    """find_files' own matcher for Python before 3.13 agrees with PurePath.full_match."""
+
+    @unittest.skipUnless(hasattr(PurePath, "full_match"), "needs Python 3.13+ to compare")
+    def test_the_fallback_matches_like_full_match(self) -> None:
+        names = [("a.md",), ("a", "b.md"), ("a", "b", "c.md"), ("deep", "x.py"), ("deep", "y", "x.py"), ("a",),
+                 (".hidden", "n.md"), ("a", "B.MD"), ("docs", "a", "b")]
+        rules = ["**/*.md", "**/a/*", "**/deep/*.py", "**/a/**/c.md", "**/*", "**/a", "**/[ab]/*.md", "**/?/*"]
+        for rule in rules:
+            for parts in names:
+                with self.subTest(rule=rule, parts=parts):
+                    expected = PurePath(*parts).full_match(rule)
+                    self.assertEqual(expected, tools_files._match_parts(parts, tuple(rule.split("/"))))
 
 
 class FindFilesOrderTests(unittest.TestCase):

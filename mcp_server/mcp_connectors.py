@@ -526,7 +526,7 @@ async def _finish_sign_in(flow: SignIn, item: Connector, provider: Any) -> None:
     server = external_mcp.ServerConfig(name=item.id, transport="http", url=item.url)
     try:
         async with contextlib.AsyncExitStack() as stack:
-            _, tools, _ = await asyncio.wait_for(
+            _, tools, _ = await external_mcp.in_time(
                 external_mcp._open_session(stack, server, auth=provider), SIGN_IN_TIMEOUT_S + 60,
             )
         await asyncio.to_thread(_keep_pending, item.id)

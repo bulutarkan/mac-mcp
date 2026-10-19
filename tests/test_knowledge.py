@@ -381,7 +381,7 @@ class ScannedDocumentTests(KnowledgeTestCase):
         self.assertEqual(1, pages[0][0])
         self.assertTrue(pages[0][2])
         self.assertIn("12.500", pages[0][1])
-        self.assertIn("sözleşmesi", pages[0][1])
+        self.assertIn("Kira", pages[0][1])  # Vision on some Macs reads the ş of "sözleşmesi" as g
         self.use_folder()
         knowledge.scan()
         hits = knowledge.knowledge_search("aylık kira bedeli", limit=5)["results"]
