@@ -246,6 +246,8 @@ final class AppState: ObservableObject {
     /// Scheduled runs that never started (#225), checked once a minute apart from the main poll.
     private var scheduleWatchdog = ScheduledTaskWatchdog()
     private var scheduleWatchdogTask: Task<Void, Never>?
+    /// Requests from other Macs already announced, so each one notifies once.
+    private var announcedFleetRequests: Set<String> = []
     private var wakeObserver: NSObjectProtocol?
     /// The poll loop's current wait; cancelling it runs the next poll now.
     private var pollSleepTask: Task<Void, Never>?
@@ -301,6 +303,9 @@ final class AppState: ObservableObject {
                 },
                 updateHandler: { [weak self] in
                     Task { @MainActor in self?.showUpdate() }
+                },
+                fleetHandler: { [weak self] in
+                    Task { @MainActor in self?.presentFleetRequests?() }
                 }
             )
             startTasks()
@@ -962,6 +967,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// A Mac asking to connect gets one native notification; clicking it opens Settings › Macs, where
+    /// the request waits. Answered or expired requests take theirs back (#147).
+    func checkFleetRequests() async {
+        let result = await taskAPI("dashboard/api/fleet/requests")
+        guard result.ok else { return }
+        let rows = result.object["requests"] as? [[String: Any]] ?? []
+        let pending = Set(rows.compactMap { $0["request_id"] as? String })
+        AgentNotificationController.shared.removeFleetRequests(keeping: pending)
+        announcedFleetRequests.formIntersection(pending)
+        for row in rows {
+            guard let id = row["request_id"] as? String, !announcedFleetRequests.contains(id) else { continue }
+            announcedFleetRequests.insert(id)
+            await AgentNotificationController.shared.scheduleFleetRequest(
+                id: id, name: row["client_name"] as? String ?? "Another Mac",
+                permission: row["permission"] as? String ?? "status", checkCode: row["check_code"] as? String ?? "")
+        }
+    }
+
     /// Run the next background poll now instead of at the end of an idle wait.
     private func wakePoll() {
         pollSleepTask?.cancel()
@@ -1080,7 +1103,14 @@ final class AppState: ObservableObject {
             return
         }
 
+        if kind == "fleet_request" || kind == "fleet_request_closed" {
+            Task { await checkFleetRequests() }
+            return
+        }
+
         if kind == "connected" {
+            // Also catches a Mac that asked while the stream was down.
+            Task { await checkFleetRequests() }
             ToolActivityBubbleController.shared.hideImmediately()
             guard let active = payload.active else { return }
             setIfChanged(\.activeEvents, active.compactMap(\.toolEvent))
@@ -1929,6 +1959,8 @@ final class AppState: ObservableObject {
 
     /// Where the update alert leads: the Updates card in Settings › General (set by the app).
     var presentUpdate: (() -> Void)?
+    /// Opens Settings › Macs, where a Mac asking to connect waits (#147).
+    var presentFleetRequests: (() -> Void)?
 
     func showUpdate() {
         presentUpdate?()

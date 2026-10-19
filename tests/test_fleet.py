@@ -195,6 +195,19 @@ class RouteTests(unittest.TestCase):
                                                    json={"recipe_id": "rcp_0123456789ab"}).status_code)
         self.assertEqual([], self.runs)
 
+    def test_a_mac_asking_to_connect_nudges_the_menu_app_which_reads_who_asks(self) -> None:
+        offer = self.store.issue_offer("full")
+        with patch("mcp_server.fleet_routes.publish_live_event") as nudge:
+            made = self.client.post("/fleet/pair", json={"code": offer["code"], "device_id": A_ID, "name": "Air"}).json()
+            nudge.assert_called_once_with("fleet_request")
+            waiting = self.client.get("/dashboard/api/fleet/requests").json()["requests"]
+            self.assertEqual([("Air", "full")], [(row["client_name"], row["permission"]) for row in waiting])
+            self.assertEqual(made["check_code"], waiting[0]["check_code"])
+            self.assertNotIn("poll", json.dumps(waiting))
+            self.client.post("/dashboard/api/fleet/requests/decide", json={"request_id": made["request_id"], "allow": False})
+            nudge.assert_called_with("fleet_request_closed")
+        self.assertEqual([], self.client.get("/dashboard/api/fleet/requests").json()["requests"])
+
     def test_pairing_is_rate_limited_and_needs_json(self) -> None:
         self.assertEqual(415, self.client.post("/fleet/pair", data="code=x").status_code)
         codes = [self.client.post("/fleet/pair", json={"code": "ZZZZ-ZZZZ", "device_id": A_ID}).status_code

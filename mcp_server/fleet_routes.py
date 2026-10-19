@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from . import fleet, fleet_client
+from .observability import publish_live_event
 from .request_client import client_address
 from .security import AuthFailureLimiter
 
@@ -89,6 +90,7 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
                 source=client_address(request))
         except fleet.FleetError as exc:
             return _error(exc)
+        publish_live_event("fleet_request")  # the menu app shows a notification for it
         return JSONResponse({"ok": True, **made, "server": {key: me[key] for key in ("device_id", "name", "model")}})
 
     async def pair_status(request: Request) -> Response:
@@ -178,6 +180,13 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
             "peers": [fleet.public_peer(row) for row in store.peers()],
         })
 
+    async def pending(request: Request) -> Response:
+        """Just the Macs waiting to be allowed, without asking the paired Macs how they are."""
+        denied = dashboard_guard(request)
+        if denied:
+            return denied
+        return JSONResponse({"ok": True, "requests": fleet.store().pending_requests()})
+
     async def owner_body(request: Request) -> tuple[Optional[Dict[str, Any]], Optional[Response]]:
         denied = dashboard_guard(request)
         if denied:
@@ -223,6 +232,7 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
             result = fleet.store().decide(str(body.get("request_id") or ""), allow=body.get("allow") is True)
         except fleet.FleetError as exc:
             return _error(exc)
+        publish_live_event("fleet_request_closed")
         return JSONResponse({"ok": True, **result})
 
     async def revoke(request: Request) -> Response:
@@ -273,6 +283,7 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         Route("/fleet/recipes/run", recipes_run, methods=["POST"]),
         Route("/fleet/forget", forget, methods=["POST"]),
         Route("/dashboard/api/fleet", overview, methods=["GET"]),
+        Route("/dashboard/api/fleet/requests", pending, methods=["GET"]),
         Route("/dashboard/api/fleet/invite", invite, methods=["POST"]),
         Route("/dashboard/api/fleet/invite/cancel", cancel_invite, methods=["POST"]),
         Route("/dashboard/api/fleet/requests/decide", decide, methods=["POST"]),

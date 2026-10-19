@@ -2,7 +2,7 @@
 
 ### Your other Macs (#147)
 - **Settings › Macs** connects your Macs so an agent on one can use the others: run commands, read and change files, use apps and the browser there. No server in between: each Mac is reached at its own address (Cloudflare, ngrok or a custom HTTPS URL, whichever it uses).
-- Pairing: the Mac to be added shows a one-time link, or its address and an 8-character code (2 minutes); the other Mac presents it; its owner sees who asks and a 6-digit check both Macs show, and allows or refuses. Only then is a credential issued. The Mac MCP API key is never shared.
+- Pairing: the Mac to be added shows a one-time link, or its address and an 8-character code (2 minutes); the other Mac presents it; its owner gets a notification with who asks and a 6-digit check both Macs show, and allows or refuses in Settings › Macs. Only then is a credential issued. The Mac MCP API key is never shared.
 - Three access levels: **Full access**, **Read only** (tools that change something are hidden and refused) and **Status only**. A Mac's own profile in Permissions & Safety comes first: full access on a Read Only Mac reads only, and both Macs say so.
 - **Busy**: one toggle stops a Mac taking anything from other Macs without removing them; the others show it in orange.
 - Agents use the `fleet` tool: `list`, `tools` (or a search of that Mac's tools), `call`, `recipes`, `run_recipe`. Everything runs on the other Mac under its own permission profile and approvals. Either Mac can end it at any time.

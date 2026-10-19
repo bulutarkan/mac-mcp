@@ -1227,6 +1227,14 @@ def publish_native_pointer(
     telemetry._publish(event)
 
 
+def publish_live_event(kind: str) -> None:
+    """Live-only nudge for the menu app (for example a Mac asking to connect): just the kind,
+    never stored; the app reads the details from its own dashboard route."""
+    telemetry = _LIVE_TELEMETRY
+    if telemetry is not None:
+        telemetry._publish({"kind": kind, "timestamp": time.time()})
+
+
 _CLIP_MARKER = " [cut; tool_discover has the full text]"
 
 

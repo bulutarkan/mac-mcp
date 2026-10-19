@@ -93,7 +93,7 @@ For the simplest Cloudflare setup, create the tunnel and hostname in Cloudflare,
 
 **Settings → Macs** connects your Macs so an agent on one can use the others (#147). There is no server in between: each Mac keeps its own address (Cloudflare, ngrok or a custom HTTPS URL; any of them, not a particular domain), and another Mac reaches it there. ngrok needs its fixed domain, since a random address changes on each start. A Mac with no public address can add other Macs but cannot be added.
 
-**Pairing.** On the Mac to be added (B), choose what the other Mac may do there and **Invite a Mac**: B shows a link, plus its address and an 8-character code, that work once, for 2 minutes. On the other Mac (A), **Add a Mac** and paste the link, or type B's address and the code. B then shows "A wants to connect" with a 6-digit check that A shows too; B's owner allows or refuses. Only then does B issue A a credential of its own. B keeps only its hash; A keeps it in an owner-only file. B's Mac MCP API key is never shared.
+**Pairing.** On the Mac to be added (B), choose what the other Mac may do there and **Invite a Mac**: B shows a link, plus its address and an 8-character code, that work once, for 2 minutes. On the other Mac (A), **Add a Mac** and paste the link, or type B's address and the code. B then shows a notification, "A wants to connect", with a 6-digit check that A shows too; clicking it opens Settings → Macs, where B's owner allows or refuses. Only then does B issue A a credential of its own. B keeps only its hash; A keeps it in an owner-only file. B's Mac MCP API key is never shared.
 
 **Access levels.** Each connection carries one of three:
 

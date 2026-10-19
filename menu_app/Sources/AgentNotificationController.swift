@@ -208,7 +208,9 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
     private let center = UNUserNotificationCenter.current()
     private var openHandler: ((AgentTerminalNotification.TargetKind, String) -> Void)?
     private var updateHandler: (() -> Void)?
+    private var fleetHandler: (() -> Void)?
     static let updateReadyIdentifier = "mac-mcp.update-ready"
+    static let fleetRequestPrefix = "mac-mcp.fleet-request."
 
     private override init() {
         super.init()
@@ -216,10 +218,12 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
 
     func configure(
         openHandler: @escaping (AgentTerminalNotification.TargetKind, String) -> Void,
-        updateHandler: @escaping () -> Void
+        updateHandler: @escaping () -> Void,
+        fleetHandler: @escaping () -> Void = {}
     ) {
         self.openHandler = openHandler
         self.updateHandler = updateHandler
+        self.fleetHandler = fleetHandler
         center.delegate = self
     }
 
@@ -313,6 +317,37 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         }
     }
 
+    /// Another Mac asks to connect (#147): who, what it asks for and the check both Macs show.
+    func scheduleFleetRequest(id: String, name: String, permission: String, checkCode: String) async {
+        guard await authorizationState() == .authorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "\(name) wants to connect"
+        let asks: String
+        switch permission {
+        case "full": asks = "It asks for full access to this Mac."
+        case "read_only": asks = "It asks for read-only access to this Mac."
+        default: asks = "It asks to see this Mac’s status."
+        }
+        content.body = checkCode.isEmpty ? asks + " Click to allow or refuse."
+            : asks + " Check that it shows \(checkCode), then allow or refuse."
+        content.sound = .default
+        content.threadIdentifier = "mac-mcp.fleet"
+        content.userInfo = ["kind": "fleet_request"]
+        let request = UNNotificationRequest(identifier: Self.fleetRequestPrefix + id, content: content, trigger: nil)
+        try? await center.add(request)
+    }
+
+    /// Takes back the notifications of requests that were answered or expired.
+    func removeFleetRequests(keeping pending: Set<String>) {
+        let prefix = Self.fleetRequestPrefix
+        center.getDeliveredNotifications { [center] delivered in
+            let stale = delivered.map(\.request.identifier).filter {
+                $0.hasPrefix(prefix) && !pending.contains(String($0.dropFirst(prefix.count)))
+            }
+            if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
+        }
+    }
+
     func removeUpdateReady() {
         center.removeDeliveredNotifications(withIdentifiers: [Self.updateReadyIdentifier])
     }
@@ -338,6 +373,10 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         defer { completionHandler() }
         if response.notification.request.content.userInfo["kind"] as? String == "update" {
             DispatchQueue.main.async { [weak self] in self?.updateHandler?() }
+            return
+        }
+        if response.notification.request.content.userInfo["kind"] as? String == "fleet_request" {
+            DispatchQueue.main.async { [weak self] in self?.fleetHandler?() }
             return
         }
         guard

@@ -701,6 +701,8 @@ struct InviteMacSheet: View {
         invitation = FleetInvitation(link: link, code: code, address: result.object["address"] as? String ?? address,
                                      expiresAt: expires)
         problem = ""
+        // The other Mac's request arrives as a notification; ask for them once, here, where it makes sense.
+        _ = await AgentNotificationController.shared.requestAuthorization()
     }
 }
 

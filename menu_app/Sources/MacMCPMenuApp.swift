@@ -16,6 +16,10 @@ struct MacMCPMenuApp: App {
             guard let appState else { return }
             SettingsWindowController.shared.show(state: appState, settings: appState.settings, section: .general)
         }
+        appState.presentFleetRequests = { [weak appState] in
+            guard let appState else { return }
+            SettingsWindowController.shared.show(state: appState, settings: appState.settings, section: .macs)
+        }
         // The menu bar app opens at login while start at login is on.
         appState.syncLoginItem = { enabled in LoginItem.sync(enabled: enabled) }
         LoginItem.sync(enabled: appState.settings.startAtLogin)
