@@ -140,6 +140,7 @@ def _paired(peer: str) -> Dict[str, Any]:
 
 async def recipes(peer: str) -> Dict[str, Any]:
     row = _paired(peer)
+    _not_busy(row)
     response = await _get(f"{row['url']}/fleet/recipes", credential=fleet.store().credential(row["peer_id"]))
     if response.status_code != 200:
         raise _error(response, "FLEET_RECIPES_FAILED")
@@ -148,6 +149,7 @@ async def recipes(peer: str) -> Dict[str, Any]:
 
 async def run_recipe(peer: str, recipe_id: str, values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     row = _paired(peer)
+    _not_busy(row)
     try:
         response = await _post(f"{row['url']}/fleet/recipes/run", {"recipe_id": recipe_id, "values": values or {}},
                                credential=fleet.store().credential(row["peer_id"]), timeout=600.0)
@@ -169,3 +171,84 @@ async def remove(peer_id: str) -> None:
         except httpx.HTTPError:
             pass  # unreachable: its owner can still remove this Mac there
     fleet.store().remove_peer(peer_id)
+
+
+# ── Full access: this Mac's agents use another Mac's Mac MCP tools ──────────
+
+def _not_busy(row: Dict[str, Any]) -> None:
+    if fleet.public_peer(row)["presence"] == "busy":
+        raise fleet.FleetError("FLEET_BUSY", f"{row['name']} is set to Busy; it takes nothing until its owner "
+                               "turns it back on.", 423)
+
+
+def _full(peer: str) -> Dict[str, Any]:
+    """A paired Mac whose tools this one may use (read only or full access there)."""
+    row = _paired(peer)
+    if row.get("permission") not in ("read_only", "full"):
+        raise fleet.FleetError("FLEET_PERMISSION_DENIED", f"{row['name']} lets this Mac see its status only; its "
+                               "owner can invite this Mac again with read-only or full access.", 403)
+    _not_busy(row)
+    return row
+
+
+def _tool_text(result: Any) -> Any:
+    texts = [getattr(block, "text", "") for block in getattr(result, "content", []) or []]
+    joined = "\n".join(text for text in texts if text)
+    try:
+        return json.loads(joined)
+    except ValueError:
+        return joined
+
+
+async def _with_session(row: Dict[str, Any], work):
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    credential = fleet.store().credential(row["peer_id"])
+    client = httpx.AsyncClient(headers={"Authorization": f"Bearer {credential}"},
+                               timeout=httpx.Timeout(30, read=900), follow_redirects=False)
+    try:
+        async with client, streamable_http_client(f"{row['url']}/mcp", http_client=client) as (read, write, _), \
+                ClientSession(read, write) as session:
+            await session.initialize()
+            return await work(session)
+    except fleet.FleetError:
+        raise
+    except Exception as exc:  # unreachable, refused or cut off: say which Mac and that the outcome may be unknown
+        if "423" in repr(exc):
+            raise fleet.FleetError("FLEET_BUSY", f"{row['name']} is set to Busy; it takes nothing until its owner "
+                                   "turns it back on.", 423) from exc
+        raise fleet.FleetError("FLEET_UNREACHABLE", f"{row['name']} did not answer ({type(exc).__name__}).", 502) from exc
+
+
+async def tools(peer: str, query: Optional[str] = None) -> Dict[str, Any]:
+    """What can be done on that Mac: its tool list, or its tool_discover for a query."""
+    row = _full(peer)
+
+    async def work(session):
+        if query:
+            found = await session.call_tool("tool_discover", {"query": query, "limit": 10,
+                                                              "description": f"Find tools for {fleet.identity()['name']}"})
+            return {"ok": True, "mac": row["name"], "query": query, "result": _tool_text(found)}
+        listed = await session.list_tools()
+        return {"ok": True, "mac": row["name"], "count": len(listed.tools),
+                "tools": [{"name": item.name, "description": (item.description or "")[:240]} for item in listed.tools],
+                "note": "action=tools with query searches all of its tools (tool_discover there)."}
+    return await _with_session(row, work)
+
+
+async def call(peer: str, tool: str, arguments: Optional[Dict[str, Any]] = None,
+               description: Optional[str] = None) -> Dict[str, Any]:
+    """Run one of that Mac's tools there, under that Mac's own permission profile and approvals."""
+    row = _full(peer)
+    name = str(tool or "").strip()
+    if not name or name == "fleet":
+        raise fleet.FleetError("FLEET_ARGUMENT_INVALID", "Name the tool to run on that Mac (not fleet itself).")
+    args = dict(arguments or {})
+    args.setdefault("description", description or f"Requested from {fleet.identity()['name']}")
+
+    async def work(session):
+        result = await session.call_tool(name, args)
+        return {"ok": not bool(getattr(result, "isError", False)), "mac": row["name"], "tool": name,
+                "result": _tool_text(result)}
+    return await _with_session(row, work)

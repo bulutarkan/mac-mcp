@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ from .sqlite_wal import enable_wal
 
 DEFAULT_SCOPED_AUTH_DB = Path.home() / ".mac-mcp" / "state" / "scoped_credentials.sqlite3"
 _TOKEN_PREFIX = "mcpagt_"
+_FLEET_PREFIX = "mcfleet_"  # fleet.CREDENTIAL_PREFIX; fleet is imported only when one arrives
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,20 @@ def resolve_request_identity(
     """
 
     token = _bearer(authorization)
+    if token and token.startswith(_FLEET_PREFIX):
+        # Another of the owner's Macs with full access (#147): it uses this Mac's tools under this
+        # Mac's own permission profile and approvals, named as that Mac. Status or recipe access
+        # never opens /mcp, and this Mac's API key is never shared.
+        from . import fleet
+
+        client = fleet.store().client_for(token)
+        if client is None or client["permission"] not in ("read_only", "full"):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "This Mac does not let that Mac use its tools.")
+        if not fleet.identity()["available"]:
+            raise HTTPException(status.HTTP_423_LOCKED, "This Mac is set to Busy; it takes nothing from other Macs now.")
+        access = fleet.effective_access(client["permission"])
+        context = environment_policy_context(actor=f"fleet:{client['name']}")
+        return f"fleet:{client['client_id']}", dataclasses.replace(context, profile=access["profile"])
     if token and token.startswith(_TOKEN_PREFIX):
         credential = get_scoped_credential_store().resolve(token)
         if credential is None:

@@ -40,7 +40,10 @@ CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 CODE_LENGTH = 8
 MAX_ATTEMPTS_PER_SOURCE = 5
 MAX_ATTEMPTS_TOTAL = 200
-PERMISSIONS = ("status", "recipes")
+# status: see whether it is on. read_only: also use its tools that only read (files, search, screen,
+# pages, recipes listed). full: use all of its Mac MCP tools. Never more than that Mac's own setting.
+PERMISSIONS = ("status", "read_only", "full")
+_ACCESS_RANK = {"status": 0, "read_only": 1, "standard": 2, "full": 3}
 STARTED_AT = time.time()
 
 
@@ -79,18 +82,55 @@ def _computer_name() -> str:
     return _clean_name(name or platform.node().split(".")[0], "This Mac")
 
 
+def _model_name() -> str:
+    """"MacBook Air", "iMac", "Mac mini"…, for the picture of this Mac on the others."""
+    try:
+        raw = subprocess.run(["/usr/sbin/system_profiler", "SPHardwareDataType", "-json"], capture_output=True,
+                             text=True, timeout=8).stdout
+        return _clean_name(json.loads(raw)["SPHardwareDataType"][0].get("machine_name"), "Mac")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError):
+        return "Mac"
+
+
 def identity() -> Dict[str, str]:
-    """This Mac's stable id and name, made once and kept owner-only."""
+    """This Mac's stable id, name and model, made once and kept owner-only."""
     path = ensure_private_dir(_root()) / "device.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if str(data.get("device_id", "")).startswith("mac_"):
-            return {"device_id": data["device_id"], "name": _clean_name(data.get("name"), "This Mac")}
     except (OSError, ValueError):
-        pass
-    data = {"device_id": "mac_" + uuid.uuid4().hex[:16], "name": _computer_name()}
+        data = {}
+    if not str(data.get("device_id", "")).startswith("mac_"):
+        data = {"device_id": "mac_" + uuid.uuid4().hex[:16], "name": _computer_name()}
+    if not data.get("model"):
+        data["model"] = _model_name()
+        _write_private(path, json.dumps(data))
+    return {"device_id": data["device_id"], "name": _clean_name(data.get("name"), "This Mac"),
+            "model": _clean_name(data.get("model"), "Mac"), "available": data.get("available", True) is not False}
+
+
+def set_available(available: bool) -> Dict[str, Any]:
+    """Busy (off): every paired Mac sees this one as busy and can use nothing here; pairings stay."""
+    path = _root() / "device.json"
+    identity()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["available"] = bool(available)
     _write_private(path, json.dumps(data))
-    return data
+    return identity()
+
+
+def effective_access(permission: str) -> Dict[str, Any]:
+    """What a paired Mac really gets here: the access granted, never beyond this Mac's own permission
+    profile (Settings › Permissions & Safety). Full access on a Read Only Mac reads only."""
+    from .policy import AccessMode, narrow_child_profile, permission_profile_name
+
+    own = permission_profile_name()
+    if permission not in ("read_only", "full"):
+        return {"granted": "status", "effective": "status", "profile": None, "this_mac_profile": own,
+                "limited_by_this_mac": False}
+    profile = narrow_child_profile(own, AccessMode.READ_ONLY if permission == "read_only" else AccessMode.FULL)
+    effective = {"read_only": "read_only", "standard": "standard", "trusted": "full"}.get(profile, "read_only")
+    return {"granted": permission, "effective": effective, "profile": profile, "this_mac_profile": own,
+            "limited_by_this_mac": _ACCESS_RANK[effective] < _ACCESS_RANK[permission]}
 
 
 def rename(name: str) -> Dict[str, str]:
@@ -454,13 +494,22 @@ def public_peer(row: Dict[str, Any]) -> Dict[str, Any]:
             status = json.loads(row["last_status"])
         except ValueError:
             status = {}
+    reachable = (row["state"] == "paired" and bool(row.get("last_ok_at"))
+                 and float(row.get("last_ok_at") or 0) >= float(row.get("last_checked_at") or 0))
+    if row["state"] == "waiting":
+        presence = "waiting"
+    elif row["state"] != "paired":
+        presence = "ended"
+    elif not reachable:
+        presence = "offline"
+    else:
+        presence = "busy" if status.get("available") is False else "online"
     return {
         "peer_id": row["peer_id"], "name": row["name"], "url": row["url"], "device_id": row.get("device_id"),
-        "state": row["state"], "permission": row.get("permission"),
+        "state": row["state"], "presence": presence, "permission": row.get("permission"),
+        "model": status.get("model"), "access": status.get("access"),
         "check_code": row.get("check_code") if row["state"] == "waiting" else None,
-        "reachable": row["state"] == "paired" and bool(row.get("last_ok_at"))
-        and float(row.get("last_ok_at") or 0) >= float(row.get("last_checked_at") or 0),
-        "last_checked_at": row.get("last_checked_at"), "last_ok_at": row.get("last_ok_at"),
+        "reachable": reachable, "last_checked_at": row.get("last_checked_at"), "last_ok_at": row.get("last_ok_at"),
         "last_error": row.get("last_error"), "status": status,
     }
 
@@ -471,7 +520,9 @@ def own_status(permission: str) -> Dict[str, Any]:
     from .version import __version__
 
     me = identity()
-    return {"device_id": me["device_id"], "name": me["name"], "version": __version__,
-            "release_id": installed_release_id() if install_kind() == "pkg" else None,
+    if not me["available"]:  # Busy: who it is, and that it takes nothing now
+        return {"device_id": me["device_id"], "name": me["name"], "model": me["model"], "available": False}
+    return {"device_id": me["device_id"], "name": me["name"], "model": me["model"], "available": True,
+            "version": __version__, "release_id": installed_release_id() if install_kind() == "pkg" else None,
             "macos": platform.mac_ver()[0] or None, "uptime_s": int(_now() - STARTED_AT),
-            "your_permission": permission}
+            "your_permission": permission, "access": effective_access(permission)}

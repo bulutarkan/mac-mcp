@@ -24,6 +24,9 @@ RecipeRunner = Callable[..., Awaitable[Dict[str, Any]]]
 _RECIPE_ID = re.compile(r"rcp_[0-9a-f]{12}")
 
 
+_BUSY = {"ok": False, "error": "fleet_busy", "message": "This Mac is set to Busy; it takes nothing from other Macs now."}
+
+
 def _error(exc: fleet.FleetError) -> JSONResponse:
     return JSONResponse({"ok": False, "error": exc.code.lower(), "message": str(exc)}, status_code=exc.status)
 
@@ -77,6 +80,8 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         if body is None:
             return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=415)
         me = fleet.identity()
+        if not me["available"]:
+            return JSONResponse(_BUSY, status_code=423)
         try:
             made = fleet.store().request_access(
                 str(body.get("code") or ""), client_device_id=str(body.get("device_id") or ""),
@@ -84,7 +89,7 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
                 source=client_address(request))
         except fleet.FleetError as exc:
             return _error(exc)
-        return JSONResponse({"ok": True, **made, "server": me})
+        return JSONResponse({"ok": True, **made, "server": {key: me[key] for key in ("device_id", "name", "model")}})
 
     async def pair_status(request: Request) -> Response:
         body = await _json_body(request)
@@ -110,9 +115,11 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         client, denied = caller(request)
         if denied:
             return denied
-        if client["permission"] != "recipes":
+        if client["permission"] not in ("read_only", "full"):
             return JSONResponse({"ok": False, "error": "fleet_permission_denied",
                                  "message": "This Mac lets yours see its status only."}, status_code=403)
+        if not fleet.identity()["available"]:
+            return JSONResponse(_BUSY, status_code=423)
         from .recipes import list_recipes
 
         keep = ("recipe_id", "name", "description", "status", "parameters", "consequential", "run_count", "last_run")
@@ -124,9 +131,11 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         client, denied = caller(request)
         if denied:
             return denied
-        if client["permission"] != "recipes":
+        if client["permission"] != "full":
             return JSONResponse({"ok": False, "error": "fleet_permission_denied",
-                                 "message": "This Mac lets yours see its status only."}, status_code=403)
+                                 "message": "Running recipes here needs full access."}, status_code=403)
+        if not fleet.identity()["available"]:
+            return JSONResponse(_BUSY, status_code=423)
         body = await _json_body(request)
         if body is None:
             return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=415)
@@ -160,9 +169,12 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
             address = fleet.own_url()
         except fleet.FleetError:
             address = ""
+        from .policy import permission_profile_name
+
         return JSONResponse({
-            "ok": True, "this_mac": {**fleet.identity(), "url": address},
-            "invitation": store.active_offer(), "requests": store.pending_requests(), "clients": store.clients(),
+            "ok": True, "this_mac": {**fleet.identity(), "url": address, "profile": permission_profile_name()},
+            "invitation": store.active_offer(), "requests": store.pending_requests(),
+            "clients": [{**row, "access": fleet.effective_access(row["permission"])} for row in store.clients()],
             "peers": [fleet.public_peer(row) for row in store.peers()],
         })
 
@@ -241,6 +253,12 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
             return _error(exc)
         return JSONResponse({"ok": True})
 
+    async def availability(request: Request) -> Response:
+        body, denied = await owner_body(request)
+        if denied:
+            return denied
+        return JSONResponse({"ok": True, "this_mac": fleet.set_available(body.get("available") is not False)})
+
     async def rename(request: Request) -> Response:
         body, denied = await owner_body(request)
         if denied:
@@ -262,4 +280,5 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         Route("/dashboard/api/fleet/peers/add", add, methods=["POST"]),
         Route("/dashboard/api/fleet/peers/remove", remove, methods=["POST"]),
         Route("/dashboard/api/fleet/name", rename, methods=["POST"]),
+        Route("/dashboard/api/fleet/availability", availability, methods=["POST"]),
     ]

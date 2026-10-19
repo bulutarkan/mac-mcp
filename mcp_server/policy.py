@@ -322,8 +322,22 @@ def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
 
 
 def _fleet_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "list").strip().lower()
+    # A tool run on another Mac carries that tool's own risk here too, so this Mac's approval rules apply
+    # before it leaves; the other Mac then applies its own.
+    if action == "call":
+        target = str(arguments.get("tool") or "").strip()
+        nested = arguments.get("arguments") if isinstance(arguments.get("arguments"), Mapping) else {}
+        try:
+            _, effective = resolve_risk(target, nested)
+        except KeyError:  # a tool this Mac does not know (another Mac's own MCP servers): treat it as raw execution
+            return RiskOverride(capabilities=_caps(Capability.NETWORK_ACCESS, Capability.RAW_EXECUTION,
+                                                   Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True)
+        return RiskOverride(capabilities=effective.capabilities | _caps(Capability.NETWORK_ACCESS),
+                            destructive=effective.destructive, sensitive=True,
+                            requested_access_mode=effective.requested_access_mode)
     # Running a recipe on another Mac acts there; that Mac's own profile and approvals decide what runs.
-    if str(arguments.get("action") or "list").strip().lower() == "run_recipe":
+    if action == "run_recipe":
         return RiskOverride(capabilities=_caps(Capability.NETWORK_ACCESS, Capability.EXTERNAL_SIDE_EFFECT),
                             destructive=False, sensitive=True)
     return RiskOverride(capabilities=_caps(Capability.READ, Capability.NETWORK_ACCESS), destructive=False,
@@ -655,8 +669,8 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     # Messages between agents write only Mac MCP's own coordination store, never the owner's data,
     # so even a read-only team member may tell its teammates something (#208).
     "team_messages": _r("team_messages", "agents", _caps(Capability.READ), sensitive=True),
-    "fleet": _r("fleet", "meta", _caps(Capability.READ, Capability.NETWORK_ACCESS, Capability.EXTERNAL_SIDE_EFFECT),
-                sensitive=True, resolver=_fleet_risk),
+    "fleet": _r("fleet", "meta", _caps(Capability.READ, Capability.NETWORK_ACCESS, Capability.EXTERNAL_SIDE_EFFECT,
+                                      Capability.RAW_EXECUTION), destructive=True, sensitive=True, resolver=_fleet_risk),
     "list_agents": _r("list_agents", "agents", _caps(Capability.READ), sensitive=True),
     "get_agent": _r("get_agent", "agents", _caps(Capability.READ), sensitive=True),
     "agent_action": _r("agent_action", "agents", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.AGENT_DELEGATION), destructive=True, sensitive=True, resolver=_agent_action_risk),

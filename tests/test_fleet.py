@@ -41,8 +41,8 @@ class InvitationTests(StoreCase):
         self.assertRegex(made["check_code"], r"^\d{3} \d{3}$")
         with self.assertRaises(fleet.FleetError):
             self.ask(offer["code"])
-        link = self.store.issue_offer("recipes")
-        self.assertEqual("recipes", self.ask(link["token"])["permission"])
+        link = self.store.issue_offer("full")
+        self.assertEqual("full", self.ask(link["token"])["permission"])
 
     def test_a_new_invitation_ends_the_last_and_old_ones_expire(self) -> None:
         first = self.store.issue_offer("status")
@@ -80,7 +80,7 @@ class InvitationTests(StoreCase):
 
 class DecisionTests(StoreCase):
     def test_allowing_issues_a_credential_once_and_only_its_hash_is_kept(self) -> None:
-        made = self.ask(self.store.issue_offer("recipes")["code"])
+        made = self.ask(self.store.issue_offer("full")["code"])
         self.assertEqual("pending", self.store.poll_request(made["request_id"], made["poll_secret"])["status"])
         self.assertEqual(1, len(self.store.pending_requests()))
         self.store.decide(made["request_id"], allow=True)
@@ -88,7 +88,7 @@ class DecisionTests(StoreCase):
         self.assertTrue(first["credential"].startswith(fleet.CREDENTIAL_PREFIX))
         self.assertNotIn("credential", self.store.poll_request(made["request_id"], made["poll_secret"]))
         client = self.store.client_for(first["credential"])
-        self.assertEqual(("recipes", A_ID), (client["permission"], client["device_id"]))
+        self.assertEqual(("full", A_ID), (client["permission"], client["device_id"]))
         raw = (self.store.root / "fleet.sqlite3").read_bytes()
         self.assertNotIn(first["credential"].encode(), raw)
         self.assertEqual(0o600, stat.S_IMODE((self.store.root / "fleet.sqlite3").stat().st_mode))
@@ -165,14 +165,35 @@ class RouteTests(unittest.TestCase):
                                                json={"recipe_id": "rcp_0123456789ab"}).status_code)
         self.assertEqual([], self.runs)
 
+    def test_read_only_lists_recipes_but_only_full_access_runs_them(self) -> None:
+        auth = {"Authorization": f"Bearer {self.paired('read_only')}"}
+        self.assertEqual(200, self.client.get("/fleet/recipes", headers=auth).status_code)
+        self.assertEqual(403, self.client.post("/fleet/recipes/run", headers=auth,
+                                               json={"recipe_id": "rcp_0123456789ab"}).status_code)
+        self.assertEqual([], self.runs)
+
     def test_recipes_run_as_the_paired_mac_and_inputs_are_checked(self) -> None:
-        auth = {"Authorization": f"Bearer {self.paired('recipes')}"}
+        auth = {"Authorization": f"Bearer {self.paired('full')}"}
         ran = self.client.post("/fleet/recipes/run", headers=auth,
                                json={"recipe_id": "rcp_0123456789ab", "values": {"city": "Izmir"}})
         self.assertEqual(200, ran.status_code)
         self.assertEqual([("rcp_0123456789ab", {"city": "Izmir"}, "fleet:Air")], self.runs)
         for bad in ({"recipe_id": "../x"}, {"recipe_id": "rcp_0123456789ab", "values": {"a": {"nested": 1}}}):
             self.assertEqual(400, self.client.post("/fleet/recipes/run", headers=auth, json=bad).status_code)
+
+    def test_busy_takes_no_pairing_and_says_only_that_it_is_busy(self) -> None:
+        auth = {"Authorization": f"Bearer {self.paired('full')}"}
+        offer = self.store.issue_offer("status")
+        with patch.object(fleet, "identity", return_value={"device_id": B_ID, "name": "Studio", "model": "Mac Studio",
+                                                            "available": False}):
+            status = self.client.get("/fleet/status", headers=auth).json()
+            self.assertEqual({"device_id": B_ID, "name": "Studio", "model": "Mac Studio", "available": False},
+                             {k: v for k, v in status.items() if k != "ok"})
+            self.assertEqual(423, self.client.post("/fleet/pair", json={"code": offer["code"], "device_id": A_ID}).status_code)
+            self.assertEqual(423, self.client.get("/fleet/recipes", headers=auth).status_code)
+            self.assertEqual(423, self.client.post("/fleet/recipes/run", headers=auth,
+                                                   json={"recipe_id": "rcp_0123456789ab"}).status_code)
+        self.assertEqual([], self.runs)
 
     def test_pairing_is_rate_limited_and_needs_json(self) -> None:
         self.assertEqual(415, self.client.post("/fleet/pair", data="code=x").status_code)
@@ -191,7 +212,60 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(429, codes[-1])
 
 
+class AccessTests(unittest.TestCase):
+    """Full access never goes beyond the Mac's own permission setting; /mcp opens only for tool access."""
+
+    def test_full_access_is_capped_by_this_macs_own_profile(self) -> None:
+        cases = {("trusted", "full"): ("full", False), ("standard", "full"): ("standard", True),
+                 ("read_only", "full"): ("read_only", True), ("trusted", "read_only"): ("read_only", False),
+                 ("read_only", "status"): ("status", False)}
+        for (profile, granted), (effective, limited) in cases.items():
+            with self.subTest(profile=profile, granted=granted), \
+                    patch("mcp_server.policy.permission_profile_name", return_value=profile):
+                access = fleet.effective_access(granted)
+                self.assertEqual((effective, limited), (access["effective"], access["limited_by_this_mac"]))
+
+    def test_mcp_takes_tool_access_with_the_capped_profile_and_refuses_the_rest(self) -> None:
+        from fastapi import HTTPException
+
+        from mcp_server.scoped_auth import resolve_request_identity
+        from mcp_server.security import load_settings
+
+        store = fleet.FleetStore(Path(tempfile.mkdtemp()) / "fleet")
+
+        def credential(permission: str) -> str:
+            made = store.request_access(store.issue_offer(permission)["code"], client_device_id=A_ID,
+                                        client_name="Air", server_device_id=B_ID, source="s")
+            store.decide(made["request_id"], allow=True)
+            return store.poll_request(made["request_id"], made["poll_secret"])["credential"]
+        me = {"device_id": B_ID, "name": "Studio", "model": "Mac", "available": True}
+        with patch.object(fleet, "_STORE", store), patch.object(fleet, "identity", return_value=me), \
+                patch("mcp_server.policy.permission_profile_name", return_value="trusted"):
+            with self.assertRaises(HTTPException) as status_only:
+                resolve_request_identity(load_settings(), f"Bearer {credential('status')}")
+            self.assertEqual(401, status_only.exception.status_code)
+            _, context = resolve_request_identity(load_settings(), f"Bearer {credential('read_only')}")
+            self.assertEqual(("read_only", "fleet:Air"), (context.profile, context.actor))
+            full = credential("full")
+            self.assertEqual("trusted", resolve_request_identity(load_settings(), f"Bearer {full}")[1].profile)
+            with patch("mcp_server.policy.permission_profile_name", return_value="read_only"):
+                self.assertEqual("read_only", resolve_request_identity(load_settings(), f"Bearer {full}")[1].profile)
+            with patch.object(fleet, "identity", return_value={**me, "available": False}):
+                with self.assertRaises(HTTPException) as busy:
+                    resolve_request_identity(load_settings(), f"Bearer {full}")
+                self.assertEqual(423, busy.exception.status_code)
+
+
 class PolicyTests(unittest.TestCase):
+    def test_a_call_carries_the_risk_of_the_tool_it_runs(self) -> None:
+        _, read = resolve_risk("fleet", {"action": "call", "mac": "Studio", "tool": "read_file", "arguments": {"path": "/x"}})
+        _, shell = resolve_risk("fleet", {"action": "call", "mac": "Studio", "tool": "run_command",
+                                          "arguments": {"command": "rm -rf /tmp/x"}})
+        _, unknown = resolve_risk("fleet", {"action": "call", "mac": "Studio", "tool": "their__own_tool"})
+        self.assertNotIn(Capability.RAW_EXECUTION, read.capabilities)
+        self.assertIn(Capability.RAW_EXECUTION, shell.capabilities)
+        self.assertTrue(unknown.destructive)
+
     def test_reading_is_read_only_and_running_acts_elsewhere(self) -> None:
         _, listed = resolve_risk("fleet", {"action": "list"})
         _, run = resolve_risk("fleet", {"action": "run_recipe", "mac": "Studio", "recipe_id": "rcp_0123456789ab"})

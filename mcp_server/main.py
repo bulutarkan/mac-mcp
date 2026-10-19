@@ -983,16 +983,22 @@ def create_app():
     @mcp.tool(
         name="fleet",
         description=(
-            "The owner's other Macs, paired in Settings > Macs (#147). action=list: each Mac's name, state, whether it "
-            "answers, its Mac MCP version and what this Mac may do there (refresh=true asks each one now). "
-            "action=recipes (mac = its name or peer_id): the active recipes that Mac lets this one run. "
-            "action=run_recipe (mac, recipe_id, values): runs it there, under that Mac's own permission profile and "
-            "approvals; an unanswered call may or may not have run, so check before running it again. Pairing, "
-            "allowing and removing Macs is the owner's, in Settings."
+            "Work on the owner's other Macs, paired in Settings > Macs (#147), without connecting to each one. "
+            "action=list: each Mac's name, model, whether it is online, busy or offline, and what this Mac may do "
+            "there (status, read_only or full, never more than that Mac's own permission setting; refresh=true asks "
+            "each one now). With read_only or full access: action=tools (mac = its name or peer_id; optional query "
+            "searches its tools like tool_discover) lists only the tools this Mac may use there, and action=call "
+            "(mac, tool, arguments) runs one of them there, e.g. run_command, read_file, browser_do, mac_app. "
+            "action=recipes and action=run_recipe (recipe_id, values; full access) use its saved recipes. Everything "
+            "runs under that Mac's own permission profile and approvals (its approval panels show on that Mac); a "
+            "Busy Mac takes nothing until its owner turns it back on; an unanswered call may or may not have run, so "
+            "check before repeating it. Pairing and access are the owner's, in Settings."
         ),
     )
-    async def _fleet(action: str = "list", mac: Optional[str] = None, recipe_id: Optional[str] = None,
-                     values: Optional[Dict[str, Any]] = None, refresh: bool = False) -> Dict[str, Any]:
+    async def _fleet(action: str = "list", mac: Optional[str] = None, tool: Optional[str] = None,
+                     arguments: Optional[Dict[str, Any]] = None, query: Optional[str] = None,
+                     recipe_id: Optional[str] = None, values: Optional[Dict[str, Any]] = None,
+                     refresh: bool = False) -> Dict[str, Any]:
         verb = str(action or "list").strip().lower()
         try:
             if verb == "list":
@@ -1000,13 +1006,17 @@ def create_app():
                 return {"ok": True, "this_mac": fleet.identity()["name"], "count": len(peers), "macs": peers}
             if not mac:
                 raise fleet.FleetError("FLEET_ARGUMENT_INVALID", f"action={verb} needs mac (a name or peer_id).")
+            if verb == "tools":
+                return await fleet_client.tools(mac, query)
+            if verb == "call":
+                return await fleet_client.call(mac, str(tool or ""), arguments)
             if verb == "recipes":
                 return await fleet_client.recipes(mac)
             if verb == "run_recipe":
                 if not recipe_id:
                     raise fleet.FleetError("FLEET_ARGUMENT_INVALID", "action=run_recipe needs recipe_id.")
                 return await fleet_client.run_recipe(mac, recipe_id, values)
-            raise fleet.FleetError("FLEET_ARGUMENT_INVALID", "action is list, recipes or run_recipe.")
+            raise fleet.FleetError("FLEET_ARGUMENT_INVALID", "action is list, tools, call, recipes or run_recipe.")
         except fleet.FleetError as exc:
             return {"ok": False, "error": exc.code.lower(), "reason_code": exc.code, "message": str(exc)}
 
