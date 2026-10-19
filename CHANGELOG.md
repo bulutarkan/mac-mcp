@@ -10,7 +10,7 @@
 ### Your iPhone
 - **Settings › Devices** (formerly Macs) now has an **iPhone** section, next to your Macs; each folds away. Agents use your iPhone through iPhone Mirroring: no app on the phone, no cable.
 - Access is yours to choose: **Full access** (tap, type, scroll, open apps), **Read only** (the default: see the screen and read its text) or **Off**. This Mac's own Permissions & Safety setting still comes first, and Privacy's pause and excluded apps apply.
-- The `iphone` tool sees the screen (no picture when nothing changed), reads its text with positions (Apple Vision, Turkish and English) and, with full access, runs a whole job in one call with `act`: open an app, tap a text, type (Turkish letters included), scroll, swipe, wait for a text, and get the screen back after the last step, or where it stopped.
+- The `iphone` tool sees the screen (no picture when nothing changed), reads its text with positions (Apple Vision, Turkish and English) and, with full access, runs a whole job in one call with `act`: open an app, tap a text, type (Turkish letters included), scroll, swipe, wait for a text, and get the screen back after the last step, or where it stopped. A closed iPhone Mirroring is opened and waited for, and opening an app waits for the screen instead of fixed pauses.
 
 ### Undo for changes in Notes, Reminders, Calendar and Mail (#259)
 - What an agent changes in your apps can be undone, like file changes. A changed note, reminder, event or email gets its old state back; a note, reminder, event or draft Mac MCP made is removed (notes go to Recently Deleted); a deleted reminder is made again (new id). The change's result carries an `undo_id`, and `mac_app` `action=undo` puts it back.

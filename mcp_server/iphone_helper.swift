@@ -21,6 +21,8 @@ let eventMarker: Int64 = 0x4D43_4950  // "MCIP": Mac MCP's own iPhone input
 let lockPath = (NSString(string: "~/.mac-mcp/cache/iphone-input.lock").expandingTildeInPath)
 
 func emit(_ object: [String: Any]) -> Never {
+    var object = object
+    if openedMirroring { object["opened_mirroring"] = true }
     let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
     FileHandle.standardOutput.write(data)
     exit(0)
@@ -80,11 +82,32 @@ func findMirror() -> Mirror? {
     return best
 }
 
+/// Set when this command had to open iPhone Mirroring first; reported so the agent knows why it took longer.
+var openedMirroring = false
+
+/// The mirror, opening iPhone Mirroring first when it is closed and waiting (up to 20 s) until it shows the iPhone
+/// or a message such as "iPhone in Use" that only the owner can resolve.
 func requireMirror() -> Mirror {
-    guard let mirror = findMirror() else {
-        fail("IPHONE_MIRRORING_NOT_OPEN", "iPhone Mirroring is not open. Open it on this Mac (the iPhone must be locked and nearby, on the same Apple Account).")
+    if let mirror = findMirror() { return mirror }
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: mirrorBundleID) else {
+        fail("IPHONE_MIRRORING_UNAVAILABLE", "iPhone Mirroring is not on this Mac (it needs macOS 15 or later).")
     }
-    return mirror
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = false
+    NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+    openedMirroring = true
+    let deadline = Date().addingTimeInterval(20)
+    while Date() < deadline {
+        spin(0.25)
+        guard let mirror = findMirror() else { continue }
+        guard AXIsProcessTrusted() else { return mirror }
+        let message = mirrorMessage(mirror)
+        if message.isEmpty || !message.joined(separator: " ").lowercased().contains("connecting") {
+            usleep(300_000)  // the first frame of the iPhone's screen
+            return mirror
+        }
+    }
+    fail("IPHONE_MIRRORING_NOT_OPEN", "iPhone Mirroring did not connect to the iPhone (it must be locked, nearby and on the same Apple Account).")
 }
 
 // MARK: Connection
@@ -512,6 +535,33 @@ func settle(_ mirror: Mirror, before: UInt64, limit: Double) -> (Shot, Bool) {
     return (shot, changed)
 }
 
+/// The screen once it differs from `from` (or `limit` passes).
+func waitChange(_ mirror: Mirror, from: UInt64, limit: Double) -> Shot {
+    let deadline = Date().addingTimeInterval(limit)
+    var shot = capture(mirror)
+    while differenceHash(shot.image) == from && Date() < deadline {
+        usleep(60_000)
+        shot = capture(mirror)
+    }
+    return shot
+}
+
+/// The screen once two captures in a row match (after at least `minimum` seconds, at most `limit`).
+func waitStill(_ mirror: Mirror, limit: Double, minimum: Double = 0) -> Shot {
+    let start = Date()
+    usleep(useconds_t(max(0.06, minimum) * 1_000_000))
+    var shot = capture(mirror)
+    var last = differenceHash(shot.image)
+    while Date().timeIntervalSince(start) < limit {
+        usleep(70_000)
+        shot = capture(mirror)
+        let now = differenceHash(shot.image)
+        if now == last { break }
+        last = now
+    }
+    return shot
+}
+
 func findText(_ shot: Shot, _ wanted: String, index: Int, exact: Bool) -> [String: Any]? {
     let target = fold(wanted)
     let rows = recognize(shot.image, phoneWidth: outputWidth).filter {
@@ -611,12 +661,14 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
         guard let name = step["app"] as? String, !name.isEmpty else {
             throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "open_app needs app.")
         }
+        // Each step waits for the screen to answer instead of a fixed time: home, Spotlight open, results shown.
         press(CGKeyCode(kVK_ANSI_1), modifiers: [command_])
-        usleep(450_000)
+        shot = waitStill(mirror, limit: 0.8)
+        let home = differenceHash(shot.image)
         press(CGKeyCode(kVK_ANSI_3), modifiers: [command_])
-        usleep(650_000)
+        shot = waitChange(mirror, from: home, limit: 1.2)
         _ = type(name)
-        usleep(800_000)
+        shot = waitStill(mirror, limit: 1.2, minimum: 0.25)
         press(CGKeyCode(kVK_Return))
         settleFor = 2.5
     case "wait":

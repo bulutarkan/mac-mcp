@@ -191,7 +191,42 @@ class RouteTests(IPhoneCase):
         self.assertEqual("full", iphone.access_setting())
 
 
+class ToolInvokeImageTests(unittest.TestCase):
+    def test_pictures_stay_pictures_through_tool_invoke(self) -> None:
+        import asyncio
+
+        from mcp.types import ImageContent, TextContent
+
+        from mcp_server.main import _invoke_registered_tool
+
+        class FakeMCP:
+            class _tool_manager:
+                @staticmethod
+                def get_tool(name):
+                    return object()
+
+            async def call_tool(self, name, arguments):
+                return [TextContent(type="text", text=json.dumps({"ok": True, "width": 390})),
+                        ImageContent(type="image", data="AAAA", mimeType="image/jpeg")]
+
+        result = asyncio.run(_invoke_registered_tool(FakeMCP(), "iphone", {"action": "see"}))
+        self.assertIsInstance(result, list)
+        wrapper = json.loads(result[0])
+        self.assertEqual((True, "iphone", {"ok": True, "width": 390}), (wrapper["ok"], wrapper["tool"], wrapper["result"]))
+        self.assertEqual("image", result[1].type)
+        self.assertNotIn("AAAA", result[0])
+
+
 class HelperSourceTests(unittest.TestCase):
+    def test_a_closed_mirror_is_opened_without_taking_focus_and_waited_for(self) -> None:
+        self.assertIn("configuration.activates = false", HELPER)
+        self.assertIn('object["opened_mirroring"] = true', HELPER)
+
+    def test_opening_an_app_waits_for_the_screen_not_a_fixed_time(self) -> None:
+        opening = HELPER[HELPER.index('case "open_app":'):HELPER.index('case "wait":')]
+        self.assertIn("waitChange(", opening)
+        self.assertNotIn("usleep(650_000)", opening)
+
     def test_input_is_bounded_to_the_phone_screen_and_one_at_a_time(self) -> None:
         self.assertIn("IPHONE_POINT_OUTSIDE_SCREEN", HELPER)
         self.assertIn("flock(lock, LOCK_EX)", HELPER)

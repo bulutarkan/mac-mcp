@@ -532,22 +532,38 @@ def _tool_input_schema(info: Any) -> Dict[str, Any]:
     return schema if isinstance(schema, dict) else {}
 
 
-async def _invoke_registered_tool(mcp: ObservedFastMCP, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _split_images(result: Any) -> tuple[list, Any]:
+    """A tool's pictures (a screenshot) and the rest of its result: pictures stay pictures through tool_invoke
+    instead of turning into base64 text, which costs far more and can overflow the client's limit."""
+    content = result[0] if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], (list, tuple)) else result
+    if not isinstance(content, (list, tuple)):
+        return [], result
+    images = [block for block in content if getattr(block, "type", None) == "image"]
+    if not images:
+        return [], result
+    return images, [block for block in content if getattr(block, "type", None) != "image"]
+
+
+async def _invoke_registered_tool(mcp: ObservedFastMCP, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
     target = str(tool_name or "").strip()
     if not target or target in {"tool_discover", "tool_invoke"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A non-fallback target tool_name is required.")
     if mcp._tool_manager.get_tool(target) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown tool: {target}")
     result = await mcp.call_tool(target, arguments or {})
-    payload = _unwrap_tool_invoke_result(result)
+    images, rest = _split_images(result)
+    payload = _unwrap_tool_invoke_result(rest)
     tool_ok = _tool_payload_ok(payload)
-    return {
+    wrapper = {
         "ok": tool_ok,
         "invocation_ok": True,
         "tool_ok": tool_ok,
         "tool": target,
         "result": payload,
     }
+    if images:
+        return [json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")), *images]
+    return wrapper
 
 
 def create_app():
@@ -1036,7 +1052,9 @@ def create_app():
             "[{type:'open_app',app:'Safari'},{type:'tap_text',text:'Search'},{type:'type',text:'weather',submit:true},"
             "{type:'wait_for_text',text:'Weather'}]. Confirm a field is focused (tap_text, wait_for_text) before typing "
             "into it. The single actions (tap, type, open_app, ...) are one-step act. connect resumes after the owner "
-            "used the phone (it must be locked again). image=false skips the picture, ocr=true adds the screen's text. "
+            "used the phone (it must be locked again). A closed iPhone Mirroring is opened (without taking focus) and "
+            "waited for; when it asks for the Mac's password, only the owner can enter it. image=false skips the "
+            "picture, ocr=true adds the screen's text. "
             "Input brings iPhone Mirroring forward for the moment it takes and puts the owner's app and pointer back. "
             "Access is the owner's: off, read_only (default) or full, never more than this Mac's permission profile; "
             "action=status shows it and whether iPhone Mirroring is open and connected."
@@ -2946,7 +2964,7 @@ def create_app():
         name="tool_invoke",
         description="Invoke a less-common registered Mac MCP tool by name after tool_discover, preserving normal policy and telemetry checks.",
     )
-    async def _tool_invoke(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _tool_invoke(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         return await _invoke_registered_tool(mcp, tool_name, arguments)
 
     register_chatgpt_panel(mcp, telemetry, settings)
