@@ -395,6 +395,25 @@ class Store:
                                 (row[0],)).fetchall()
             return {"message_id": message_id, "shown": [dict(item) for item in rows]}
 
+    # -- push files (Goose) ------------------------------------------------------
+    def set_push_file(self, member_id: str, path: Optional[str]) -> None:
+        with closing(self._connect()) as conn:
+            if path:
+                conn.execute("INSERT OR REPLACE INTO push_files (member_id, path) VALUES (?, ?)", (member_id, path))
+            else:
+                conn.execute("DELETE FROM push_files WHERE member_id = ?", (member_id,))
+
+    def push_file(self, member_id: str) -> Optional[str]:
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT path FROM push_files WHERE member_id = ?", (member_id,)).fetchone()
+        return str(row[0]) if row else None
+
+    def push_members(self, room_id: str) -> List[str]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT p.member_id FROM push_files p JOIN members m ON m.member_id = p.member_id "
+                                "WHERE m.room_id = ? AND m.left_at IS NULL", (room_id,))
+            return [row[0] for row in rows]
+
     # -- hook credentials -------------------------------------------------------
     def issue_hook_token(self, member_id: str, ttl_s: float) -> str:
         token = _HOOK_TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -459,6 +478,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_key ON messages(room_id, sender_i
 CREATE TABLE IF NOT EXISTS deliveries (
     seq INTEGER NOT NULL, member_id TEXT NOT NULL, channel TEXT NOT NULL, shown_at REAL NOT NULL, read_at REAL,
     PRIMARY KEY (seq, member_id)
+);
+CREATE TABLE IF NOT EXISTS push_files (
+    member_id TEXT PRIMARY KEY, path TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS hook_tokens (
     token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,

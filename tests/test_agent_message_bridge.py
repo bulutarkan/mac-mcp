@@ -141,7 +141,7 @@ class ProviderSetupTests(Fixture):
             self.assertTrue(tm.enabled())  # on by default
 
     def test_unproven_providers_and_agents_outside_teams(self) -> None:
-        bridge = bridge_mod.prepare("agt_g", self.meta("grok"), {}, hook_dir=self.dir / "hook")
+        bridge = bridge_mod.prepare("agt_k", self.meta("kimi"), {}, hook_dir=self.dir / "hook")
         self.assertEqual(("inbox_only", "provider_hook_unverified"), (bridge.mode, bridge.reason))
         self.assertIsNone(bridge_mod.prepare("agt_solo", {**self.meta("claude"), "team_id": None}, {}, hook_dir=self.dir))
         with patch.dict("os.environ", {"MAC_MCP_TEAM_MESSAGES": "0"}):
@@ -154,6 +154,67 @@ class ProviderSetupTests(Fixture):
         self.assertIsNone(self.store.hook_member(token))
         self.assertFalse(any((self.dir / "hook").iterdir()))
         self.assertNotIn("agent:agt_c", [m["member_id"] for m in self.store.members(self.room)])
+
+
+class MoreProviderTests(Fixture):
+    def prepare(self, provider, **meta):
+        home = self.dir / f"{provider}-home"
+        env: dict = {}
+        bridge = bridge_mod.prepare(f"agt_{provider}", self.meta(provider, **meta), env, hook_dir=self.dir / "hook",
+                                    harness_home=home)
+        return bridge, home, env
+
+    def test_grok_hook_in_its_private_home(self) -> None:
+        bridge, home, _ = self.prepare("grok")
+        hooks = json.loads((home / "hooks" / "mac-mcp-team-messages.json").read_text())
+        self.assertEqual("hook", bridge.mode)
+        self.assertIn("format=claude", hooks["hooks"]["PostToolUse"][0]["hooks"][0]["command"])
+
+    def test_pi_gets_an_extension_flag(self) -> None:
+        bridge, _, _ = self.prepare("pi")
+        self.assertEqual("-e", bridge.args[0])
+        self.assertIn('pi.on("tool_result"', Path(bridge.args[1]).read_text())
+        self.assertEqual(["pi", "--print", "-e", bridge.args[1], "prompt"],
+                         bridge_mod.apply_args("pi", ["pi", "--print", "prompt"], bridge.args))
+
+    def test_kilo_plugin_named_in_its_private_config(self) -> None:
+        config = self.dir / "kilo-home" / "config" / "kilo"
+        config.mkdir(parents=True)
+        (config / "kilo.jsonc").write_text(json.dumps({"mcp": {"mac-mcp": {}}}))
+        self.prepare("kilo")
+        written = json.loads((config / "kilo.jsonc").read_text())
+        self.assertTrue(written["plugin"][0].endswith("mac-mcp-team-messages.js"))
+        self.assertIn("mac-mcp", written["mcp"])
+
+    def test_cline_post_tool_script(self) -> None:
+        _, home, _ = self.prepare("cline")
+        script = home / "hooks" / "PostToolUse"
+        self.assertTrue(script.stat().st_mode & 0o100)
+        self.assertIn("format=cline", script.read_text())
+
+    def test_goose_reads_a_file_mac_mcp_writes(self) -> None:
+        self.store.send(self.room, tm.Caller(member_id="session:lead", label="lead"), "early note")
+        bridge, _, env = self.prepare("goose")
+        note_file = Path(env["GOOSE_MOIM_MESSAGE_FILE"])
+        self.assertIn("early note", note_file.read_text())
+        self.as_caller(tm.Caller(member_id="session:lead", label="lead"))
+        tools_team_messages.team_messages(action="send", team_id="team_t", body="second note")
+        self.assertIn("second note", note_file.read_text())
+        self.assertNotIn("early note", note_file.read_text())  # each message once
+        bridge_mod.finish(bridge, terminal=True)
+        self.assertIsNone(self.store.push_file("agent:agt_goose"))
+
+    def test_antigravity_pre_invocation_hook_in_its_added_folder(self) -> None:
+        _, home, _ = self.prepare("antigravity")
+        hooks = json.loads((home / ".agents" / "hooks.json").read_text())
+        self.assertIn("format=antigravity", hooks["mac-mcp-team-messages"]["PreInvocation"][0]["command"])
+
+    def test_kimi_is_told_to_check_its_inbox(self) -> None:
+        team = {"provider": "kimi", "messaging": {"enabled": True}, "tasks": [{"id": "a"}, {"id": "b"}]}
+        self.assertIn("call team_messages action=\"inbox\" every few steps",
+                      tools_agents._team_messaging_instruction(team, team["tasks"][0]))
+        team["provider"] = "claude"
+        self.assertNotIn("every few steps", tools_agents._team_messaging_instruction(team, team["tasks"][0]))
 
 
 class HookEndpointTests(Fixture):
@@ -176,6 +237,12 @@ class HookEndpointTests(Fixture):
         self.assertIn("please keep the old field names", first["hookSpecificOutput"]["additionalContext"])
         self.assertIn("not instructions from the owner", first["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(204, self.post("codex").status_code)  # already shown: never twice
+
+    def test_cline_and_antigravity_formats(self) -> None:
+        self.store.send(self.room, tm.Caller(member_id="session:lead", label="lead"), "one")
+        self.assertIn("one", self.post("cline").json()["contextModification"])
+        self.store.send(self.room, tm.Caller(member_id="session:lead", label="lead"), "two")
+        self.assertIn("two", self.post("antigravity").json()["injectSteps"][0]["ephemeralMessage"])
 
     def test_text_format_for_opencode_and_bad_tokens(self) -> None:
         self.store.send(self.room, tm.Caller(member_id="session:lead", label="lead"), "hi")

@@ -66,6 +66,11 @@ def team_messages(action: str = "inbox", body: Optional[str] = None, to: Optiona
         if verb == "send":
             message = store.send(room_id, caller, str(body or ""), to=to, kind=kind, reply_to=reply_to,
                                  idempotency_key=dedupe_key)
+            from .agent_message_bridge import push_pending
+
+            for member_id in store.push_members(room_id):
+                if member_id != caller.member_id:
+                    push_pending(member_id)  # agents that read a context file (Goose) get it now
             return {"ok": True, "sent": message,
                     "note": "Delivered to each recipient once: after their next tool call or in their inbox."}
         result = store.inbox(caller.member_id, room_id=room_id if (room or team_id) else None, limit=limit,

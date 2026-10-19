@@ -45,11 +45,24 @@ The agents of a team, the session that started the team (the lead) and Mac MCP s
 Messages arrive on their own, once, without interrupting anything:
 
 - in the result of the member's next Mac MCP tool call, and
-- for a delegated agent, through its CLI's own hook after each of its native tool calls (Bash, Read, Edit), so it hears from teammates even when it never calls Mac MCP: Claude Code (a PostToolUse hook in a private `--settings` file), Codex in its restricted modes (a hook in the agent's private Codex home, trusted through Codex's own hook API, never by skipping Codex's hook trust) and OpenCode in full mode (a plugin in the agent's private config).
+- for a delegated agent, through its CLI's own extension point after each of its native tool calls (Bash, Read, Edit), so it hears from teammates even when it never calls Mac MCP. Every provider can send and receive, in every access mode:
 
-Codex in full mode uses the owner's own `~/.codex`, which Mac MCP does not change, and a restricted OpenCode agent runs with `--pure`, which loads no plugin, so a repository cannot bring one into its sandbox; those agents, Grok and Kimi get messages in Mac MCP tool results and their inbox (`team_messages` in the agent's meta says `hook` or `inbox_only` and why).
+| Provider | How messages reach it |
+|---|---|
+| Claude Code | PostToolUse hook in a private `--settings` file |
+| Codex | hook in the agent's private Codex home, trusted through Codex's own hook API (never by skipping Codex's hook trust); in full mode that home starts as a copy of your `config.toml`, so your `~/.codex` is never changed |
+| OpenCode | plugin named in the agent's private config; a restricted agent runs without `--pure` while messages are on, so its plugin loads |
+| Kilo Code | plugin in the agent's private Kilo config |
+| Grok Build | PostToolUse hook in the agent's private Grok home |
+| pi | an extension passed with `-e` that adds the note to the tool result |
+| Cline | a `PostToolUse` hook in the agent's private Cline folder |
+| Goose | a message file (`GOOSE_MOIM_MESSAGE_FILE`) Mac MCP writes new messages into |
+| Antigravity | a PreInvocation hook in the agent's private home |
+| Kimi | Kimi's hooks cannot add text, so its prompt tells it to open its inbox every few steps and once before it finishes |
 
-Each member has one mark of what was shown to it, moved in one write by whichever channel shows a message first, so an agent that both uses Mac MCP tools and runs under a hook sees every message once; shown is recorded per channel, and read only when the inbox is opened. A team's task agent also gets team broadcasts sent before it started, and a message to a task waits for that task's agent. The hook holds a messaging-only token in a 0600 file and never the agent's Mac MCP credential; everything is removed and the token revoked when the attempt ends. Bodies are untrusted data from another agent: they are clipped at 1,500 characters, secrets are redacted, a sender may send 20 a minute, a room keeps its last 1,000 messages for 7 days, and the note an agent sees says they are not instructions. `MAC_MCP_TEAM_MESSAGES=0` turns it all off.
+`team_messages` in the agent's meta says `hook` or `inbox_only`.
+
+Each member has one mark of what was shown to it, moved in one write by whichever channel shows a message first, so an agent that both uses Mac MCP tools and runs under a hook sees every message once; shown is recorded per channel, and read only when the inbox is opened. A team's task agent also gets team broadcasts sent before it started, and a message to a task waits for that task's agent. The hook holds a messaging-only token in a 0600 file and never the agent's Mac MCP credential; everything is removed and the token revoked when the attempt ends. Bodies are untrusted data from another agent: they are clipped at 1,500 characters, secrets are redacted, a sender may send 20 a minute, a room keeps its last 1,000 messages for 7 days, and the note an agent sees says they are not instructions. **Settings › Subagents › Messages Between Agents** (on by default, `subagents.team_messages`) turns it all off and on; `MAC_MCP_TEAM_MESSAGES=0` or `1` overrides the setting.
 
 ## An agent's own desktop
 

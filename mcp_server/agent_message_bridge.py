@@ -46,7 +46,11 @@ HOOK_PATH = "/team-messages/hook"
 HOOK_HEADER = "X-Mac-MCP-Team-Token"
 HOOK_TIMEOUT_S = 3
 CODEX_TRUST_TIMEOUT_S = 20.0
-PROVEN_PROVIDERS = ("claude", "codex", "opencode")
+# Providers whose CLI can add a note to the model's next step (a hook, plugin, extension or
+# context file). Kimi Code's PostToolUse hook is observe-only, so a Kimi agent is told to check its
+# inbox instead (tools_agents._team_messaging_instruction).
+HOOK_PROVIDERS = ("claude", "codex", "opencode", "grok", "pi", "kilo", "cline", "goose", "antigravity")
+PROVEN_PROVIDERS = HOOK_PROVIDERS
 
 
 def enabled() -> bool:
@@ -97,6 +101,7 @@ def _curl_command(headers: Path, url: str) -> str:
 
 def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_dir: Path,
             codex_home: Optional[Path] = None, opencode_config: Optional[Path] = None,
+            harness_home: Optional[Path] = None,
             trust_codex_hook: Optional[Callable[..., Optional[str]]] = None) -> Optional[Bridge]:
     """Join the agent's team room and set up its CLI hook. None when the agent is not in a team."""
     team_id = str(meta.get("team_id") or "").strip()
@@ -158,6 +163,49 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
             if access_mode != "full":
                 # --pure loads no plugin at all; with messages on, the agent runs without it (its sandbox stays).
                 bridge.drop_flags = ["--pure"]
+        elif provider == "grok":
+            # GROK_HOME is the agent's private home; hooks in its hooks/ folder are trusted.
+            assert harness_home is not None
+            hooks = {"hooks": {"PostToolUse": [{"matcher": "", "hooks": [
+                {"type": "command", "command": _curl_command(headers, hook_url(meta, "claude")),
+                 "timeout": HOOK_TIMEOUT_S + 2}]}]}}
+            bridge.files.append(_private_file(_private_dir(harness_home / "hooks") / "mac-mcp-team-messages.json",
+                                              json.dumps(hooks)))
+        elif provider == "pi":
+            extension = _private_file(folder / "mac-mcp-team-messages.js", _pi_extension(headers, hook_url(meta, "text")))
+            bridge.files.append(extension)
+            bridge.args = ["-e", str(extension)]
+        elif provider == "kilo":
+            assert harness_home is not None
+            plugin = _private_file(folder / "mac-mcp-team-messages.js", _opencode_plugin(headers, hook_url(meta, "text")))
+            bridge.files.append(plugin)
+            config_path = _private_dir(harness_home / "config" / "kilo") / "kilo.jsonc"
+            config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+            config["plugin"] = [*(config.get("plugin") or []), plugin.as_uri()]
+            _private_file(config_path, json.dumps(config, ensure_ascii=False, indent=2))
+        elif provider == "cline":
+            # Cline runs an executable named after the event from <its config dir>/hooks.
+            assert harness_home is not None
+            script = _private_dir(harness_home / "hooks") / "PostToolUse"
+            _private_file(script, "#!/bin/sh\n" + _curl_command(headers, hook_url(meta, "cline")) + "\n")
+            script.chmod(0o700)
+            bridge.files.append(script)
+        elif provider == "goose":
+            # Goose's PostToolUse hook cannot reach the model, but it reads GOOSE_MOIM_MESSAGE_FILE
+            # before every model call: Mac MCP writes this agent's new messages there itself.
+            note_file = folder / "team-messages.md"
+            _private_file(note_file, "")
+            bridge.files.append(note_file)
+            env["GOOSE_MOIM_MESSAGE_FILE"] = str(note_file)
+            store.set_push_file(member_id, str(note_file))
+            push_pending(member_id)
+        elif provider == "antigravity":
+            # agy reads .agents/ of every added folder; PreInvocation runs before each model call
+            # (so after every batch of tools) and may add steps the model sees.
+            assert harness_home is not None
+            hooks = {"mac-mcp-team-messages": {"PreInvocation": [
+                {"command": _curl_command(headers, hook_url(meta, "antigravity")), "timeout": HOOK_TIMEOUT_S + 2}]}}
+            bridge.files.append(_private_file(_private_dir(harness_home / ".agents") / "hooks.json", json.dumps(hooks)))
         bridge.mode = "hook"
         return bridge
     except Exception as exc:  # a broken hook must never stop the agent; it falls back to the inbox
@@ -166,6 +214,43 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
         bridge.files.clear()
         bridge.mode, bridge.reason = "inbox_only", f"hook_setup_failed:{type(exc).__name__}"
         return bridge
+
+
+def _pi_extension(headers: Path, url: str) -> str:
+    return (
+        "// Mac MCP team messages (#208): after each tool, add messages from teammates to its result.\n"
+        'const { readFileSync } = require("node:fs");\n'
+        f"const HEADER = readFileSync({json.dumps(str(headers))}, \"utf8\").trim();\n"
+        "const NAME = HEADER.split(\":\")[0];\n"
+        "const TOKEN = HEADER.split(\":\").slice(1).join(\":\").trim();\n"
+        "module.exports = function (pi) {\n"
+        '  pi.on("tool_result", async (event) => {\n'
+        "    try {\n"
+        f"      const response = await fetch({json.dumps(url)}, {{\n"
+        "        method: \"POST\", headers: { [NAME]: TOKEN, \"Content-Type\": \"application/json\" }, body: \"{}\",\n"
+        f"        signal: AbortSignal.timeout({HOOK_TIMEOUT_S * 1000}),\n"
+        "      });\n"
+        "      const note = response.ok ? (await response.text()).trim() : \"\";\n"
+        "      if (!note) return undefined;\n"
+        "      return { content: [...(event.content || []), { type: \"text\", text: note }],\n"
+        "               structuredContent: event.structuredContent, details: event.details };\n"
+        "    } catch (_error) { return undefined; }\n"
+        "  });\n"
+        "};\n"
+    )
+
+
+def push_pending(member_id: str) -> None:
+    """Write a member's unseen messages to its push file (Goose reads it before each model call)."""
+    path = tm.store().push_file(member_id)
+    if not path:
+        return
+    messages = tm.store().claim(member_id, channel="hook")
+    if messages:
+        target = Path(path)
+        temporary = target.with_name(f".{target.name}.{os.getpid()}")
+        _private_file(temporary, tm.note(messages) + "\n")
+        os.replace(temporary, target)
 
 
 def _opencode_plugin(headers: Path, url: str) -> str:
@@ -262,6 +347,7 @@ def cleanup(bridge: Optional[Bridge]) -> None:
     if bridge is None:
         return
     tm.store().revoke_hook_tokens(bridge.member_id)
+    tm.store().set_push_file(bridge.member_id, None)
     for path in bridge.files:
         try:
             path.unlink(missing_ok=True)
@@ -288,6 +374,10 @@ def hook_response(member_id: Optional[str], fmt: str) -> Response:
     note = tm.note(messages)
     if fmt in {"claude", "codex"}:
         return JSONResponse({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}})
+    if fmt == "cline":
+        return JSONResponse({"contextModification": note})
+    if fmt == "antigravity":
+        return JSONResponse({"injectSteps": [{"ephemeralMessage": note}]})
     return PlainTextResponse(note)
 
 
