@@ -17,6 +17,7 @@ owner-only file and are never returned by status reads.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import hashlib
 import json
@@ -34,6 +35,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import paths
 from .private_storage import PRIVATE_FILE_MODE, ensure_private_dir
+
+# BaseExceptionGroup is built in from Python 3.11; on 3.10 anyio raises the exceptiongroup backport.
+_ExceptionGroup = getattr(builtins, "BaseExceptionGroup", None)
+if _ExceptionGroup is None:  # pragma: no cover - Python 3.10 only
+    from exceptiongroup import BaseExceptionGroup as _ExceptionGroup
 
 LOG = logging.getLogger(__name__)
 
@@ -447,7 +453,7 @@ def find_exception(exc: BaseException, kind: type) -> Optional[BaseException]:
         seen.add(id(item))
         if isinstance(item, kind):
             return item
-        if isinstance(item, BaseExceptionGroup):
+        if isinstance(item, _ExceptionGroup):
             stack.extend(item.exceptions)
         for linked in (item.__cause__, item.__context__):
             if linked is not None:
@@ -459,7 +465,7 @@ def _short_error(exc: BaseException) -> str:
     needs_sign_in = find_exception(exc, SignInRequired)
     if needs_sign_in is not None:
         return str(needs_sign_in)
-    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+    while isinstance(exc, _ExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     text = str(exc) or type(exc).__name__
     return f"{type(exc).__name__}: {text}"[:400]

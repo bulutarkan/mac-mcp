@@ -34,6 +34,7 @@
 - An agent's typed summary, which `wait_agents` shows the lead, now carries the agent's answer in the language it answered in, instead of an English description of what it did.
 - Two agents starting at the same moment on a fresh install no longer make one of them fail with "database is locked".
 - An external MCP tool with a `description` or `idempotency_key` parameter no longer breaks the tool list.
+- On Python 3.10, an error from a connected MCP server is reported instead of stopping the connection code with a NameError (2.2.1 r2).
 
 ### Permissions & Safety in plain words (#246)
 - Settings › Permissions & Safety now starts with two plain answers you can change in place: **What AI apps can do** (Trusted, Standard or Read Only, each said in one sentence) and **When Mac MCP asks you first** (Off, Critical or High Risk, likewise). Saved logins follow; the policy terms (allowed capabilities, destructive families, the agent access ceiling, headless behavior, timeouts) are under **Details**. Warnings about an invalid setting stay at the top.
