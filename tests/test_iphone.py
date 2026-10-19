@@ -152,6 +152,12 @@ class ActionTests(IPhoneCase):
             self.assertEqual("iphone_argument_invalid", iphone.run("act", steps=[bad])["error"], bad)
         self.assertEqual(1, len(self.calls))
 
+    def test_closing_an_app_needs_its_name(self) -> None:
+        iphone.run("act", steps=[{"type": "close_app", "app": "Weather"}])
+        self.assertEqual([{"type": "close_app", "app": "Weather"}], self.calls[0][1]["steps"])
+        self.assertEqual("iphone_argument_invalid", iphone.run("act", steps=[{"type": "close_app"}])["error"])
+        self.assertEqual(1, len(self.calls))
+
     def test_regions_are_checked_before_anything_runs(self) -> None:
         for bad in ("left half", {"middle": 3}, {"top": "x"}, ["top"]):
             self.assertEqual("iphone_argument_invalid", iphone.run("read", region=bad)["error"], bad)
@@ -293,6 +299,11 @@ class HelperSourceTests(unittest.TestCase):
         self.assertLess(forward.index("activate()"), forward.index("pointerHidden(true)"))
         self.assertIn("if point != nil { pointerHidden(true) }", HELPER)
         self.assertIn("while pointerHides > 0 { CGDisplayShowCursor", HELPER)
+
+    def test_close_app_swipes_only_a_card_labelled_with_the_name(self) -> None:
+        closing = HELPER[HELPER.index('case "close_app":'):HELPER.index('case "open_app":')]
+        self.assertLess(closing.index("IPHONE_APP_NOT_OPEN"), closing.index(".leftMouseDown"))
+        self.assertIn("kVK_ANSI_1", closing)  # from Home, so ⌘2 opens the switcher rather than closing it
 
     def test_a_second_tap_only_when_the_first_changed_nothing(self) -> None:
         self.assertIn("if let openAt, !changed {", HELPER)

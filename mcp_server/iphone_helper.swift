@@ -717,7 +717,8 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
     case "swipe":
         let from = try point(step, mirror, shot), to = try point(step, mirror, shot, x: "to_x", y: "to_y")
         let steps = 18
-        let pause = useconds_t(max(80, min(2000, value(step, "duration_ms") ?? 300)) * 1000) / useconds_t(steps)
+        // Quick by default: iPhone Mirroring passes a drag on as a swipe only when it is fast (a slow one is a tap).
+        let pause = useconds_t(max(60, min(2000, value(step, "duration_ms") ?? 150)) * 1000) / useconds_t(steps)
         announce("Swiping", at: from, press: true)
         mouse(.mouseMoved, from)
         mouse(.leftMouseDown, from)
@@ -803,6 +804,60 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
         }
         announce("Going back", at: try desktopPoint(mirror, shot, x: Double(x), y: Double(y)), press: true)
         tap(try desktopPoint(mirror, shot, x: Double(x), y: Double(y)))
+    case "close_app":
+        // The app switcher (⌘2), then the named app's card thrown off the top with a fast swipe, as a finger does. The
+        // card is found by its label (the front app sits at the right edge, the one before it in the middle); the cards
+        // are scrolled sideways until it shows, and nothing is swiped unless the label names the app.
+        guard let name = step["app"] as? String, !fold(name).isEmpty else {
+            throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "close_app needs app (its name under the card).")
+        }
+        let wanted = fold(name)
+        announce("Closing an app")
+        // From Home, so ⌘2 always opens the switcher (pressed while it shows, it would close it).
+        press(CGKeyCode(kVK_ANSI_1), modifiers: [command_])
+        shot = waitStill(mirror, limit: 1.0, minimum: 0.3)
+        let before = differenceHash(shot.image)
+        press(CGKeyCode(kVK_ANSI_2), modifiers: [command_])
+        shot = waitChange(mirror, from: before, limit: 1.2)
+        shot = waitStill(mirror, limit: 1.0, minimum: 0.3)
+        let phoneHeight = outputWidth * shot.screen.height / shot.screen.width
+        let labels = CGRect(x: 0, y: 0, width: outputWidth, height: phoneHeight * 0.2)
+        func cardLabel() -> [String: Any]? {
+            recognize(shot.image, phoneWidth: outputWidth, within: labels).first { fold($0["text"] as? String ?? "") == wanted }
+        }
+        var found = cardLabel()
+        var sweeps = 0
+        while found == nil && sweeps < 6 {
+            // Older apps are to the left: bring them in, then look again.
+            let middle = try desktopPoint(mirror, shot, x: outputWidth / 2, y: phoneHeight / 2)
+            mouse(.mouseMoved, middle)
+            for _ in 0..<8 {
+                post(CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: 40, wheel3: 0), pause: 14_000)
+            }
+            shot = waitStill(mirror, limit: 1.0, minimum: 0.3)
+            found = cardLabel()
+            sweeps += 1
+        }
+        guard let label = found, let labelX = label["x"] as? Int else {
+            press(CGKeyCode(kVK_ANSI_1), modifiers: [command_])
+            throw StepError(code: "IPHONE_APP_NOT_OPEN", message: "“\(name)” is not among the open apps, so nothing was closed.")
+        }
+        // The label sits at the card's top left; the card's middle is a little to its right.
+        let cardX = min(max(Double(labelX) + 35, 40), outputWidth - 40)
+        let from = try desktopPoint(mirror, shot, x: cardX, y: phoneHeight * 0.6)
+        let to = try desktopPoint(mirror, shot, x: cardX, y: 0)
+        announce("Closing an app", at: from, press: true)
+        mouse(.mouseMoved, from)
+        mouse(.leftMouseDown, from)
+        for index in 1...12 {
+            let t = CGFloat(index) / 12
+            post(CGEvent(mouseEventSource: source, mouseType: .leftMouseDragged,
+                         mouseCursorPosition: CGPoint(x: from.x, y: from.y + (to.y - from.y) * t), mouseButton: .left), pause: 10_000)
+        }
+        mouse(.leftMouseUp, to)
+        shot = waitStill(mirror, limit: 1.2, minimum: 0.5)
+        done["closed"] = cardLabel() == nil
+        settleFor = 0.6
     case "open_app":
         guard let name = step["app"] as? String, !name.isEmpty else {
             throw StepError(code: "IPHONE_ARGUMENT_INVALID", message: "open_app needs app.")

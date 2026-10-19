@@ -35,7 +35,8 @@ READ_ACTIONS = frozenset({"status", "see", "read", "find"})
 INPUT_ACTIONS = IPHONE_INPUT_ACTIONS
 # Step types of action=act (one call, one moment in front, the screen after all of them).
 STEP_TYPES = frozenset({"tap", "tap_text", "double_tap", "long_press", "swipe", "scroll", "type", "key", "home",
-                        "app_switcher", "spotlight", "open_app", "wait", "wait_for_text", "expect_text", "back"})
+                        "app_switcher", "spotlight", "open_app", "wait", "wait_for_text", "expect_text", "back",
+                        "close_app"})
 KEY_MODIFIERS = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control"})
 # ⌘ with these stays on the Mac: iPhone Mirroring's own window, app and View menu shortcuts.
 MIRRORING_KEYS = frozenset({"w", "q", "h", "m", ",", "1", "2", "3", "+", "-", "0"})
@@ -226,7 +227,7 @@ def check_steps(steps: Any) -> List[Dict[str, Any]]:
                                   "Mirroring on the Mac (⌘W would close its window); home, app_switcher and spotlight "
                                   "are ⌘1–3.")
         wanted = {"tap_text": "text", "wait_for_text": "text", "expect_text": "text", "type": "text", "key": "key",
-                  "open_app": "app"}.get(kind)
+                  "open_app": "app", "close_app": "app"}.get(kind)
         if wanted and not (isinstance(step.get(wanted), str) and step[wanted].strip()):
             raise IPhoneError("IPHONE_ARGUMENT_INVALID", f"Step {index} ({kind}) needs {wanted}.")
         if kind == "type" and "\n" in step["text"]:

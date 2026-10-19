@@ -14,6 +14,7 @@
 - Fewer calls and fewer words: `region` reads only part of the screen (Vision reads just that part), `find` looks for several texts at once, `tap_text` can be kept to a region, and `expect_text` checks the screen inside a job, so sending a message with its checks takes one call instead of five.
 - `open: true` opens a row in Files (and similar lists) that the first tap only selects, tapping again only when nothing changed. Zooming uses `double_tap`: iPhone Mirroring passes no pinch, not even a real trackpad's.
 - The agent cursor shows where the iPhone is touched, labelled ("Tapping", "Typing", "Scrolling"). `back` taps the app's own back button; `key` takes ⌘/⇧/⌥/⌃ for an app's shortcuts, and refuses the ones iPhone Mirroring keeps (⌘W would close its window).
+- `close_app` closes an app from the app switcher, touching only a card labelled with its name; `swipe` is quick by default, since iPhone Mirroring takes a slow drag as a tap.
 - While the agent taps or types on the iPhone, the owner's pointer is hidden and only the agent cursor shows; it reappears where it was.
 - Fixed: Spotlight could lose the first letter of an app's name when typing began before its field was ready.
 
