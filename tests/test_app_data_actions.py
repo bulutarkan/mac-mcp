@@ -28,10 +28,10 @@ def _capture_scripts(call, *, reply: str = "OK" + US + "uid-1" + US + "T" + US +
 
 class AppDataActionTests(unittest.TestCase):
     def test_registry_and_risk_treat_data_changes_as_local_writes(self) -> None:
-        self.assertEqual(("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event"),
-                         aa.supported_actions("calendar"))
-        self.assertEqual(("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"),
-                         aa.supported_actions("reminders"))
+        self.assertEqual(("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event",
+                          "undo"), aa.supported_actions("calendar"))
+        self.assertEqual(("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder",
+                          "undo"), aa.supported_actions("reminders"))
         self.assertTrue(aa.is_read_action("list_reminders"))
         _, write = resolve_risk("mac_app", {"app": "Calendar", "action": "create_event"})
         self.assertIn(Capability.LOCAL_WRITE, write.capabilities)

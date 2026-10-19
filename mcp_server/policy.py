@@ -355,6 +355,13 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
             destructive=False,
             sensitive=True,
         )
+    # Undo puts back what Mac MCP changed (#259); only force can overwrite a later edit.
+    if action == "undo":
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
+            destructive=bool(arguments.get("force")),
+            sensitive=True,
+        )
     # Deleting a reminder or replacing a note's text loses what was there (#194).
     if action in {"delete_reminder", "update_note"}:
         return RiskOverride(

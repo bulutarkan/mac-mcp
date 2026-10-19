@@ -1,3 +1,15 @@
+## Unreleased
+
+### Undo for changes in Notes, Reminders, Calendar and Mail (#259)
+- What an agent changes in your apps can be undone, like file changes. A changed note, reminder, event or email gets its old state back; a note, reminder, event or draft Mac MCP made is removed (notes go to Recently Deleted); a deleted reminder is made again (new id). The change's result carries an `undo_id`, and `mac_app` `action=undo` puts it back.
+- Undo never overwrites an edit made since: if the item changed after Mac MCP changed it, nothing is changed (`force=true` overrides, classed as destructive). Notes with attachments are not recorded, since writing their old text back could lose them.
+- Sends and shortcut runs say they cannot be undone. Recording adds no question and never stops a change.
+- The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
+- Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
+
+### Fixes
+- A Mail draft made by `create_draft` keeps the message id it returns: Mail saved the draft again under a new id when the compose window closed, so `update_message` and `open_message` could no longer find it. A draft whose id Mail had not assigned yet no longer fails as `MAIL_DRAFT_FAILED` after the draft was in fact saved.
+
 ## [2.2.1] - 2026-10-19
 
 **In short:** agents that work at the same time can now talk to each other, whichever CLI they run in; agents can work on a desktop of their own; Mac MCP reads and searches Messages; GitHub, Notion, Slack and Google Drive connect from Settings in a few clicks, and your own MCP servers are offered to every agent; your documents (scanned ones too) can be asked about; scheduled tasks run when a file arrives, keep to a usage limit and say when a run went wrong; memory learns on its own; and Settings is easier to read and find your way in. Install with npm, `install.sh` or the package; existing installs get it with `mac-mcp update`.

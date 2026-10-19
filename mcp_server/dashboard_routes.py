@@ -8,7 +8,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -42,7 +42,7 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
-from . import privacy_inventory, privacy_policy, schedule_rules
+from . import app_undo, privacy_inventory, privacy_policy, schedule_rules
 from . import scheduled_tasks as task_store
 from . import run_budget, run_diagnosis, scheduled_task_runner
 from .runtime_settings import (
@@ -585,8 +585,47 @@ def create_dashboard_routes(
             return denied
         limit = max(1, min(_int_query(request, "limit", 10), 50))
         offset = max(0, min(_int_query(request, "offset", 0), 500))
-        payload = recent_transactions(limit=limit, offset=offset)
-        return JSONResponse({"ok": True, **payload})
+        if not app_undo.history():
+            return JSONResponse({"ok": True, **recent_transactions(limit=limit, offset=offset)})
+        # App changes (#259) join file transactions in one history, newest first. Both journals are
+        # small (64 file transactions, 200 app records), so the merged page is cut here.
+        rows: List[Dict[str, Any]] = []
+        file_offset: Optional[int] = 0
+        while file_offset is not None and file_offset <= 500:
+            page = recent_transactions(limit=50, offset=file_offset)
+            rows.extend(page.get("transactions") or [])
+            file_offset = page.get("next_offset")
+        rows.extend(app_undo.history())
+        rows.sort(key=lambda row: float(row.get("committed_at") or row.get("created_at") or 0), reverse=True)
+        window = rows[offset:offset + limit]
+        return JSONResponse({"ok": True, "transactions": window, "limit": limit, "offset": offset,
+                             "next_offset": offset + limit if offset + limit < len(rows) else None,
+                             "total": len(rows)})
+
+    def _undo_app_change(undo_id: str) -> Response:
+        """The dashboard's Undo for an app change (#259): never forced, so a later edit is never overwritten."""
+        try:
+            app = app_undo.app_of(undo_id)
+        except app_undo.UndoError:
+            return JSONResponse({"ok": False, "error": "transaction_not_found"}, status_code=404)
+        event_id = telemetry.start_call("dashboard", "mac_app", {"app": app, "action": "undo", "item_id": undo_id},
+                                        metadata={"actor": "dashboard-local-user"})
+        try:
+            result = app_undo.undo(undo_id, app=app, force=False)
+        except app_undo.UndoError as exc:
+            telemetry.finish_call(event_id, error=exc)
+            error, status = {
+                "UNDO_CONFLICT": ("app_change_conflict", 409), "UNDO_EXPIRED": ("transaction_expired", 409),
+                "UNDO_ALREADY_DONE": ("transaction_already_undone", 409), "UNDO_ITEM_GONE": ("app_item_gone", 409),
+                "UNDO_NOT_FOUND": ("transaction_not_found", 404),
+            }.get(exc.code, ("transaction_undo_failed", 409))
+            return JSONResponse({"ok": False, "error": error}, status_code=status)
+        except Exception as exc:  # the app did not answer: nothing claims success
+            telemetry.finish_call(event_id, error=exc)
+            return JSONResponse({"ok": False, "error": "transaction_undo_failed"}, status_code=409)
+        telemetry.finish_call(event_id, result={"ok": True, "app": app, "undo": {"undo_id": undo_id},
+                                                "verification": result.get("verification")})
+        return JSONResponse({"ok": True, "transaction_id": undo_id, "verified": bool(result.get("verified"))})
 
     async def undo_transaction_route(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -613,6 +652,8 @@ def create_dashboard_routes(
                 },
                 status_code=400,
             )
+        if transaction_id.startswith("appundo_"):
+            return await asyncio.to_thread(_undo_app_change, transaction_id)
         event_id = telemetry.start_call(
             "dashboard",
             "file_transaction_undo",

@@ -24,10 +24,11 @@ from .tools_ui import (
 )
 
 from .app_adapter_core import (  # noqa: F401  (re-exported: tests and app_adapters_more use these names)
-    _RS, _US, AppAdapterError, _clean_field, _date_setup, _event_datetime, _parse_date_bound, _parse_records,
-    _plain_text, _run, _single_line,
+    _MAILBOX_EXPRESSIONS, _RS, _US, AppAdapterError, _clean_field, _date_setup, _event_datetime, _mailbox_expr,
+    _parse_date_bound, _parse_records, _plain_text, _run, _single_line,
 )
 from . import app_adapters_more as more
+from . import app_undo
 from . import desktops
 _ADAPTER_VERSION = 1
 _MAX_LIMIT = 25
@@ -58,10 +59,11 @@ _APP_ALIASES = {
 
 _ACTIONS = {
     "Finder": ("selection", "select_file"),
-    "Notes": ("find_notes", "open_note", "create_note", "append_to_note", "update_note"),
-    "Mail": ("find_messages", "open_message", "create_draft", "send_mail", "update_message"),
-    "Calendar": ("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event"),
-    "Reminders": ("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"),
+    "Notes": ("find_notes", "open_note", "create_note", "append_to_note", "update_note", "undo"),
+    "Mail": ("find_messages", "open_message", "create_draft", "send_mail", "update_message", "undo"),
+    "Calendar": ("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event", "undo"),
+    "Reminders": ("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder",
+                  "undo"),
     "Preview": ("list_documents", "open_document"),
     "System Settings": ("list_panes", "open_pane"),
     "Messages": ("find_chats", "read_messages", "search_messages", "send_message"),
@@ -95,7 +97,7 @@ _READ_ACTIONS = {
 # so a person using the app's window does not block them.
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                        "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
-                       "update_message"}
+                       "update_message", "undo"}
 # A shortcut can do anything its actions do, so running one is gated like run_command: the shell
 # switch and the permission profile decide, as for any other command (no new approval prompt).
 _RUN_ACTIONS = {"run_shortcut"}
@@ -654,26 +656,6 @@ end tell'''
     result = {"ok": True, "verified": True, "id": parts[1], "title": parts[2]}
     result["focus"] = _focus_finish(focus, "Notes", deadline)
     return result
-
-
-_MAILBOX_EXPRESSIONS = {
-    "inbox": "inbox",
-    "sent": "sent mailbox",
-    "drafts": "drafts mailbox",
-    "junk": "junk mailbox",
-    "trash": "trash mailbox",
-}
-
-
-def _mailbox_expr(mailbox: Optional[str]) -> tuple[str, str]:
-    key = str(mailbox or "inbox").strip().lower()
-    expr = _MAILBOX_EXPRESSIONS.get(key)
-    if not expr:
-        raise AppAdapterError(
-            "APP_ADAPTER_ARGUMENT_INVALID",
-            f"mailbox must be one of: {', '.join(_MAILBOX_EXPRESSIONS)}.",
-        )
-    return key, expr
 
 
 def _mail_find(
@@ -1513,9 +1495,22 @@ def _mail_create_draft(
     cc_list, resolved_cc = _recipients(cc, "cc", timeout_s)
     resolved.update(resolved_cc)
     pick, address = _mail_account_pick(account)
-    readback = (
-        "(message id of d as text) & us & (subject of d as text) & us & (name of targetAccount as text) & us & senderText"
-    )
+    readback = "draftId & us & (subject of d as text) & us & (name of targetAccount as text) & us & senderText"
+    # Mail gives a just-saved draft its message id a moment later; until then reading it fails. Closing the
+    # compose object saves the draft again under a new message id, so the id is read after that (#259 E2E).
+    wait_for_id = [
+        "    set draftId to missing value",
+        "    repeat 40 times",
+        "        try",
+        "            set draftId to message id of d as text",
+        "            exit repeat",
+        "        end try",
+        "        delay 0.25",
+        f"        set again to messages of drafts mailbox whose subject is {_apple_string(title)}",
+        "        if (count of again) > 0 then set d to item 1 of again",
+        "    end repeat",
+        '    if draftId is missing value then return "NOT_VERIFIED"',
+    ]
     lines = [
         "set us to ASCII character 31",
         'tell application "Mail"',
@@ -1527,6 +1522,7 @@ def _mail_create_draft(
         f"    set existing to messages of drafts mailbox whose subject is {_apple_string(title)}",
         "    if (count of existing) > 0 then",
         "        set d to item 1 of existing",
+        *[f"    {line}" for line in wait_for_id],
         f"        return \"DUPLICATE\" & us & {readback}",
         "    end if",
         "    set m to make new outgoing message with properties "
@@ -1554,6 +1550,14 @@ def _mail_create_draft(
         # Mail keeps the hidden compose object until it quits whatever we do; closing
         # with saving yes can never discard the draft that was just saved.
         "    close m saving yes",
+        # For a moment the old and the new copy can both be there; wait for the one that stays.
+        "    repeat 20 times",
+        "        delay 0.25",
+        f"        set found to messages of drafts mailbox whose subject is {_apple_string(title)}",
+        "        if (count of found) is 1 then exit repeat",
+        "    end repeat",
+        "    if (count of found) > 0 then set d to item 1 of found",
+        *wait_for_id,
         '    set attached to 0',
         "    try",
         "        set attached to count of mail attachments of d",
@@ -2123,6 +2127,21 @@ def _mission_control(
     return {**result, "ok": True, **({} if action == "list_desktops" else {"verified": True})}
 
 
+def _undo_prepare(app: str, action: str, **kwargs: Any) -> Optional[app_undo.Plan]:
+    """The old state of what this action changes (#259). Recording never stops a change."""
+    try:
+        return app_undo.prepare(app, action, **kwargs)
+    except Exception as exc:  # an unexpected failure only costs the undo record
+        return app_undo.Plan(app, action, reason=f"Its old state could not be read ({type(exc).__name__}).")
+
+
+def _undo_record(plan: Optional[app_undo.Plan], payload: Dict[str, Any], *, timeout_s: float) -> Optional[Dict[str, Any]]:
+    try:
+        return app_undo.record(plan, payload, timeout_s=timeout_s)
+    except Exception as exc:
+        return {"undoable": False, "reason": f"The undo record could not be kept ({type(exc).__name__})."}
+
+
 def mac_app(
     settings: Settings,
     *,
@@ -2164,6 +2183,7 @@ def mac_app(
     url: Optional[str] = None,
     window_ids: Optional[List[int]] = None,
     cursor: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -2291,7 +2311,13 @@ def mac_app(
         if normalized_action in {"find_free_time", "plan_day"}:
             # Calendar can take 20+ seconds to list a week across many calendars; these only read, so they wait.
             timeout = 30.0
-        if canonical == "Finder":
+        undo_plan: Optional[app_undo.Plan] = None
+        if normalized_action != "undo":
+            undo_plan = _undo_prepare(canonical, normalized_action, item_id=item_id, query=query, exact=exact,
+                                      mailbox=mailbox, timeout_s=timeout)
+        if normalized_action == "undo":
+            payload = app_undo.undo(str(item_id or ""), app=canonical, force=bool(force), timeout_s=timeout)
+        elif canonical == "Finder":
             payload = (
                 _selection(settings, limit=bounded, timeout_s=timeout)
                 if normalized_action == "selection"
@@ -2428,6 +2454,9 @@ def mac_app(
         }
 
     result = {**_base(canonical, normalized_action), **payload}
+    undo_info = _undo_record(undo_plan, payload, timeout_s=timeout)
+    if undo_info is not None:
+        result["undo"] = undo_info
     if foreground_grant is not None and preserve_focus is False and normalized_action not in _READ_ACTIONS:
         result["foreground_authorization_source"] = foreground_grant.source
     return result

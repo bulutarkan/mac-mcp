@@ -80,6 +80,25 @@ class ChangeSummaryTests(unittest.TestCase):
             self.assertIn("/tmp/demo.txt", rendered)
             self.assertIn("Ran command", rendered)
 
+    def test_app_changes_name_what_changed_and_carry_the_undo_id_but_no_content(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3", max_events=100)
+            self._record(manager, "mac_app", {"app": "Notes", "action": "find_notes", "query": "Plan"},
+                         {"ok": True, "notes": [{"id": "n1", "title": "Plan"}]})
+            self._record(manager, "mac_app", {"app": "Notes", "action": "update_note", "item_id": "n1", "body": "secret plan"},
+                         {"ok": True, "app": "Notes", "note": {"id": "n1", "title": "Plan"},
+                          "undo": {"undoable": True, "undo_id": "appundo_0123456789abcdef"}})
+            self._record(manager, "mac_app", {"app": "Mail", "action": "send_mail", "title": "Hi"},
+                         {"ok": True, "app": "Mail", "sent": True, "undo": {"undoable": False, "reason": "sent"}})
+            summary = manager.change_summary(hours=1)
+        self.assertEqual(2, summary["change_count"])  # finding a note changes nothing
+        sent, changed = summary["items"]
+        self.assertEqual(("Changed note", "Notes", "Can be undone", "appundo_0123456789abcdef"),
+                         (changed["action"], changed["target"], changed["detail"], changed["undo_id"]))
+        self.assertEqual(("Sent email", "Cannot be undone"), (sent["action"], sent["detail"]))
+        self.assertNotIn("secret plan", json.dumps(summary))
+        self.assertNotIn('"Plan"', json.dumps(summary))
+
     def test_read_only_browser_calls_are_not_changes(self) -> None:
         declared, effective = resolve_risk("browser_list_tabs", {"browser": "Safari"})
         event = {

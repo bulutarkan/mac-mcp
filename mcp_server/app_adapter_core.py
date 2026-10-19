@@ -111,3 +111,24 @@ def _plain_text(value: Optional[str], field: str, limit: int) -> str:
     text = _clean_field(value, field, limit).replace("\r\n", "\n").replace("\r", "\n")
     # Our own field separators (and other control characters) never belong in note or mail text.
     return "".join(ch for ch in text if ch in "\n\t" or ord(ch) >= 32)
+
+
+# Mail's standard mailboxes by the names adapters accept (mailbox=...).
+_MAILBOX_EXPRESSIONS = {
+    "inbox": "inbox",
+    "sent": "sent mailbox",
+    "drafts": "drafts mailbox",
+    "junk": "junk mailbox",
+    "trash": "trash mailbox",
+}
+
+
+def _mailbox_expr(mailbox: Optional[str]) -> tuple[str, str]:
+    key = str(mailbox or "inbox").strip().lower()
+    expr = _MAILBOX_EXPRESSIONS.get(key)
+    if not expr:
+        raise AppAdapterError(
+            "APP_ADAPTER_ARGUMENT_INVALID",
+            f"mailbox must be one of: {', '.join(_MAILBOX_EXPRESSIONS)}.",
+        )
+    return key, expr

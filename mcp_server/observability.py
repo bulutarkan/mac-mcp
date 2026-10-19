@@ -170,7 +170,7 @@ _METADATA_TEXT_KEYS = {
     # Identifiers and what changed (change summaries and the dashboard read these).
     "path", "file", "files", "destination", "source", "cwd", "written", "url", "origin", "tab_handle",
     "element_id", "observation_id", "job_id", "transaction_id", "agent_id", "team_id", "request_id",
-    "event_id", "chat_id", "item_id",
+    "event_id", "chat_id", "item_id", "undo_id",
 }
 # Arguments additionally keep what was run; their typed text, bodies and scripts are sized.
 _METADATA_ARGUMENT_TEXT_KEYS = _METADATA_TEXT_KEYS | {"command", "commands", "app_name", "role", "key"}

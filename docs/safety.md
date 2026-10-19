@@ -57,6 +57,20 @@ The journal lives under `~/.mac-mcp/transactions/` by default. The directory and
 
 If a single write/move/delete preimage exceeds the snapshot limit, the operation preserves backwards compatibility but returns `undoable=false` with `irreversible_reason=snapshot_limit_exceeded`. Atomic batch operations are stricter: if a complete rollback snapshot cannot be prepared, the batch is refused **before the first mutation**. A process crash after prepare but before commit leaves a `prepared` journal entry; normal undo treats that outcome as unknown, while an explicit `force=true` can restore the recorded pre-state. Delegated-agent undo also re-checks every transaction path against the agent's current resource scope, so a transaction ID cannot bypass workspace confinement. `copy_file` and `create_directory` are not part of this initial transaction-journal boundary.
 
+### Undo for changes in Notes, Reminders, Calendar and Mail
+
+Changes `mac_app` makes in your apps can be undone too (#259). Before a supported change, Mac MCP reads the item's whole state through the app's scripting model (a note's text and title, a reminder's name, notes, due date, priority, flag, list and whether it is done, an event's title, times, place and notes, an email's read and flag state and mailbox); right after it, it reads the item again. The result carries `undo` with an `undo_id`, and `mac_app` with `action=undo` and `item_id=<undo_id>` puts it back:
+
+- a changed note, reminder, event or email gets its old state back;
+- a note, reminder, event or draft Mac MCP made is removed (a note goes to Notes' Recently Deleted folder for 30 days);
+- a deleted reminder is made again with the same fields and a new id.
+
+Undo only goes ahead while the item still reads back exactly as Mac MCP left it, so an edit you (or another agent) made since is never overwritten: undo then answers `UNDO_CONFLICT` and changes nothing. `force=true` overrides that check and is classed as destructive. The dashboard lists these changes next to file transactions, and its Undo never forces.
+
+Some changes are not recorded, and say so in `undo.reason`: a note with attachments (writing its old text back could lose them), a note larger than about 400,000 characters, and a change whose old state could not be read. Recording never stops a change and adds no question. Sending an email or a message and running a shortcut return `undoable: false`: those cannot be called back. Desktop changes in Mission Control are not recorded.
+
+Records live in `~/.mac-mcp/app-undo/` (owner-only `0700`/`0600`), hold the old state needed to put it back, and last 7 days, at most 200; the copy is dropped once a change is undone. Change summaries name what changed (for example "Changed note", "Deleted reminder") and the `undo_id`, never the item's text or title. `MAC_MCP_APP_UNDO=0` turns recording off.
+
 ### Symlink-safe delegated file scopes
 
 Delegated calls with explicit `path_roots` use a second, operation-time filesystem boundary in addition to the normal server policy check. Scoped reads, writes, edits, moves, copies, deletes, directory traversal, filename/content search, transaction snapshots, and undo/rollback walk path components with directory file descriptors plus `O_NOFOLLOW` rather than trusting a path string that was checked earlier. A symlink swap between policy validation and the actual filesystem operation therefore fails closed instead of following the replacement outside the workspace. Recursive find/search/tree operations report or skip symlink entries without traversing through them, and direct access to a symlink that resolves outside the allowed roots is denied.

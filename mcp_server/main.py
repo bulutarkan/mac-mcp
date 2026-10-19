@@ -1468,6 +1468,10 @@ def create_app():
             "Settings > Apps), and a failed run says outcome_unknown. "
             "Data actions return the item's stable id and a read-back verification; a replayed create returns the "
             "existing item instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
+            "Undo (Notes, Reminders, Calendar, Mail): a change returns undo={undo_id} when it can be undone; "
+            "action=undo, item_id=undo_id (same app) puts the old state back, removes an item Mac MCP made or makes a "
+            "deleted reminder again (new id). UNDO_CONFLICT means the item changed since: nothing was overwritten "
+            "(force=true only when the owner asks). Sends and shortcut runs say undoable=false. "
             "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
             "Mission Control (desktops): only when the owner asks you to work on a separate desktop or in your own "
             "workspace; otherwise work alongside them as usual. list_desktops (each display's desktops with the "
@@ -1527,6 +1531,7 @@ def create_app():
         url: Optional[str] = None,
         window_ids: Optional[List[int]] = None,
         cursor: Optional[str] = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1571,6 +1576,7 @@ def create_app():
                 url=url,
                 window_ids=window_ids,
                 cursor=cursor,
+                force=force,
             ),
         )
 

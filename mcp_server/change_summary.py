@@ -82,6 +82,8 @@ def _is_change(event: Mapping[str, Any]) -> bool:
     if str(event.get("status") or "").lower() != "success":
         return False
     tool = str(event.get("tool") or "")
+    if tool == "mac_app" and _mac_app_action(event) not in _MAC_APP_VERBS:
+        return False  # finding, listing and opening change nothing
     if tool in _FILE_TOOLS | _BROWSER_TOOLS | _COMMAND_TOOLS | _APP_TOOLS | _EXTERNAL_TOOLS | _SYSTEM_TOOLS | _AGENT_TOOLS:
         return True
     return bool(_capabilities(event).intersection(_SIDE_EFFECT_CAPS))
@@ -163,14 +165,35 @@ def _command_item(event: Mapping[str, Any]) -> Dict[str, Any]:
     return {"action": labels.get(tool, "Ran action"), "target": "Terminal", "detail": detail}
 
 
+_MAC_APP_VERBS = {
+    "create_note": "Created note", "update_note": "Changed note", "append_to_note": "Added to note",
+    "create_reminder": "Created reminder", "update_reminder": "Changed reminder",
+    "complete_reminder": "Completed reminder", "delete_reminder": "Deleted reminder",
+    "create_event": "Created event", "update_event": "Changed event",
+    "create_draft": "Saved email draft", "update_message": "Changed email", "send_mail": "Sent email",
+    "send_message": "Sent message", "run_shortcut": "Ran shortcut", "undo": "Undid a change",
+    "create_desktop": "Added desktop", "remove_desktop": "Removed desktop", "open_on_desktop": "Opened on desktop",
+    "move_to_desktop": "Moved windows to desktop",
+}
+
+
+def _mac_app_action(event: Mapping[str, Any]) -> str:
+    return str(_mapping(event.get("arguments")).get("action") or "").strip().lower().replace("-", "_")
+
+
 def _app_item(event: Mapping[str, Any]) -> Dict[str, Any]:
     tool = str(event.get("tool") or ""); args = _mapping(event.get("arguments")); result = _mapping(event.get("result"))
     app = _safe_text(args.get("app_name") or args.get("app") or result.get("app") or result.get("application"), 100) or "macOS app"
     if tool == "open_app":
         return {"action": "Opened app", "target": app}
     if tool == "mac_app":
-        action = _safe_text(args.get("action"), 80) or "app action"
-        return {"action": "Used app adapter", "target": app, "detail": action}
+        undo = _mapping(result.get("undo"))
+        item: Dict[str, Any] = {"action": _MAC_APP_VERBS.get(_mac_app_action(event), "Changed app data"), "target": app}
+        if undo.get("undoable") is True and undo.get("undo_id"):
+            item.update(detail="Can be undone", undo_id=_safe_text(undo.get("undo_id"), 64))
+        elif undo.get("undoable") is False:
+            item["detail"] = "Cannot be undone"
+        return item
     action = _safe_text(args.get("action") or args.get("action_type"), 80) or "UI action"
     return {"action": "Interacted with app", "target": app, "detail": action}
 
@@ -253,6 +276,8 @@ def change_items_for_event(event: Mapping[str, Any]) -> List[Dict[str, Any]]:
             "agent_id": event.get("agent_id"),
             "team_id": event.get("team_id"),
         }
+        if item.get("undo_id"):
+            receipt["undo_id"] = item["undo_id"]
         if index:
             receipt["event_item"] = index + 1
         items.append(receipt)

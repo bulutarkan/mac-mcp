@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -51,6 +52,44 @@ class TransactionHistoryDashboardTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.env.stop()
         self.temp.cleanup()
+
+    def test_app_changes_join_the_history_and_undo_without_force(self) -> None:
+        from mcp_server import app_undo
+
+        target = self.work / "notes.txt"
+        target.write_text("before", encoding="utf-8")
+        files.write_file(None, str(target), "after")  # a file change shares the history
+        before = {"id": "x-coredata://n/1", "name": "Patient plan", "folder": "Notes", "folder_id": "f1",
+                  "attachments": 0, "body": "<div>secret dose</div>"}
+        after = {**before, "body": "<div>changed dose</div>"}
+        with patch.dict(os.environ, {"MAC_MCP_APP_UNDO": "1"}), \
+                patch.object(app_undo, "read_note", side_effect=[before, after]):
+            plan = app_undo.prepare("Notes", "update_note", item_id=before["id"])
+            info = app_undo.record(plan, {"ok": True, "changed": True})
+        listed = self.client.get("/dashboard/api/transactions?limit=10", headers=AUTH).json()
+        self.assertEqual(2, listed["total"])
+        self.assertEqual({"app_change", "filesystem"}, {item["operation_class"] for item in listed["transactions"]})
+        self.assertEqual(info["undo_id"], listed["transactions"][0]["transaction_id"])  # newest first
+        row = next(item for item in listed["transactions"] if item["transaction_id"] == info["undo_id"])
+        self.assertEqual(("app_change", "update_note", "Notes · note", True),
+                         (row["operation_class"], row["operation"], row["target_summary"], row["can_undo"]))
+        self.assertNotIn("Patient plan", json.dumps(listed))
+        self.assertNotIn("secret dose", json.dumps(listed))
+
+        edited = {**after, "body": "<div>the owner typed this</div>"}
+        with patch.object(app_undo, "read_note", return_value=edited), patch.object(app_undo, "_restore_note") as restore:
+            blocked = self.client.post("/dashboard/api/transactions/undo", headers=AUTH,
+                                       json={"transaction_id": info["undo_id"], "confirm": True})
+        self.assertEqual((409, "app_change_conflict"), (blocked.status_code, blocked.json()["error"]))
+        restore.assert_not_called()
+        with patch.object(app_undo, "read_note", side_effect=[after, before]), patch.object(app_undo, "_restore_note"):
+            done = self.client.post("/dashboard/api/transactions/undo", headers=AUTH,
+                                    json={"transaction_id": info["undo_id"], "confirm": True})
+        self.assertEqual(200, done.status_code)
+        self.assertTrue(done.json()["verified"])
+        listed = self.client.get("/dashboard/api/transactions?limit=10", headers=AUTH).json()
+        row = next(item for item in listed["transactions"] if item["transaction_id"] == info["undo_id"])
+        self.assertEqual(("undone", "already_undone"), (row["state"], row["undo_blocked_reason"]))
 
     def test_recent_history_is_sanitized_and_paginates(self) -> None:
         first = self.work / "patient-secret-name.txt"

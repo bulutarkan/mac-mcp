@@ -398,7 +398,19 @@
       run_command: "Shell run",
       run_commands_parallel: "Parallel shell run",
       start_job: "Background job",
+      create_note: "Created note",
+      update_note: "Changed note",
+      append_to_note: "Added to note",
+      create_reminder: "Created reminder",
+      update_reminder: "Changed reminder",
+      complete_reminder: "Completed reminder",
+      delete_reminder: "Deleted reminder",
+      create_event: "Created event",
+      update_event: "Changed event",
+      create_draft: "Saved email draft",
+      update_message: "Changed email",
     };
+    if (item.operation_class === "app_change") return labels[item.operation] || "App change";
     if (item.operation_class === "compound") return labels[item.operation] || "Compound change";
     return labels[item.operation] || (item.operation_class === "shell_capture" ? "Shell capture" : "Filesystem change");
   }
@@ -490,9 +502,11 @@
     els.transactionList.querySelectorAll("[data-undo-id]").forEach((button) => button.addEventListener("click", () => {
       state.pendingUndo = button.dataset.undoId;
       const selected = state.transactions.find((item) => item.transaction_id === state.pendingUndo);
-      state.transactionMessage = selected?.reversibility === "partial"
-        ? "Confirm Undo files: recorded filesystem changes will be restored; unsupported effects will remain."
-        : "Confirm Undo to restore the recorded pre-change filesystem state.";
+      state.transactionMessage = selected?.operation_class === "app_change"
+        ? "Confirm Undo to put this item back the way it was before Mac MCP changed it."
+        : selected?.reversibility === "partial"
+          ? "Confirm Undo files: recorded filesystem changes will be restored; unsupported effects will remain."
+          : "Confirm Undo to restore the recorded pre-change filesystem state.";
       renderTransactions();
     }));
     els.transactionList.querySelectorAll("[data-cancel-undo]").forEach((button) => button.addEventListener("click", () => {
@@ -535,12 +549,12 @@
     return new Set([
       "write_file", "write_files_batch", "edit_file", "move_file", "copy_file",
       "delete_path", "create_directory", "file_transaction_batch", "file_transaction_undo",
-      "run_command", "run_commands_parallel", "start_job", "get_job_status",
+      "run_command", "run_commands_parallel", "start_job", "get_job_status", "mac_app",
     ]).has(String(tool || ""));
   }
 
   async function performTransactionUndo(transactionId) {
-    state.transactionMessage = "Undoing recorded filesystem changes…";
+    state.transactionMessage = "Undoing recorded changes…";
     renderTransactions();
     try {
       await postJSON("/dashboard/api/transactions/undo", {
@@ -559,6 +573,9 @@
         transaction_irreversible: "This transaction is not reversible.",
         transaction_restore_failed: "Undo could not be completed. The transaction needs attention.",
         transaction_not_found: "Transaction receipt is no longer available.",
+        app_change_conflict: "Undo blocked because the item was changed after Mac MCP changed it; nothing was overwritten.",
+        app_item_gone: "The item is no longer there, so there is nothing to put back.",
+        transaction_already_undone: "This change was already undone.",
       };
       state.transactionMessage = messages[error.code] || "Undo could not be completed safely.";
       await refreshTransactions();
