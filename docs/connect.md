@@ -91,10 +91,22 @@ For the simplest Cloudflare setup, create the tunnel and hostname in Cloudflare,
 
 ## Your other Macs
 
-**Settings → Macs** lets your Macs see each other and run each other's recipes (#147). There is no server in between: each Mac keeps its own address (Cloudflare, ngrok or a custom HTTPS URL; any of them, not a particular domain), and another Mac reaches it there. ngrok needs its fixed domain, since a random address changes on each start. A Mac with no public address can add other Macs but cannot be added.
+**Settings → Macs** connects your Macs so an agent on one can use the others (#147). There is no server in between: each Mac keeps its own address (Cloudflare, ngrok or a custom HTTPS URL; any of them, not a particular domain), and another Mac reaches it there. ngrok needs its fixed domain, since a random address changes on each start. A Mac with no public address can add other Macs but cannot be added.
 
-**Pairing.** On the Mac to be added (B), choose what the other Mac may do (see B's status, or also list and run its recipes) and **Invite a Mac**: B shows a link and an 8-character code that work once, for 2 minutes. On the other Mac (A), **Add a Mac** and paste the link, or B's address and the code. B then shows "A wants to connect" with a 6-digit check that A shows too; B's owner allows or refuses. Only then does B issue A a credential of its own. B keeps only its hash; A keeps it in an owner-only file. B's Mac MCP API key is never shared, and A's credential does not open B's `/mcp`.
+**Pairing.** On the Mac to be added (B), choose what the other Mac may do there and **Invite a Mac**: B shows a link, plus its address and an 8-character code, that work once, for 2 minutes. On the other Mac (A), **Add a Mac** and paste the link, or type B's address and the code. B then shows "A wants to connect" with a 6-digit check that A shows too; B's owner allows or refuses. Only then does B issue A a credential of its own. B keeps only its hash; A keeps it in an owner-only file. B's Mac MCP API key is never shared.
 
-**What A sees.** Each paired Mac's name, whether it answers, its Mac MCP version and how long it has been running, and what A may do there. A Mac that is asleep, off or at a new address shows as not answering. Agents on A use the `fleet` tool: `list`, `recipes` and `run_recipe`. A recipe run this way runs on B under B's own permission profile and approvals, as `fleet:<A's name>`. Pairing, allowing and removing Macs are the owner's, in Settings.
+**Access levels.** Each connection carries one of three:
+
+| Level | What A may do on B |
+|---|---|
+| Full access | Use B's tools: run commands, change files, use its apps and browser, run its recipes. |
+| Read only | Use B's reading tools: read files, search, look at its screen and pages, list its recipes. Tools that change something are not shown to A and are refused. |
+| Status only | See that B is on, its model, Mac MCP version and uptime. No tools. |
+
+**B's own setting comes first.** A connection never gets more than B's own profile in **Permissions & Safety**: full access on a Mac set to Read Only reads only. Both Macs show such a connection as limited, and the (i) next to the title says why. B's approvals still apply to what A runs there.
+
+**Busy.** The Available toggle at the top of Settings → Macs sets a Mac to Busy (orange) without removing anyone: while Busy it takes no tool calls, recipe runs or new pairing from other Macs, and they show it as Busy. Turning it back on restores every connection as it was.
+
+**Agents** on A use the `fleet` tool: `list` shows the Macs and what each allows; `tools` lists a Mac's tools, or with `query` searches them (its own `tool_discover`); `call` runs one of them there (`mac`, `tool`, `arguments`); `recipes` and `run_recipe` list and run its saved recipes. A call runs in B's Mac MCP, as `fleet:<A's name>`, under B's permission profile and approvals. Pairing, allowing and removing Macs are the owner's, in Settings.
 
 **Limits.** Wrong codes are limited per sender (5) and per invitation (200), pairing requests to 8 a minute per sender, and failed credentials to 20 a minute. Removing B on A also asks B to forget A; **Stop** on B ends A's access at once, and A then shows that B no longer lets it in. Each Mac grants its own macOS permissions; pairing does not carry them over.

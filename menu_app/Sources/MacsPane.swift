@@ -396,7 +396,7 @@ struct MacsPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
         .taskCard(highlight: Color.accentColor.opacity(0.6))
     }
 
@@ -417,7 +417,7 @@ struct MacsPane: View {
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
         .taskCard(hovering: hovering)
         .overlay(alignment: .bottomTrailing) {
             Menu {
@@ -444,7 +444,7 @@ struct MacsPane: View {
                 Text("Use another Mac that invited this one").font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, minHeight: 150)
+            .frame(maxWidth: .infinity, minHeight: 172)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
