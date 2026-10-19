@@ -1,10 +1,15 @@
 """Read and search Messages without opening a conversation (#261). Read-only by construction.
 
 Messages keeps its history in ~/Library/Messages/chat.db, which macOS lets only apps with Full
-Disk Access open. Mac MCP does not ask for that itself: a small helper inside Mac MCP.app,
-"Mac MCP Messages Reader", is the one app the owner adds there. It opens that one file
-read-only and runs one statement SQLite reports as read-only (menu_app/MessagesReader). This
-module builds the queries, turns rows into messages and never sends, marks or deletes anything.
+Disk Access open. Mac MCP does not ask for that itself: a small helper, "Mac MCP Messages
+Reader", is the one app the owner adds there. It opens that one file read-only and runs one
+statement SQLite reports as read-only (menu_app/MessagesReader). This module builds the queries,
+turns rows into messages and never sends, marks or deletes anything.
+
+The helper ships inside Mac MCP.app but runs from a copy in ~/.mac-mcp/helpers: macOS judges code
+nested in an app bundle as that app, so inside the bundle the owner's grant to the helper would
+not count (and granting Mac MCP.app would cover far more than Messages). The copy keeps the
+helper's signature, so the grant follows it across updates.
 
 Each message carries its conversation (chat_id, the same id find_chats returns), who sent it
 and when. Newer macOS versions keep the text only in attributedBody (an NSArchiver stream); the
@@ -14,9 +19,11 @@ tokens, passwords in key=value form) are redacted like everywhere else in Mac MC
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unicodedata
@@ -45,12 +52,53 @@ class MessagesError(Exception):
 # ---------------------------------------------------------------------------
 # The helper
 
-def reader_app() -> Optional[Path]:
-    configured = os.getenv("MAC_MCP_MESSAGES_READER", "").strip()
-    candidates = [Path(configured).expanduser()] if configured else []
+def bundled_reader() -> Optional[Path]:
+    """The helper as Mac MCP.app ships it."""
     for app in (Path.home() / "Applications" / "Mac MCP.app", Path("/Applications/Mac MCP.app")):
-        candidates.append(app / "Contents" / "Helpers" / READER_NAME)
-    return next((path for path in candidates if path.exists()), None)
+        path = app / "Contents" / "Helpers" / READER_NAME
+        if path.exists():
+            return path
+    return None
+
+
+def installed_reader() -> Path:
+    return paths.state_dir() / "helpers" / READER_NAME
+
+
+def _fingerprint(app: Path) -> Optional[str]:
+    digest = hashlib.sha256()
+    try:
+        for part in ("Contents/Info.plist", "Contents/MacOS/MacMCPMessagesReader", "Contents/_CodeSignature/CodeResources"):
+            digest.update((app / part).read_bytes())
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _install(source: Path, target: Path) -> None:
+    ensure_private_dir(target.parent)
+    staging = target.with_name(f".{target.name}.{os.getpid()}")
+    shutil.rmtree(staging, ignore_errors=True)
+    # ditto keeps the code signature and extended attributes that make the copy the same app.
+    subprocess.run(["/usr/bin/ditto", str(source), str(staging)], capture_output=True, timeout=60, check=True)
+    shutil.rmtree(target, ignore_errors=True)
+    os.replace(staging, target)
+
+
+def reader_app() -> Optional[Path]:
+    """The helper to run: the copy in ~/.mac-mcp/helpers, refreshed when Mac MCP.app ships a new one."""
+    configured = os.getenv("MAC_MCP_MESSAGES_READER", "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.exists() else None
+    target = installed_reader()
+    source = bundled_reader()
+    if source is not None and _fingerprint(source) != _fingerprint(target):
+        try:
+            _install(source, target)
+        except (OSError, subprocess.SubprocessError):
+            pass  # a copy that is already there keeps working
+    return target if target.exists() else None
 
 
 def _run_helper(sql: str, params: Sequence[Any], max_rows: int) -> Dict[str, Any]:

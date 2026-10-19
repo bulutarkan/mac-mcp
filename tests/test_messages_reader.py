@@ -299,6 +299,42 @@ class AdapterTests(ReaderFixture):
                 self.assertEqual("needs_full_disk_access", messages_reader.access()["state"])
 
 
+class ReaderInstallTests(unittest.TestCase):
+    """The helper runs from a copy outside Mac MCP.app, where macOS judges it as itself."""
+
+    def fake_app(self, root: Path, version: str) -> Path:
+        app = root / messages_reader.READER_NAME
+        for part, data in (("Contents/Info.plist", version), ("Contents/MacOS/MacMCPMessagesReader", "bin" + version),
+                           ("Contents/_CodeSignature/CodeResources", "sig" + version)):
+            (app / part).parent.mkdir(parents=True, exist_ok=True)
+            (app / part).write_text(data)
+        return app
+
+    def test_copied_once_refreshed_when_the_app_ships_a_new_one(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        bundled = self.fake_app(root / "bundle", "1")
+        target = root / "state" / "helpers" / messages_reader.READER_NAME
+        with patch.object(messages_reader, "bundled_reader", return_value=bundled), \
+                patch.object(messages_reader, "installed_reader", return_value=target), \
+                patch.dict("os.environ", {"MAC_MCP_MESSAGES_READER": ""}):
+            self.assertEqual(target, messages_reader.reader_app())
+            self.assertEqual("bin1", (target / "Contents/MacOS/MacMCPMessagesReader").read_text())
+            with patch.object(messages_reader, "_install") as install:
+                messages_reader.reader_app()
+            install.assert_not_called()  # unchanged: no copy
+            self.fake_app(root / "bundle", "2")
+            messages_reader.reader_app()
+            self.assertEqual("bin2", (target / "Contents/MacOS/MacMCPMessagesReader").read_text())
+        self.assertNotIn("Contents/Helpers", str(target))
+
+    def test_no_app_and_no_copy_means_missing(self) -> None:
+        target = Path(tempfile.mkdtemp()) / "helpers" / messages_reader.READER_NAME
+        with patch.object(messages_reader, "bundled_reader", return_value=None), \
+                patch.object(messages_reader, "installed_reader", return_value=target), \
+                patch.dict("os.environ", {"MAC_MCP_MESSAGES_READER": ""}):
+            self.assertIsNone(messages_reader.reader_app())
+
+
 class ReaderHelperSourceTests(unittest.TestCase):
     def test_helper_opens_only_chat_db_read_only_and_runs_only_read_only_statements(self) -> None:
         source = (ROOT / "menu_app" / "MessagesReader" / "main.swift").read_text(encoding="utf-8")

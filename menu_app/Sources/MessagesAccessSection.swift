@@ -2,23 +2,21 @@ import AppKit
 import SwiftUI
 
 /// Settings › Apps › Reading Messages (#261). macOS keeps Messages history behind Full Disk Access;
-/// Mac MCP reads it through Mac MCP Messages Reader, a helper inside this app, so the owner grants
-/// that access to the helper alone. The state comes from /dashboard/api/apps/messages-access,
-/// which asks the helper to open the database and reads no message.
+/// Mac MCP reads it through Mac MCP Messages Reader, so the owner grants that access to the helper
+/// alone. The helper ships in this app but runs from a copy in ~/.mac-mcp/helpers (macOS would judge
+/// it as Mac MCP inside the bundle). The state and that copy's path come from
+/// /dashboard/api/apps/messages-access, which asks the helper to open the database and reads no message.
 struct MessagesAccessSection: View {
     @ObservedObject var state: AppState
 
     @MacMCPState private var access: String?
+    @MacMCPState private var readerPath: String?
     @MacMCPState private var checking = false
-
-    private var readerURL: URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Mac MCP Messages Reader.app")
-    }
 
     var body: some View {
         GroupBox("Reading Messages") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Agents can read and search your Messages conversations when you ask them to. Reading only: nothing is sent, marked as read or deleted this way. macOS keeps Messages behind Full Disk Access, so Mac MCP reads it through Mac MCP Messages Reader, a small helper inside Mac MCP that opens only the Messages database. Give Full Disk Access to that helper, not to anything else.")
+                Text("Agents can read and search your Messages conversations when you ask them to. Reading only: nothing is sent, marked as read or deleted this way. macOS keeps Messages behind Full Disk Access, so Mac MCP reads it through Mac MCP Messages Reader, a small helper that opens only the Messages database. Give Full Disk Access to that helper, not to anything else.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -54,9 +52,11 @@ struct MessagesAccessSection: View {
                         }
                     }
                     Button("Show Messages Reader in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([readerURL])
+                        if let readerPath {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: readerPath)])
+                        }
                     }
-                    .disabled(!FileManager.default.fileExists(atPath: readerURL.path))
+                    .disabled(readerPath == nil)
                 }
                 Text("To stop it, turn Mac MCP Messages Reader off in Full Disk Access. Excluding Messages in Settings › Privacy stops agents from reading it too.")
                     .font(.caption)
@@ -84,5 +84,6 @@ struct MessagesAccessSection: View {
         let result = await state.taskAPI("dashboard/api/apps/messages-access")
         checking = false
         access = result.ok ? (result.object["state"] as? String ?? "error") : nil
+        readerPath = result.object["reader"] as? String
     }
 }
