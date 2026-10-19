@@ -78,6 +78,7 @@ from .context_handoff import context_handoff
 from .tools_snapshot import unified_read_snapshot
 from .computer_plan import ComputerPlanError, _unwrap_tool_result, derive_computer_plan_resources, execute_computer_plan
 from .app_adapters import mac_app
+from . import agent_message_bridge, tools_team_messages
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
@@ -958,6 +959,19 @@ def create_app():
             _log, audit_logger, "wait_agents",
             lambda: wait_agents(settings, team_id=team_id, agent_ids=agent_ids,
                                 mode=mode, timeout_s=timeout_s, include_results=include_results),
+        )
+
+    @mcp.tool(name="team_messages", description=tools_team_messages.DESCRIPTION)
+    async def _team_messages(action: str = "inbox", body: Optional[str] = None, to: Optional[str] = None,
+                             kind: str = "update", reply_to: Optional[str] = None, room: Optional[str] = None,
+                             team_id: Optional[str] = None, unread_only: bool = True, limit: int = 10,
+                             dedupe_key: Optional[str] = None) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "team_messages",
+            lambda: tools_team_messages.team_messages(
+                action=action, body=body, to=to, kind=kind, reply_to=reply_to, room=room, team_id=team_id,
+                unread_only=unread_only, limit=limit, dedupe_key=dedupe_key,
+            ),
         )
 
     @mcp.tool(
@@ -2950,6 +2964,7 @@ def create_app():
     app.router.lifespan_context = lifespan_with_recipe_runner
     from .dashboard_routes import _dashboard_guard
     app.router.routes.extend(external_mcp_routes.create_routes(lambda request: _dashboard_guard(request, dashboard_token)))
+    app.router.routes.extend(agent_message_bridge.routes())
     app.router.routes.extend(create_mobile_routes(telemetry, settings, dashboard_token, mcp.steering))
 
     # REST API — FastAPI sub-app mounted at /api

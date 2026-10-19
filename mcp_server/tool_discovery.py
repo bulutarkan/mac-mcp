@@ -69,6 +69,7 @@ TOOL_USE_CASES: Dict[str, Tuple[str, ...]] = {
     "clipboard_set": ("copy to clipboard",),
     "spawn_agents": ("start subagents", "delegate task", "parallel agents", "team of agents"),
     "wait_agents": ("wait for agents", "collect agent results"),
+    "team_messages": ("message teammates", "agent to agent messages", "team inbox", "talk to other agents"),
     "memory_search": ("recall memory", "remember fact", "search memory"),
     "knowledge_search": ("search my documents", "what does the contract say", "find in pdfs", "search folder contents"),
     "lesson_search": ("past lessons", "what worked before"),

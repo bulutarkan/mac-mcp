@@ -31,6 +31,7 @@ from .chatgpt_client_gate import (
 ensure_fastmcp_settings_model_complete()
 
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
+from . import team_messages
 from . import browser_tabs, privacy_policy
 from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import audit_chain
@@ -1237,6 +1238,18 @@ def _clip_description(description: str) -> str:
 
 
 _CORE_TOOL_NAMES = CORE_TOOL_NAMES
+
+
+def _team_caller(policy_context: Any, steering_identity: Any, public_session_id: str,
+                 client: Optional[str]) -> "team_messages.Caller":
+    """Who a top-level call comes from, for team messages: the agent credential, else the MCP session."""
+    if policy_context.agent_id:
+        return team_messages.Caller(member_id=f"agent:{policy_context.agent_id}", label=str(policy_context.agent_id),
+                                    agent_id=str(policy_context.agent_id), team_id=policy_context.team_id)
+    if steering_identity is not None:
+        return team_messages.Caller(member_id=f"session:{steering_identity.key}",
+                                    label=f"{client or 'Session'} ({str(public_session_id)[-6:]})")
+    return team_messages.Caller(member_id=f"actor:{policy_context.actor}", label=client or str(policy_context.actor))
 # Tools that start or restart delegated agents (see SecurityContextManager.provenance_snapshot).
 _DELEGATING_TOOLS = frozenset({"spawn_agent", "spawn_agents", "agent_action", "tool_invoke"})
 
@@ -1367,6 +1380,10 @@ class ObservedFastMCP(FastMCP):
             item.strip() for item in os.getenv("MAC_MCP_CORE_EXTRA_TOOLS", "").split(",") if item.strip()
         }
         allowed = _CORE_TOOL_NAMES | extra | external_mcp.listed_tool_names()
+        context = self._policy_context_provider()
+        if context.agent_id and context.team_id:
+            # A team's agents message each other with this tool (#208).
+            allowed = allowed | {"team_messages"}
         compact_tools = []
         for tool in tools:
             if tool.name not in allowed:
@@ -1628,6 +1645,11 @@ class ObservedFastMCP(FastMCP):
             security_pair = (self.security_context.identity_key(policy_context, None), public_session_id)
 
         security_key, public_session_id = security_pair
+        team_caller_token = None
+        if top_level:
+            team_caller_token = team_messages.set_caller(
+                _team_caller(policy_context, steering_identity, public_session_id, self.client_label(policy_context))
+            )
         metadata = policy_metadata(policy_context, declared, effective, decision)
         # Publish the stable logical MCP session on call_started itself. The
         # Tool Activity UI consumes the live SSE event and cannot wait for a
@@ -2029,11 +2051,16 @@ class ObservedFastMCP(FastMCP):
             if gate.escalated and top_level and steering_identity is not None:
                 self.steering.clear_security_attention(steering_identity)
             self.telemetry.finish_call(event_id, result=result)
+            if top_level:
+                # Team messages not yet shown to this caller ride along once (#208).
+                result = team_messages.deliver_with_result(result)
             if not call_registered or steering_identity is None:
                 return result
             messages = self.steering.finish_call(steering_identity, event_id, delivered=True, outcome="success")
             return attach_steering(result, messages)
         finally:
+            if team_caller_token is not None:
+                team_messages.reset_caller(team_caller_token)
             if cancellation_token is not None:
                 reset_tool_cancellation(cancellation_token)
             if security_token is not None:

@@ -636,6 +636,9 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "spawn_agent": _r("spawn_agent", "agents", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.AGENT_DELEGATION), sensitive=True, resolver=_agent_spawn_risk),
     "spawn_agents": _r("spawn_agents", "agents", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.AGENT_DELEGATION), sensitive=True, resolver=_agent_spawn_risk),
     "wait_agents": _r("wait_agents", "agents", _caps(Capability.READ), sensitive=True),
+    # Messages between agents write only Mac MCP's own coordination store, never the owner's data,
+    # so even a read-only team member may tell its teammates something (#208).
+    "team_messages": _r("team_messages", "agents", _caps(Capability.READ), sensitive=True),
     "list_agents": _r("list_agents", "agents", _caps(Capability.READ), sensitive=True),
     "get_agent": _r("get_agent", "agents", _caps(Capability.READ), sensitive=True),
     "agent_action": _r("agent_action", "agents", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.AGENT_DELEGATION), destructive=True, sensitive=True, resolver=_agent_action_risk),
@@ -1129,7 +1132,8 @@ def evaluate_tool_scope(
     arguments: Mapping[str, Any],
     effective_risk: Optional[RiskAssessment] = None,
 ) -> ScopeDecision:
-    if tool == "computer_plan":
+    if tool in {"computer_plan", "team_messages"}:
+        # team_messages touches no path, tab or process; membership of the caller's own team decides.
         return ScopeDecision(True)
     if scope is None:
         return ScopeDecision(True)

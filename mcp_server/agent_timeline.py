@@ -46,6 +46,7 @@ _TOOL_WORDS = {
     "system_info": "Read system information",
     "memory_search": "Searched memories",
     "knowledge_search": "Searched your folders",
+    "team_messages": "Messaged teammates",
     "screenshot": "Took a screenshot",
 }
 _CLAUDE_TOOLS = {
