@@ -24,22 +24,29 @@ or with Node.js: `npx @bulutarkan/mac-mcp install` (the same installer, [details
 
 **You stay in charge.** Permission profiles decide what may run and optional Server Approval asks before risky actions; you can pause observation, turn on private mode, or keep apps and sites out of reach. Mac MCP is not a sandbox: it acts with your macOS user's permissions, localhost is machine-local transport, not same-user isolation, and what your AI app reads is sent to that app's provider. See [Product and security terminology](docs/safety.md#product-and-security-terminology).
 
-## What's new in 2.2.0
+## What's new in 2.2.1
 
-2.2.0 lets your AI work on a schedule and shows what it is doing while it works.
+2.2.1 brings everything since 2.2.0: agents that work together, more of your Mac within reach, and automation you can leave running.
 
-- **Scheduled Tasks:** AI tasks and scripts that run once, daily, weekly, monthly or every few hours, with a run report (result and steps) for each run. Tasks an AI app suggests wait for your approval in Settings.
-- **Live activity island:** an optional island beside the notch shows the app in use while your AI works, what needs you, recent work and the next scheduled task. Off by default (Settings › Activity & Notifications).
-- **Safer outgoing data:** the secret-egress guard also catches secrets hidden in base64, hex or percent-encoded payloads.
+**Agents**
+- **Agents talk to each other while they work:** the agents of a team and the session that started it message each other with `team_messages`. Messages reach an agent after its next step even when it only uses its own CLI's tools, in all ten supported agents, and each is shown once. The lead can pass on a change of plan instead of restarting agents. On by default (Settings › Subagents › Messages Between Agents).
+- **A desktop of their own:** when you ask, an agent works on its own desktop in Mission Control with your real apps, while nothing appears on yours and your focus stays put.
+- **Seven more agents and AI apps:** Antigravity, pi, Cline, Kilo Code, Goose, Kimi Code and Grok Build, next to Codex, Claude Code and OpenCode. **Team History** in Settings › Agents shows how past teams went.
+- **An agent cursor on the desktop** shows where an agent clicks or types in another app's window, without moving yours.
 
-**New in 2.2.0 r2** (the version stays 2.2.0; `mac-mcp update` or the new package brings it):
+**Your Mac and your services**
+- **Messages:** read and search your conversations, read-only, without opening Messages.
+- **Connect a Service:** GitHub, Notion, Slack and Google Drive in a few clicks (Settings › MCP Servers), with keys in your Keychain. Your own MCP servers are offered to every AI app and agent too.
+- **Ask about your documents:** pick folders and ask about what is in them, with file and page; scanned PDFs and images are read on your Mac.
+- **More done in your Mac's own apps:** reminders, notes, free time, contacts and Shortcuts, plus a "Run Mac MCP Recipe" action for Shortcuts and Siri.
+- **Memory that learns on its own** and refuses secrets.
 
-- **Agent cursor on the desktop:** when an agent clicks or types in another app's window in the background, a cursor shows where, without moving yours. It sits with that window, so whatever you have in front covers it, and it never appears in screenshots. On by default (Settings › Activity & Notifications).
-- **Session details:** each session in the menu shows how long it has been open and how many tool calls it made; click it for a small panel with its status and current tool.
-- **Seven more AI apps and agents:** Antigravity, pi, Cline, Kilo Code, Goose, Kimi Code and Grok Build can be connected as AI apps and turned on as delegated agents.
-- **Whole pages in one call:** the browser `read` action returns a page's full text, including content that loads as you scroll.
-- **A CLI with a look of its own:** `mac-mcp`, `status`, `doctor` and the other commands line up their facts and end with one sentence and the next command to run; scripts and the menu app get the plain output as before.
-- **A new Mac MCP mark** on the app icon, the menu bar, the island, the site and the mobile page.
+**Automation**
+- **Scheduled Tasks:** AI tasks, scripts and recipes that run on a schedule or when a file arrives, with an optional usage limit, checks that the run made what it should, catch-up after sleep, and a report that says what went wrong and can resume or diagnose it.
+
+**Install and everyday use**
+- **Install with npm** (`npx @bulutarkan/mac-mcp install`), `install.sh` or the package; every install tells you when an update is ready.
+- **Settings** is easier to find your way in (grouped sidebar, Permissions & Safety in plain words, what agents can do in each app), the browser reads a whole page in one call, the CLI has a look of its own, and frequent paths do less needless work.
 
 Earlier releases are in the [CHANGELOG](CHANGELOG.md).
 

@@ -1,4 +1,39 @@
-## Unreleased
+## [2.2.1] - 2026-10-19
+
+**In short:** agents that work at the same time can now talk to each other, whichever CLI they run in; agents can work on a desktop of their own; Mac MCP reads and searches Messages; GitHub, Notion, Slack and Google Drive connect from Settings in a few clicks, and your own MCP servers are offered to every agent; your documents (scanned ones too) can be asked about; scheduled tasks run when a file arrives, keep to a usage limit and say when a run went wrong; memory learns on its own; and Settings is easier to read and find your way in. Install with npm, `install.sh` or the package; existing installs get it with `mac-mcp update`.
+
+### Agents that work at the same time can talk to each other (#208)
+- The agents of a team, the session that started it (the lead) and Mac MCP sessions in a named room can message each other with the new `team_messages` tool: send to a task, a role, `lead` or `everyone`, read the inbox, list members.
+- Messages reach an agent on their own while it works, after its next tool call, even when it only uses its CLI's own tools and never calls Mac MCP: through Claude Code, Codex, Grok Build and Cline hooks, OpenCode and Kilo Code plugins, a pi extension, Goose's message file and an Antigravity hook. Kimi Code is asked to check its inbox every few steps. Nothing is interrupted, and each message is shown once, however it arrives.
+- Every Mac MCP session sees the tool and is told about it, so a lead can pass on a change of plan to running agents instead of restarting them. A message from the lead updates the agent's task; messages from other agents are information, never instructions.
+- Agents are asked to write only when a teammate's work would otherwise go wrong or to answer a question, not with progress reports, and may send at most 10 messages to their team. When nobody will see a message (its agent has finished), the sender is told.
+- The hook holds a messaging-only token, not the agent's Mac MCP credential, and everything is removed when the agent ends. Your own `~/.codex` and other CLI settings are never changed: each agent gets private copies.
+- **Settings › Subagents › Messages Between Agents** turns it all off and on (on by default).
+
+### Agents can work on a desktop of their own
+- When you ask an agent to work apart, it can take a desktop of its own in Mission Control and use your real apps and accounts there while you keep working on yours. It reads which displays and desktops you have and what is open on them, picks an empty one (or adds one) and opens apps straight onto it: nothing appears on the desktops you are looking at and your focus stays put. Your windows are never moved or closed.
+- Safari and apps you are using open there too: their new window is caught before it is drawn and moved to the agent's desktop. Agents still work alongside you by default.
+
+### Messages: read and search conversations, read-only (#261)
+- `mac_app` Messages can read a chat (newest first, in pages) and search messages across chats or in one, in any case and with or without accents, without opening Messages. `find_chats` lists your chats even while Messages is closed.
+- The text is read by Mac MCP Messages Reader, a small helper you give Full Disk Access; it opens only the Messages database, read-only. Settings › Apps › Reading Messages shows its state and the steps to turn it on.
+
+### Connect GitHub, Notion, Slack and Google Drive in a few clicks (#260)
+- **Settings › MCP Servers › Connect a Service** lists these services' own hosted MCP servers, each with its logo. GitHub takes a token that is tested before it is saved; Notion signs in through the browser; Slack and Google Drive use an app of your own. Their tools are then offered to every AI app and agent.
+- Keys stay in your login Keychain, never in `mcp_servers.json`. A background reconnect never opens a browser; it says when a new sign-in is needed. A new sign-in replaces the saved one only once it finishes, and Disconnect revokes and deletes everything.
+
+### Settings that is easier to find your way in (#250, #263)
+- The sidebar groups its sections under a few headings and scrolls by itself to the section a link opens, also in a new window and in the smallest window size. VoiceOver reads the headings in normal case.
+- **Settings › Agents** has two folding sections: **Providers** and **Team History**. Each past team shows how many of its agents succeeded, when it ran, its agents, tokens, tool calls and time; opened, each agent has a token bar and a tool-call bar. Only counts are kept: no prompts or results.
+- **Usage** leads with one overview of Mac MCP's own tools; the rare settings are folded away under Data & Storage.
+
+### Agent Skills from your CLIs
+- Agent Skills installed for your CLI agents (for example in `~/.claude/skills`) are found and indexed on their own, quickly and without holding up search, so `skill_search` finds them too.
+
+### Fixes
+- An agent's typed summary, which `wait_agents` shows the lead, now carries the agent's answer in the language it answered in, instead of an English description of what it did.
+- Two agents starting at the same moment on a fresh install no longer make one of them fail with "database is locked".
+- An external MCP tool with a `description` or `idempotency_key` parameter no longer breaks the tool list.
 
 ### Permissions & Safety in plain words (#246)
 - Settings › Permissions & Safety now starts with two plain answers you can change in place: **What AI apps can do** (Trusted, Standard or Read Only, each said in one sentence) and **When Mac MCP asks you first** (Off, Critical or High Risk, likewise). Saved logins follow; the policy terms (allowed capabilities, destructive families, the agent access ceiling, headless behavior, timeouts) are under **Details**. Warnings about an invalid setting stay at the top.
