@@ -289,6 +289,10 @@ class HelperSourceTests(unittest.TestCase):
         self.assertIn("pointerHidden(true)", forward)
         self.assertIn("pointerHidden(false)", back)
         self.assertIn('"SetsCursorInBackground"', HELPER)
+        # hidden again after iPhone Mirroring comes forward (that shows it) and before each press; shown as often
+        self.assertLess(forward.index("activate()"), forward.index("pointerHidden(true)"))
+        self.assertIn("if point != nil { pointerHidden(true) }", HELPER)
+        self.assertIn("while pointerHides > 0 { CGDisplayShowCursor", HELPER)
 
     def test_a_second_tap_only_when_the_first_changed_nothing(self) -> None:
         self.assertIn("if let openAt, !changed {", HELPER)

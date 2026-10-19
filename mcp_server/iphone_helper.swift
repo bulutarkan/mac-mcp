@@ -515,6 +515,9 @@ struct Forward {
 /// window server shows it again if this process ends without doing so.
 typealias ConnectionID = Int32
 let skyLight = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
+/// macOS counts hides; the pointer shows again only after as many shows. Bringing iPhone Mirroring forward shows the
+/// pointer again, so it is hidden after that and before each press, and shown as many times at the end.
+var pointerHides = 0
 func pointerHidden(_ hidden: Bool) {
     guard let skyLight,
           let defaultConnection = dlsym(skyLight, "SLSMainConnectionID") ?? dlsym(skyLight, "CGSMainConnectionID"),
@@ -523,7 +526,12 @@ func pointerHidden(_ hidden: Bool) {
     typealias SetProperty = @convention(c) (ConnectionID, ConnectionID, CFString, CFTypeRef) -> Int32
     let connection = unsafeBitCast(defaultConnection, to: MainConnection.self)()
     _ = unsafeBitCast(setProperty, to: SetProperty.self)(connection, connection, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
-    _ = hidden ? CGDisplayHideCursor(CGMainDisplayID()) : CGDisplayShowCursor(CGMainDisplayID())
+    if hidden {
+        CGDisplayHideCursor(CGMainDisplayID())
+        pointerHides += 1
+    } else {
+        while pointerHides > 0 { CGDisplayShowCursor(CGMainDisplayID()); pointerHides -= 1 }
+    }
 }
 
 func bringForward(_ mirror: Mirror) throws -> Forward {
@@ -535,7 +543,6 @@ func bringForward(_ mirror: Mirror) throws -> Forward {
         throw StepError(code: "MAC_SCREEN_LOCKED", message: "This Mac's screen is locked; iPhone Mirroring takes no input until it is unlocked.")
     }
     let previous = NSWorkspace.shared.frontmostApplication
-    pointerHidden(true)
     let forward = Forward(previous: previous, cursor: CGEvent(source: nil)?.location,
                           wasFront: previous?.processIdentifier == mirror.app.processIdentifier, lock: lock)
     if !forward.wasFront {
@@ -554,6 +561,7 @@ func bringForward(_ mirror: Mirror) throws -> Forward {
         }
         usleep(120_000)
     }
+    pointerHidden(true)
     return forward
 }
 
@@ -648,6 +656,7 @@ func point(_ step: [String: Any], _ mirror: Mirror, _ shot: Shot, x xKey: String
 /// iPhone is touched ("Tapping", "Typing"): {"event": {"action", "pid", "x", "y", "press"}}. Desktop points.
 var announcePID: pid_t = 0
 func announce(_ action: String, at point: CGPoint? = nil, press: Bool = false) {
+    if point != nil { pointerHidden(true) }  // in front now: the pointer is about to move to `point`
     var event: [String: Any] = ["action": action, "pid": announcePID, "press": press]
     if let point { event["x"] = Double(point.x); event["y"] = Double(point.y) }
     guard let data = try? JSONSerialization.data(withJSONObject: ["event": event]) else { return }
