@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tests._state_isolation  # noqa: F401  (must precede mcp_server imports)
 import asyncio
+import dataclasses
 import json
 import os
 import unittest
@@ -138,6 +139,26 @@ class CoreCatalogDescriptionTests(unittest.TestCase):
         blocks = result[0] if isinstance(result, tuple) else result
         act = next(item for item in json.loads(blocks[0].text)["tools"] if item["name"] == "browser_act")
         self.assertNotIn("tier", act)
+
+    def test_team_messages_is_listed_for_sessions_and_team_agents_while_on(self) -> None:
+        self._env()
+        real = self.mcp._policy_context_provider
+
+        def listed(*, agent_id=None, team_id=None, setting=None):
+            def provider():
+                context = real()
+                return dataclasses.replace(context, agent_id=agent_id, team_id=team_id)
+
+            env = {"MAC_MCP_TEAM_MESSAGES": setting} if setting else {}
+            with patch.object(self.mcp, "_policy_context_provider", provider), patch.dict(os.environ, env):
+                return {tool.name: tool.description for tool in asyncio.run(self.mcp.list_tools())}
+
+        session = listed()
+        self.assertEqual(CORE_TOOL_SUMMARIES["team_messages"], session["team_messages"])
+        self.assertIn("team_messages", listed(agent_id="agent_1", team_id="team_1"))
+        self.assertNotIn("team_messages", listed(agent_id="agent_1"))
+        self.assertNotIn("team_messages", listed(setting="0"))
+        self.assertIn("team_messages: you and the team you start", main.MCP_AGENT_INSTRUCTIONS)
 
     def test_unsummarized_long_description_is_marked_as_cut(self) -> None:
         clipped = observability._clip_description("word " * 100)

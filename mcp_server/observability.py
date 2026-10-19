@@ -1381,9 +1381,10 @@ class ObservedFastMCP(FastMCP):
         }
         allowed = _CORE_TOOL_NAMES | extra | external_mcp.listed_tool_names()
         context = self._policy_context_provider()
-        if context.agent_id and context.team_id:
-            # A team's agents message each other with this tool (#208).
-            allowed = allowed | {"team_messages"}
+        if not team_messages.enabled() or (context.agent_id and not context.team_id):
+            # Listed for every session and every team agent while messaging is on (#208); an agent outside a team
+            # has no one to message.
+            allowed = allowed - {"team_messages"}
         compact_tools = []
         for tool in tools:
             if tool.name not in allowed:

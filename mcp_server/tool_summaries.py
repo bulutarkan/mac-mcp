@@ -21,7 +21,7 @@ CORE_TOOL_NAMES = frozenset({
     "mac_snapshot", "mac_observe", "mac_act", "mac_app", "computer_plan",
     "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do", "browser_upload_artifact",
     "browser_checkpoint",
-    "spawn_agents", "wait_agents",
+    "spawn_agents", "wait_agents", "team_messages",
     "memory_search", "memory_add", "memory_update", "knowledge_search", "lesson_search", "lesson_feedback", "ask_user",
     "tool_discover", "tool_invoke",
 })
@@ -41,6 +41,10 @@ ADVANCED_BROWSER_TOOLS: Dict[str, str] = {
 }
 
 CORE_TOOL_SUMMARIES: Dict[str, str] = {
+    "team_messages": (
+        "Message agents working at the same time. When you change something a teammate's task depends on, tell "
+        "them at once: action=send, to=<task id> or 'lead'. No progress reports. Replies arrive after your tool calls."
+    ),
     "run_command": (
         "Run a short shell command in zsh and wait for it (full access unless scoped); long builds or servers belong in "
         "start_background_job. reversible=true records file changes for file_transaction_undo."

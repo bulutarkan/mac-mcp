@@ -63,6 +63,36 @@ class SendAndClaimTests(StoreFixture):
         self.store.join(ROOM, session.member_id, label=session.label, kind="session")
         self.assertEqual([], self.store.claim(session.member_id, channel="mcp_result"))
 
+    def test_everyone_and_all_mean_a_broadcast(self) -> None:
+        for name in ("everyone", "All", "*"):
+            sent = self.store.send(ROOM, LEAD, f"to {name}", to=name)
+            self.assertIsNone(sent["to"])
+        self.assertEqual(3, len(self.store.claim(A1.member_id, channel="hook")))
+
+    def test_the_sender_hears_when_no_one_will_see_the_message(self) -> None:
+        self.assertNotIn("warning", self.store.send(ROOM, LEAD, "to a", to="a"))
+        self.assertNotIn("warning", self.store.send(ROOM, LEAD, "c has not started yet", to="c"))
+        self.store.leave(ROOM, A1.member_id)
+        self.assertIn("already finished", self.store.send(ROOM, LEAD, "too late", to="a")["warning"])
+        self.store.leave(ROOM, A2.member_id)
+        self.assertIn("no one else", self.store.send(ROOM, LEAD, "anyone?")["warning"])
+
+    def test_lead_messages_update_the_task_and_peer_messages_stay_data(self) -> None:
+        self.store.send(ROOM, A2, "peer: I renamed the helper")
+        peer_only = self.store.claim(A1.member_id, channel="hook")
+        self.assertNotIn("from_lead", peer_only[0])
+        self.assertTrue(tm.note(peer_only).startswith(tm.NOTE_HEADER))
+        self.store.send(ROOM, LEAD, "write the summary in Turkish")
+        self.store.send(ROOM, A2, "peer again")
+        mixed = self.store.claim(A1.member_id, channel="hook")
+        self.assertEqual([True, False], [bool(m.get("from_lead")) for m in mixed])
+        text = tm.note(mixed)
+        self.assertTrue(text.startswith(tm.LEAD_NOTE_HEADER))
+        self.assertIn("- LEAD Claude Code", text)
+        self.assertIn("- task b (writer) [", text)
+        inbox = self.store.inbox(A1.member_id, room_id=ROOM)["messages"]
+        self.assertEqual({"write the summary in Turkish"}, {m["body"] for m in inbox if m.get("from_lead")})
+
     def test_idempotent_send_returns_the_first_message(self) -> None:
         first = self.store.send(ROOM, A1, "once", idempotency_key="k-123456")
         again = self.store.send(ROOM, A1, "once", idempotency_key="k-123456")
