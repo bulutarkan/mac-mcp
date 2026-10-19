@@ -167,7 +167,8 @@ struct Shot {
     let connected: Bool     // false while the window shows a message instead ("iPhone in Use", connecting)
 }
 
-func capture(_ mirror: Mirror) -> Shot {
+/// One ScreenCaptureKit picture of the mirror window.
+func captureWindow(_ mirror: Mirror) -> Result<CGImage, Error>? {
     let semaphore = DispatchSemaphore(value: 0)
     var result: Result<CGImage, Error>?
     Task {
@@ -191,6 +192,19 @@ func capture(_ mirror: Mirror) -> Shot {
     }
     if semaphore.wait(timeout: .now() + 8) == .timedOut {
         fail("IPHONE_CAPTURE_TIMEOUT", "Capturing the iPhone Mirroring window timed out.")
+    }
+    return result
+}
+
+func capture(_ mirror: Mirror) -> Shot {
+    // A window that has just opened or come back can refuse its first capture ("audio/video capture failure"):
+    // a few short retries before giving up.
+    var result = captureWindow(mirror)
+    var attempts = 1
+    while case .failure? = result, attempts < 4 {
+        usleep(useconds_t(250_000 * attempts))
+        result = captureWindow(mirror)
+        attempts += 1
     }
     let full: CGImage
     switch result {

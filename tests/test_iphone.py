@@ -300,6 +300,10 @@ class HelperSourceTests(unittest.TestCase):
         self.assertIn("if point != nil { pointerHidden(true) }", HELPER)
         self.assertIn("while pointerHides > 0 { CGDisplayShowCursor", HELPER)
 
+    def test_a_refused_capture_is_tried_again_before_failing(self) -> None:
+        capture = HELPER[HELPER.index("func capture(_ mirror: Mirror) -> Shot {"):HELPER.index("func capture(_ mirror: Mirror) -> Shot {") + 600]
+        self.assertIn("attempts < 4", capture)
+
     def test_close_app_swipes_only_a_card_labelled_with_the_name(self) -> None:
         closing = HELPER[HELPER.index('case "close_app":'):HELPER.index('case "open_app":')]
         self.assertLess(closing.index("IPHONE_APP_NOT_OPEN"), closing.index(".leftMouseDown"))
