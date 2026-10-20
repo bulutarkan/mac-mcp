@@ -78,6 +78,26 @@ class DownloadExpectTests(unittest.TestCase):
         self.assertTrue(folded[0]["expect"]["met"])
         self.assertEqual("art_a", folded[0]["expect"]["download"]["artifact_id"])
 
+    def test_a_click_with_no_page_effect_is_judged_by_its_expect(self) -> None:
+        # Clicking a download link changes nothing on the page; the download decides (live: GitHub ZIP).
+        expanded = agent._expand_expectations([{"type": "click", "text_match": "Download ZIP", "expect": {"download": True}}])
+        self.assertTrue(expanded[0]["_expect_follows"])
+        self.assertNotIn("expect", expanded[0])
+        no_effect = {"ok": False, "type": "click", "error": "action_no_effect", "reason_code": "ACTION_NO_EFFECT",
+                     "observe_again": True}
+        wait = {"ok": True, "type": "wait", "for": "download", "matched": True, "duration_ms": 900,
+                "download": {"filename": "Hello-World-master.zip"}, "_expect_for": 0, "_expect": {"download": True}}
+        met = agent._fold_expectations([dict(no_effect), dict(wait)])[0]
+        self.assertTrue(met["ok"])
+        self.assertEqual("expect_met", met["verification"])
+        self.assertNotIn("error", met)
+        self.assertEqual("confirmed", agent._action_outcome(met))
+        missed = agent._fold_expectations([dict(no_effect), {**wait, "matched": False, "download": None}])[0]
+        self.assertFalse(missed["ok"])
+        self.assertEqual("expectation_not_met", missed["error"])
+        source = Path(agent.__file__).read_text(encoding="utf-8")
+        self.assertIn('action.get("_expect_follows") and action_result.get("error") == "action_no_effect"', source)
+
     def test_browser_act_waits_from_the_start_of_the_click(self) -> None:
         source = Path(agent.__file__).read_text(encoding="utf-8")
         self.assertIn("previous_started_ms, action_started_ms = action_started_ms, int(time.time() * 1000)", source)

@@ -4190,7 +4190,7 @@ def _expand_expectations(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             raise mark_not_executed(HTTPException(
                 status.HTTP_400_BAD_REQUEST, f"actions[{index}] ({action.get('type')}) takes no expect; it already reports its result.",
             ))
-        expanded.append({key: value for key, value in action.items() if key != "expect"})
+        expanded.append({**{key: value for key, value in action.items() if key != "expect"}, "_expect_follows": True})
         expanded.append(_expect_wait(index, expect))
     return expanded
 
@@ -4213,6 +4213,11 @@ def _fold_expectations(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if target is None:
             continue
         target["expect"] = check
+        if met and target.get("error") == "action_no_effect":
+            # Nothing changed on the page, but the expected result (a download, say) came about.
+            for key in ("error", "reason_code", "observe_again"):
+                target.pop(key, None)
+            target.update({"ok": True, "verification": "expect_met"})
         if not met:
             # The action ran; only its intended result is missing. Never replay it automatically.
             target.update({
@@ -5046,7 +5051,11 @@ def _browser_act_locked(
                     ):
                         _credit_opened_tab(browser, action_result, tabs_before, tab_handle)
                     results.append(action_result)
-                    if not action_result.get("ok"):
+                    # A click whose result shows nowhere on the page (a download, a copy) is judged by its
+                    # expect when it has one, not stopped as having no effect.
+                    if not action_result.get("ok") and not (
+                        action.get("_expect_follows") and action_result.get("error") == "action_no_effect"
+                    ):
                         break
                     current_observation_id = None
                 elif typ == "dialog":
