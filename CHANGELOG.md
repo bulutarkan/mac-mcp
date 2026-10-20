@@ -25,6 +25,12 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Four privacy and security fixes (roadmap #31, #62, #54, #55)
+- Saved logins are no longer filled into sign-up or password-change forms. When a page shows only new-password fields, `browser_sign_in` fills nothing and says `not_a_sign_in_form`; before, the last fallback could pick such a field.
+- A REST key limited to some folders now stays inside them on the older `/api/...` routes too: `search_files` without a path searched the whole home folder, and `spotlight_search` was not filtered. Those routes now see the key's profile and folders, as `/mcp` and `/api/v2` already did.
+- Turning Private mode on while a scheduled task runs now keeps that run's output and summary out of its record, as when Private mode was on from the start.
+- A folder removed from the knowledge folders stops showing in `knowledge_search` at once, even when the index is busy and its rows are only dropped by the next scan.
+
 ### Uploads are checked for secrets inside the file (#236)
 - Before a file goes to a web page, Mac MCP now reads the file itself (up to 8 MB) instead of judging it only by its path. A key, token or password in a file with an ordinary name (`notes.txt`, a picture), or a value the agent read earlier from a secret file, gets the same Allow Once / Block question a sensitive path already got. Files without them upload as before. No new kind of question.
 - The check runs off the server's main loop, so a large file does not hold up other calls.

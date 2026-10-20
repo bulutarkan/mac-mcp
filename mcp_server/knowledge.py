@@ -772,6 +772,9 @@ def _search(q: str, folders: List[str], within: Optional[str], roots: Optional[T
         files = {row["path"]: row for row in conn.execute("SELECT * FROM files WHERE status = 'indexed'")}
 
         def visible(file_path: str) -> bool:
+            # Only folders chosen now: a removed folder's rows can outlive it while a scan holds the index (#55).
+            if not any(path_is_within(file_path, folder) for folder in folders):
+                return False
             if within and not path_is_within(file_path, within):
                 return False
             return roots is None or any(path_is_within(file_path, root) for root in roots)

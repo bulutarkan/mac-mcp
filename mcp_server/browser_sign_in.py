@@ -29,15 +29,17 @@ function deep(root,sel,out){out=out||[];Array.prototype.forEach.call(root.queryS
 function formOf(el){var node=el;while(node){if(node.form)return node.form;var f=node.closest&&node.closest('form');if(f)return f;var r=node.getRootNode&&node.getRootNode();node=r&&r.host?r.host:null;}return null;}
 function fields(){
   var pws=deep(document,'input[type=password]').filter(vis);
-  var pw=pws.find(function(e){return /current-password/.test(e.autocomplete||'');})||pws.find(function(e){return !/new-password/.test(e.autocomplete||'');})||pws[0]||null;
+  var pw=pws.find(function(e){return /current-password/.test(e.autocomplete||'');})||pws.find(function(e){return !/new-password/.test(e.autocomplete||'');})||null;
+  /* Only new-password fields: a sign-up or password-change form, never a place for a saved login. */
+  var newOnly=!pw&&pws.length>0;
   var form=pw&&formOf(pw);
   var texts=deep(document,'input').filter(function(e){return vis(e)&&/^(text|email|tel)$/.test(String(e.getAttribute('type')||'text').toLowerCase())&&(!form||formOf(e)===form);});
   var score=function(e){var hint=((e.autocomplete||'')+' '+(e.name||'')+' '+(e.id||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.placeholder||'')).toLowerCase(),n=0;
     if(/username|email/.test(e.autocomplete||''))n+=10;if(String(e.type).toLowerCase()==='email')n+=6;if(/user|email|e-mail|login|account|mail|kullan|posta/.test(hint))n+=4;
     if(pw&&(e.compareDocumentPosition(pw)&Node.DOCUMENT_POSITION_FOLLOWING))n+=2;return n;};
   var ranked=texts.map(function(e){return [score(e),e];}).sort(function(a,b){return b[0]-a[0];});
-  var user=ranked.length&&(pw?ranked[0][0]>=2:ranked[0][0]>=4)?ranked[0][1]:null;
-  return {pw:pw,user:user};
+  var user=!newOnly&&ranked.length&&(pw?ranked[0][0]>=2:ranked[0][0]>=4)?ranked[0][1]:null;
+  return {pw:pw,user:user,newOnly:newOnly};
 }
 function b64(o){return btoa(unescape(encodeURIComponent(JSON.stringify(o))));}
 """
@@ -47,7 +49,7 @@ def _probe_js() -> str:
     return "(function(){" + _FIELDS_JS + """
 var f=fields();
 return b64({ok:true,host:location.hostname,protocol:location.protocol,
-  password_field:!!f.pw,username_field:!!f.user,username_filled:!!(f.user&&f.user.value)});
+  password_field:!!f.pw,username_field:!!f.user,username_filled:!!(f.user&&f.user.value),new_password_only:f.newOnly});
 })()"""
 
 
@@ -113,6 +115,10 @@ def browser_sign_in(
         if probe.get("protocol") != "https:" and host not in _LOOPBACK:
             return {"ok": False, "error": "insecure_page", "site": host,
                     "message": "Saved logins are only filled on HTTPS pages."}
+        if probe.get("new_password_only"):
+            return {"ok": False, "error": "not_a_sign_in_form", "site": host,
+                    "message": "This page asks for a new password (sign-up or password change); saved logins are "
+                               "only filled into sign-in forms. Nothing was filled."}
         if not probe.get("password_field") and not probe.get("username_field"):
             return {"ok": False, "error": "no_login_form", "site": host,
                     "message": "No visible username or password field on this page."}

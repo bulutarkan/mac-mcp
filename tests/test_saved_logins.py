@@ -292,6 +292,15 @@ class SignInTests(VaultCase):
         self.assertNotIn(SECRET, scripts[1])
         self.assertIn("next_step", result)
 
+    def test_a_new_password_only_form_gets_nothing(self) -> None:
+        # Roadmap #31: a sign-up or password-change form is never a place for a saved login.
+        login_vault.add_login("github.com", "ada", SECRET)
+        probe = {**self.probe(), "new_password_only": True, "password_field": False, "username_field": False}
+        result, scripts = self.run_sign_in(probe, submit=True)
+        self.assertEqual("not_a_sign_in_form", result["error"])
+        self.assertEqual(1, len(scripts))
+        self.assertNotIn(SECRET, json.dumps(result))
+
     def test_telemetry_and_logs_never_hold_the_secret(self) -> None:
         # #81 acceptance: the telemetry row and every log line of a sign-in carry no secret bytes.
         login_vault.add_login("github.com", "ada@example.com", SECRET)
@@ -354,6 +363,34 @@ class ShadowDomTests(unittest.TestCase):
 
 
 class PageScriptTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_page_script_never_picks_a_new_password_field(self) -> None:
+        harness = r"""
+function el(type, auto, name){return {type:type,autocomplete:auto||'',name:name||'',id:'',placeholder:'',disabled:false,readOnly:false,value:'',
+  form:null,getAttribute:function(k){return k==='type'?type:null;},getBoundingClientRect:function(){return {width:20,height:20};},
+  closest:function(){return null;},getRootNode:function(){return {};},compareDocumentPosition:function(){return 4;},
+  querySelectorAll:function(){return [];}};}
+globalThis.Node={DOCUMENT_POSITION_FOLLOWING:4};
+globalThis.getComputedStyle=function(){return {visibility:'visible',display:'block'};};
+function page(inputs){globalThis.document={querySelectorAll:function(sel){
+  if(sel==='input[type=password]')return inputs.filter(function(e){return e.type==='password';});
+  if(sel==='input')return inputs;return [];}};
+  var f=fields();return {pw:f.pw?f.pw.autocomplete:null,user:f.user?f.user.name:null,newOnly:f.newOnly};}
+var email=el('email','email','email');
+console.log(JSON.stringify([
+  page([email, el('password','new-password'), el('password','new-password')]),
+  page([email, el('password','current-password'), el('password','new-password')]),
+  page([email, el('password','')]),
+]));
+"""
+        out = subprocess.run(["node", "-e", sign_in._FIELDS_JS + harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, out.returncode, out.stderr)
+        signup, change, login = json.loads(out.stdout)
+        self.assertEqual({"pw": None, "user": None, "newOnly": True}, signup)
+        self.assertEqual("current-password", change["pw"])
+        self.assertFalse(change["newOnly"])
+        self.assertEqual({"pw": "", "user": "email", "newOnly": False}, login)
+
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_password_fields_never_report_their_value(self) -> None:
         source = agent._bootstrap_functions_source()

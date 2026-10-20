@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from starlette.applications import Starlette
@@ -185,6 +186,22 @@ class IndexAndSearchTests(KnowledgeTestCase):
             counts = tuple(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                            for table in ("files", "chunks", "chunks_fts"))
         self.assertEqual((0, 0, 0), counts)
+
+    def test_a_removed_folder_is_not_searched_while_a_scan_holds_the_index(self) -> None:
+        # Roadmap #55: the rows stay until the next scan drops them; search must not show them meanwhile.
+        notes = self.temp / "Notes"
+        notes.mkdir()
+        (notes / "plan.md").write_text("deposit plan", encoding="utf-8")
+        self.write("lease.md", "deposit terms")
+        self.use_folder()
+        self.use_folder(notes)
+        knowledge.scan()
+        busy = SimpleNamespace(acquire=lambda timeout=None: False, release=lambda: None)
+        with patch.object(knowledge, "_INDEX_LOCK", busy), patch.object(knowledge, "wake"):
+            knowledge.remove_folder(str(self.docs))
+        with patch.object(knowledge, "scan", return_value={}), patch.object(knowledge, "wake"):
+            names = {item["name"] for item in knowledge.knowledge_search("deposit")["results"]}
+        self.assertEqual({"plan.md"}, names)
 
     def test_the_index_is_owner_only(self) -> None:
         self.write("a.md", "text")

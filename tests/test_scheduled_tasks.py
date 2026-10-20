@@ -345,6 +345,14 @@ class ScriptRunTests(StoreCase):
         self.assertEqual(("done", None, None), (result["status"], result["summary"], result["output"]))
         self.assertEqual({"private_mode": True}, result["detail"])
 
+    def test_private_mode_switched_on_during_the_run_covers_it(self) -> None:
+        # Roadmap #54: the owner turns Private mode on while the task runs.
+        self.privacy(private_mode=False)
+        on = json.dumps({"privacy": {"private_mode": True}})
+        result = self.run_task(self.sh(f"echo secret-output\nprintf '%s' '{on}' > '{self.settings_file}'\n"))
+        self.assertEqual(("done", None, None), (result["status"], result["summary"], result["output"]))
+        self.assertEqual({"private_mode": True}, result["detail"])
+
 
 class AiRunTests(StoreCase):
     def fake_agents(self, final):

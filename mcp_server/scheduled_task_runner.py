@@ -636,11 +636,13 @@ def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any
     if definition.get("data_step") and isinstance(result.get("detail"), dict):
         # Which definition this run used, so a resume can tell that the task has not changed since (#226).
         result["detail"]["definition_fp"] = definition_fp(definition)
-    if privacy["private_mode"]:
+    # Read again at the end too: Private mode switched on while the task ran covers this run (roadmap #54).
+    private = privacy["private_mode"] or privacy_policy.policy(fresh=True)["private_mode"]
+    if private:
         # Private mode: keep that it ran and how it ended, not what it printed or said.
         result = {key: result.get(key) for key in ("status", "reason", "exit_code")}
         result["detail"] = {"private_mode": True}
-    verification = _verification(run_id, definition, result["status"], privacy["private_mode"])
+    verification = _verification(run_id, definition, result["status"], private)
     return store.finish_run(run_id, result["status"], reason=result.get("reason"), summary=result.get("summary"),
                             output=result.get("output"), exit_code=result.get("exit_code"), detail=result.get("detail"),
                             verification=verification)

@@ -22,8 +22,10 @@ from .policy import (
     filter_scoped_result,
     policy_metadata,
     profile_denied_result,
+    reset_policy_context,
     resolve_risk,
     scope_denied_result,
+    set_policy_context,
 )
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
@@ -351,7 +353,21 @@ async def require_policy(request: Request) -> None:
     _authorize_rest_tool(request, operation_id, arguments)
 
 
-router = APIRouter(dependencies=[Depends(require_auth), Depends(require_policy)])
+async def bind_policy_context(request: Request):
+    """Handlers read the caller's profile and scope from the same context variable as /mcp and
+    REST v2; without it a scoped key's search_files ran over the whole home folder (roadmap #62)."""
+    context = getattr(request.state, "policy_context", None)
+    if context is None:
+        yield
+        return
+    token = set_policy_context(context)
+    try:
+        yield
+    finally:
+        reset_policy_context(token)
+
+
+router = APIRouter(dependencies=[Depends(require_auth), Depends(require_policy), Depends(bind_policy_context)])
 
 
 # ── Request models ────────────────────────────────────────────────────────────

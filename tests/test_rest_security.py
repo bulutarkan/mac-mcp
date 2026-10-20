@@ -79,6 +79,27 @@ class RestSecurityBoundaryTests(unittest.TestCase):
         self.assertEqual("web_host_boundary", approval["reason_code"])
         self.assertIn("printf rest-blocked", approval["target_summary"])
 
+    def _scoped(self, root: str) -> PolicyContext:
+        return PolicyContext(profile="developer", actor="agent:rest-scope-test", agent_id="agt_rest_scope",
+                             scope=ResourceScope(path_roots=(root,), access_mode="read_only"))
+
+    def test_scoped_rest_search_stays_inside_the_key_scope(self) -> None:
+        # Roadmap #62: REST v1 handlers see the caller's scope, so a scoped key cannot search the home folder.
+        root = Path(self.temp.name) / "allowed"
+        root.mkdir()
+        (root / "notes.txt").write_text("needle-62 inside\n")
+        with patch.object(rest_routes, "resolve_request_identity", return_value=("cred_scope", self._scoped(str(root)))):
+            home = self.client.post("/search_files", json={"pattern": "needle-62"})
+            inside = self.client.post("/search_files", json={"pattern": "needle-62", "path": str(root)})
+            with patch("mcp_server.tools_search.subprocess.run") as mdfind:
+                mdfind.return_value.stdout = f"{root / 'notes.txt'}\n{Path.home() / 'secret.txt'}\n"
+                spotlight = self.client.post("/spotlight_search", json={"query": "notes"})
+        self.assertNotEqual(200, home.status_code, home.text)
+        self.assertEqual(200, inside.status_code, inside.text)
+        self.assertIn("needle-62 inside", inside.text)
+        self.assertEqual(200, spotlight.status_code, spotlight.text)
+        self.assertEqual([str(root / "notes.txt")], spotlight.json()["results"])
+
     def test_rest_trusted_web_to_host_crossing_skips_routine_approval(self) -> None:
         with patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "trusted"}, clear=False):
             self._establish_untrusted_page()
