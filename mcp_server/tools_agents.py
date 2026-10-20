@@ -1969,6 +1969,7 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "scheduler_version": team.get("scheduler_version"),
         "max_parallel": team.get("max_parallel"),
         "max_revisions": team.get("max_revisions"),
+        "plan_revision": int(team.get("plan_revision") or 0),
         "budget": _team_budget_snapshot(team),
         "budget_exhausted_reason": team.get("budget_exhausted_reason"),
         "last_retry_reason": team.get("last_retry_reason"),
@@ -5579,6 +5580,123 @@ def _task_selection(team: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any
             "selection_validation": team.get("model_selection_validation")}
 
 
+def _normalize_team_task(task: Any, index: int, team_role: Optional[str],
+                         default_max_revisions: int) -> Dict[str, Any]:
+    """One team task checked and in its stored shape; index counts from 1, as in tasks[index - 1]."""
+    # provider/model/reasoning may differ per task (#52); access and result style stay one per team.
+    forbidden = {"access_mode", "result_style"}
+    if not isinstance(task, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] must be an object.")
+    mixed = sorted(forbidden.intersection(task.keys()))
+    if mixed:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Team child settings {mixed} must be supplied once at team level so every agent uses the same configuration.",
+        )
+    override = {key: str(task[key]).strip() for key in ("provider", "model", "reasoning")
+                if isinstance(task.get(key), str) and str(task[key]).strip()}
+    prompt = str(task.get("prompt") or task.get("task") or "").strip()
+    if not prompt:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].prompt is required.")
+    task_id = str(task.get("id") or task.get("task_id") or f"task_{index}").strip()
+    if not _TASK_ID_RE.fullmatch(task_id):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"tasks[{index - 1}].id must match {_TASK_ID_RE.pattern!r}.",
+        )
+    deps_raw = task.get("depends_on") or []
+    if isinstance(deps_raw, str):
+        deps_raw = [deps_raw]
+    if not isinstance(deps_raw, list) or any(not isinstance(dep, str) for dep in deps_raw):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on must be a list of task ids.")
+    depends_on = [str(dep).strip() for dep in deps_raw if str(dep).strip()]
+    if len(depends_on) != len(set(depends_on)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on contains duplicates.")
+    review_of = str(task.get("review_of") or "").strip() or None
+    child_scope_raw = task.get("scope")
+    if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
+    resources_raw = task.get("resources") or []
+    if not isinstance(resources_raw, list) or any(not isinstance(item, dict) for item in resources_raw):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].resources must be a list of resource claim objects.")
+    child_role = str(task.get("role") or team_role or "").strip().lower() or None
+    if review_of and child_role is None:
+        child_role = "reviewer"
+    if review_of and child_role != "reviewer":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] uses review_of and must have role=reviewer.")
+    if child_role and child_role not in VALID_ROLES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"tasks[{index - 1}].role must be one of: {', '.join(sorted(VALID_ROLES))}.",
+        )
+    task_max_revisions = int(task.get("max_revisions", default_max_revisions))
+    if task_max_revisions < 0 or task_max_revisions > 3:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].max_revisions must be between 0 and 3.")
+    return {
+        "id": task_id,
+        "prompt": prompt,
+        "title": str(task.get("title") or f"Agent {index}").strip(),
+        "scope": child_scope_raw,
+        "role": child_role,
+        "depends_on": depends_on,
+        "review_of": review_of,
+        "max_revisions": task_max_revisions,
+        "resources": [dict(item) for item in resources_raw],
+        "_override": override,
+    }
+
+
+def _persisted_team_task(task: Dict[str, Any], team_scope: ResourceScope, workdir: Path,
+                         access_mode: str) -> Dict[str, Any]:
+    """A normalized task with its scope narrowed inside the team's, its resource claims and a fresh state."""
+    if task.get("scope") is None:
+        effective_scope = team_scope
+    else:
+        child_data = dict(task["scope"])
+        if "access_mode" in child_data:
+            try:
+                child_mode = normalize_access_mode(child_data["access_mode"])
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+            if child_mode.value != access_mode:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "task.scope.access_mode must match the team access_mode.")
+        child_data["access_mode"] = access_mode
+        if "path_roots" not in child_data and access_mode != "full":
+            child_data["path_roots"] = [str(workdir)]
+        try:
+            requested_child = ResourceScope.from_dict(child_data)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid task scope: {exc}") from exc
+        if not scope_contains(team_scope, requested_child):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "scope_denied: task scope cannot widen the team scope.")
+        effective_scope = child_scope(team_scope, requested_child)
+    resource_claims = _normalize_explicit_resource_claims(
+        task.get("resources"), workdir=workdir, scope=effective_scope,
+    )
+    return {
+        **task,
+        "resources": None,
+        "resource_claims": resource_claims,
+        "scope": effective_scope.to_dict(),
+        "state": "blocked",
+        "agent_ids": [],
+        "active_agent_id": None,
+        "latest_agent_id": None,
+        "revision_count": 0,
+        "revision_feedback": None,
+        "gate_attempts": 0,
+        "gate_result": None,
+        "gate_feedback": None,
+        "failure_reason": None,
+        "admission_request_id": None,
+        "admission_lease_id": None,
+        "queued_since": None,
+        "queued_reason": None,
+        "queued_details": None,
+        "queue_position": None,
+    }
+
+
 def spawn_agents(
     settings: Settings,
     tasks: List[Dict[str, Any]],
@@ -5670,69 +5788,8 @@ def spawn_agents(
         maximum=MAX_TEAM_TOKEN_BUDGET,
     )
 
-    # provider/model/reasoning may differ per task (#52); access and result style stay one per team.
-    forbidden = {"access_mode", "result_style"}
-    normalized: List[Dict[str, Any]] = []
-    for index, task in enumerate(tasks, start=1):
-        if not isinstance(task, dict):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] must be an object.")
-        mixed = sorted(forbidden.intersection(task.keys()))
-        if mixed:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"Team child settings {mixed} must be supplied once at team level so every agent uses the same configuration.",
-            )
-        override = {key: str(task[key]).strip() for key in ("provider", "model", "reasoning")
-                    if isinstance(task.get(key), str) and str(task[key]).strip()}
-        prompt = str(task.get("prompt") or task.get("task") or "").strip()
-        if not prompt:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].prompt is required.")
-        task_id = str(task.get("id") or task.get("task_id") or f"task_{index}").strip()
-        if not _TASK_ID_RE.fullmatch(task_id):
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"tasks[{index - 1}].id must match {_TASK_ID_RE.pattern!r}.",
-            )
-        deps_raw = task.get("depends_on") or []
-        if isinstance(deps_raw, str):
-            deps_raw = [deps_raw]
-        if not isinstance(deps_raw, list) or any(not isinstance(dep, str) for dep in deps_raw):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on must be a list of task ids.")
-        depends_on = [str(dep).strip() for dep in deps_raw if str(dep).strip()]
-        if len(depends_on) != len(set(depends_on)):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on contains duplicates.")
-        review_of = str(task.get("review_of") or "").strip() or None
-        child_scope_raw = task.get("scope")
-        if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
-        resources_raw = task.get("resources") or []
-        if not isinstance(resources_raw, list) or any(not isinstance(item, dict) for item in resources_raw):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].resources must be a list of resource claim objects.")
-        child_role = str(task.get("role") or team_role or "").strip().lower() or None
-        if review_of and child_role is None:
-            child_role = "reviewer"
-        if review_of and child_role != "reviewer":
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] uses review_of and must have role=reviewer.")
-        if child_role and child_role not in VALID_ROLES:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"tasks[{index - 1}].role must be one of: {', '.join(sorted(VALID_ROLES))}.",
-            )
-        task_max_revisions = int(task.get("max_revisions", effective_max_revisions))
-        if task_max_revisions < 0 or task_max_revisions > 3:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].max_revisions must be between 0 and 3.")
-        normalized.append({
-            "id": task_id,
-            "prompt": prompt,
-            "title": str(task.get("title") or f"Agent {index}").strip(),
-            "scope": child_scope_raw,
-            "role": child_role,
-            "depends_on": depends_on,
-            "review_of": review_of,
-            "max_revisions": task_max_revisions,
-            "resources": [dict(item) for item in resources_raw],
-            "_override": override,
-        })
+    normalized = [_normalize_team_task(task, index, team_role, effective_max_revisions)
+                  for index, task in enumerate(tasks, start=1)]
 
     _validate_team_graph(normalized)
     # Preserve validation precedence: malformed team/task input must fail with 4xx
@@ -5757,54 +5814,7 @@ def spawn_agents(
     for task in normalized:
         task.update(_task_agent_selection(task.pop("_override", {}), provider, model, reasoning, access_mode))
 
-    persisted_tasks: List[Dict[str, Any]] = []
-    for task in normalized:
-        if task.get("scope") is None:
-            effective_scope = team_scope
-        else:
-            child_data = dict(task["scope"])
-            if "access_mode" in child_data:
-                try:
-                    child_mode = normalize_access_mode(child_data["access_mode"])
-                except ValueError as exc:
-                    raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-                if child_mode.value != access_mode:
-                    raise HTTPException(status.HTTP_400_BAD_REQUEST, "task.scope.access_mode must match the team access_mode.")
-            child_data["access_mode"] = access_mode
-            if "path_roots" not in child_data and access_mode != "full":
-                child_data["path_roots"] = [str(workdir)]
-            try:
-                requested_child = ResourceScope.from_dict(child_data)
-            except (TypeError, ValueError) as exc:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid task scope: {exc}") from exc
-            if not scope_contains(team_scope, requested_child):
-                raise HTTPException(status.HTTP_403_FORBIDDEN, "scope_denied: task scope cannot widen the team scope.")
-            effective_scope = child_scope(team_scope, requested_child)
-        resource_claims = _normalize_explicit_resource_claims(
-            task.get("resources"), workdir=workdir, scope=effective_scope,
-        )
-        persisted_tasks.append({
-            **task,
-            "resources": None,
-            "resource_claims": resource_claims,
-            "scope": effective_scope.to_dict(),
-            "state": "blocked",
-            "agent_ids": [],
-            "active_agent_id": None,
-            "latest_agent_id": None,
-            "revision_count": 0,
-            "revision_feedback": None,
-            "gate_attempts": 0,
-            "gate_result": None,
-            "gate_feedback": None,
-            "failure_reason": None,
-            "admission_request_id": None,
-            "admission_lease_id": None,
-            "queued_since": None,
-            "queued_reason": None,
-            "queued_details": None,
-            "queue_position": None,
-        })
+    persisted_tasks = [_persisted_team_task(task, team_scope, workdir, access_mode) for task in normalized]
 
     try:
         team_git_base = resolve_git_base(workdir, mode=git_isolation, access_mode=access_mode)
@@ -6403,7 +6413,8 @@ def _agent_action_single(
 ) -> Dict[str, Any]:
     action = action.lower().strip()
     if action not in {"cancel", "message", "retry", "resume", "despawn", "apply", "discard"}:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, despawn, apply, or discard.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                        "action must be cancel, message, retry, resume, add_task, despawn, apply, or discard.")
     meta = _authorize_agent_control(agent_id, f"agent_action:{action}")
     meta = _normalize(agent_id, meta)
 
@@ -6697,6 +6708,8 @@ def agent_action(
     message: Optional[str] = None,
     signal: str = "TERM",
     requested_by: str = "orchestrator",
+    task: Optional[Dict[str, Any]] = None,
+    expected_revision: Optional[int] = None,
 ) -> Dict[str, Any]:
     if bool(agent_id) == bool(team_id):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of agent_id or team_id.")
@@ -6709,6 +6722,8 @@ def agent_action(
     ids = list(team.get("agent_ids") or [])
     if normalized_action == "resume":
         return _resume_team(str(team_id), team)
+    if normalized_action == "add_task":
+        return _add_team_task(str(team_id), team, task, expected_revision)
     if normalized_action in {"message", "apply", "discard"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{normalized_action} is only supported for an individual agent session.")
     if normalized_action == "cancel":
@@ -6904,6 +6919,76 @@ def _resume_team(team_id: str, team: Dict[str, Any]) -> Dict[str, Any]:
     _update_team(team_id, mark)
     summary = _team_summary(team_id)
     return {"ok": True, "team_id": team_id, **plan, "team": summary}
+
+
+def _add_team_task(team_id: str, team: Dict[str, Any], task: Any, expected_revision: Optional[int]) -> Dict[str, Any]:
+    """Add one task to a team's plan while it runs or after it finished (#74).
+
+    The new task is checked like a spawn_agents task and waits for its depends_on: once they complete it gets
+    their typed results and, in an isolated Git team, their worktree. Finished work is never run again. The plan
+    has a revision; a caller that passes expected_revision gets a conflict when someone changed the plan first.
+    """
+    if int(team.get("scheduler_version") or 0) < 1:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "add_task needs a team started with task ids.")
+    if not isinstance(task, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "task is required: an object with id, prompt and optional depends_on, title, role, "
+                            "scope, resources, provider, model, reasoning.")
+    if task.get("review_of"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "add_task cannot add a reviewer gate (review_of); give the new task depends_on instead.")
+    if team.get("cancelled"):
+        raise HTTPException(status.HTTP_409_CONFLICT, "The team was cancelled; resume it first or start a new team.")
+    exhausted = _team_budget_snapshot(team).get("admission_exhausted_reason")
+    if exhausted:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"budget_exhausted: {exhausted}; this team cannot start new tasks.")
+    access_mode = str(team.get("access_mode") or "read_only")
+    normalized = _normalize_team_task(task, len(team.get("tasks") or []) + 1, team.get("role"),
+                                      int(team.get("max_revisions") or 0))
+    normalized.update(_task_agent_selection(normalized.pop("_override", {}), str(team["provider"]), team.get("model"),
+                                            team.get("reasoning"), access_mode))
+    try:
+        team_scope = ResourceScope.from_dict(dict(team.get("scope") or {}))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"The team's stored scope is unreadable: {exc}") from exc
+    new_task = _persisted_team_task(normalized, team_scope, Path(str(team.get("cwd") or Path.home())), access_mode)
+    seed = current_delegated_provenance()
+    added: Dict[str, Any] = {}
+
+    def add(current: Dict[str, Any]) -> None:
+        revision = int(current.get("plan_revision") or 0)
+        if expected_revision is not None and int(expected_revision) != revision:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "error": "plan_conflict", "plan_revision": revision,
+                "message": f"The team's plan is at revision {revision}, not {expected_revision}; read the team and retry.",
+            })
+        if current.get("cancelled"):
+            raise HTTPException(status.HTTP_409_CONFLICT, "The team was cancelled; resume it first or start a new team.")
+        tasks = list(current.get("tasks") or [])
+        if len(tasks) >= MAX_TEAM_SIZE:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"A team can contain at most {MAX_TEAM_SIZE} tasks.")
+        _validate_team_graph([*(dict(item) for item in tasks), dict(new_task)])
+        if int(current.get("max_parallel") or 0) >= len(tasks):
+            # A team that ran all its tasks at once runs the new one alongside them too.
+            current["max_parallel"] = min(MAX_TEAM_SIZE, len(tasks) + 1)
+        if seed and seed.get("provenance_class") == "tainted_untrusted_web":
+            current["inherited_provenance"] = seed  # the new task may start later, from a worker's tick
+        current["tasks"] = [*tasks, new_task]
+        current["plan_revision"] = added["plan_revision"] = revision + 1
+        current["updated_at"] = _now()
+
+    team = _update_team(team_id, add)
+    room = (team.get("messaging") or {}).get("room")
+    if (team.get("messaging") or {}).get("enabled") and room:
+        try:
+            team_messages.store().add_tasks(str(room), [new_task["id"]])
+        except Exception:
+            pass  # messaging never stops a task from starting
+    team = _team_tick(team_id)
+    summary = _team_summary(team_id, team)
+    state = next((item.get("state") for item in summary.get("tasks") or [] if item.get("id") == new_task["id"]), None)
+    return {"ok": True, "action": "add_task", "team_id": team_id, "task_id": new_task["id"], "task_state": state,
+            "plan_revision": added["plan_revision"], "team": summary}
 
 
 def _extract_opencode(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:

@@ -115,6 +115,12 @@ A check can also look outside this Mac (#228), for a run that says it is done wh
 
 AI apps can list tasks and suggest new ones or changes through the `scheduled_tasks` tool. Its list comes in pages (`limit`, default 50, at most 200; `next_cursor` while `has_more`) with the total and a count per state, and `brief: true` gives one line of facts a task; `action: "get_run"` with a `run_id` returns one run's full summary, output and details. A suggestion shows as **Needs your approval** and never runs (an approved task keeps running unchanged) until you approve it in Settings; agents cannot approve. A finished run can post a macOS notification that says how it ended, never the prompt or the result.
 
+## Changing a running team's plan
+
+`agent_action(team_id, action="add_task", task={id, prompt, depends_on?, title?, role?, scope?, resources?, provider?, model?, reasoning?})` adds one task to a DAG team that is running or has finished (#74). The task goes through the same checks as a `spawn_agents` task: a unique id, known dependencies, no cycle, the team-size limit, a scope inside the team's, resource claims and its own provider/model. It waits for its `depends_on` and then starts with their typed results and, in an isolated Git team, their worktree changes; finished tasks never run again. A team that ran every task at once runs the new one alongside them; a team held to a lower `max_parallel` stays held. Teammates can message the new task by its id.
+
+Every plan change raises the team's `plan_revision` (in the team summary). A caller that passes `expected_revision` gets `409 plan_conflict` when the plan changed in the meantime. Only the session or agent that started the team (and its ancestors) may add tasks; siblings are refused. A cancelled team must be resumed first, the team deadline and admission budgets still apply, and a reviewer gate (`review_of`) can still be set only when the team starts.
+
 ## Agent team budgets and adaptive retry
 
 ### Failure-aware team outcome and quorum

@@ -1126,20 +1126,25 @@ def create_app():
     @mcp.tool(
         name="agent_action",
         description=(
-            "Control one agent or a whole team. action: cancel, retry, resume, despawn; individual isolated Git agents also support "
+            "Control one agent or a whole team. action: cancel, retry, resume, add_task, despawn; individual isolated Git agents also support "
             "apply (local/root-only, base/touched-file/CAS checked copy into the source working tree) and discard (explicitly remove the isolated worktree). "
             "message is available for individual resumable agent sessions. Delegated callers may control only themselves/descendants or "
             "teams they own within their persisted lineage; siblings and unrelated lineages fail closed. retry is refused after a verified "
             "side-effect or uncertain crash boundary; resume preserves the provider session, worktree and durable receipts. Team resume "
             "(a stopped team) keeps finished tasks, continues interrupted ones from their checkpoints, restarts only those with no side "
-            "effect yet and lists the rest. Team cancel cascades to all children; team despawn refuses unapplied isolated changes."
+            "effect yet and lists the rest. Team add_task adds one task to a running or finished team: task={id, prompt, depends_on?, "
+            "title?, role?, scope?, resources?, provider?, model?, reasoning?}; it starts once its depends_on complete and gets their "
+            "results; pass expected_revision (the team's plan_revision) to get a conflict instead of racing another change. "
+            "Team cancel cascades to all children; team despawn refuses unapplied isolated changes."
         ),
     )
     def _agent_action(action: str, agent_id: Optional[str] = None, team_id: Optional[str] = None,
-                      message: Optional[str] = None, signal: str = "TERM") -> Dict[str, Any]:
+                      message: Optional[str] = None, signal: str = "TERM", task: Optional[Dict[str, Any]] = None,
+                      expected_revision: Optional[int] = None) -> Dict[str, Any]:
         return _log(audit_logger, "agent_action",
                     lambda: agent_action(settings, action=action, agent_id=agent_id, team_id=team_id,
-                                         message=message, signal=signal))
+                                         message=message, signal=signal, task=task,
+                                         expected_revision=expected_revision))
 
     # ── File tools ──────────────────────────────────────────────────────────
     @mcp.tool(name="write_file",

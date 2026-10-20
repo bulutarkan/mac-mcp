@@ -352,6 +352,14 @@ class Store:
                              [(room_id, str(task)) for task in tasks])
             conn.execute("COMMIT")
 
+    def add_tasks(self, room_id: str, tasks: Iterable[str]) -> None:
+        """Task ids a team gained after it started (#74), so messages can be addressed to them."""
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executemany("INSERT OR IGNORE INTO room_tasks (room_id, task_id) VALUES (?, ?)",
+                             [(room_id, str(task)) for task in tasks])
+            conn.execute("COMMIT")
+
     # -- receiving -----------------------------------------------------------
     @staticmethod
     def _for_member(conn: sqlite3.Connection, member: sqlite3.Row, *, after: int, limit: int, newest: bool = False,

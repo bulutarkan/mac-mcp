@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Agent teams: add a task while the team runs (roadmap #74)
+- `agent_action(team_id, action="add_task", task={...})` adds one task to a team that is running or has finished, so new work found along the way stays in the same team instead of a new one. The task is checked like a `spawn_agents` task (id, prompt, `depends_on`, scope, resources, its own provider or model) and starts once its `depends_on` complete, with their results and, in an isolated Git team, their changes. Finished tasks are not run again.
+- The team's plan has a revision (`plan_revision` in the team summary); pass it as `expected_revision` and a change someone made in the meantime returns a conflict instead of both winning. Only the session that started the team (or its parent) can add tasks; the team-size limit, its deadline and its budgets still apply, and a cancelled team must be resumed first. A reviewer gate (`review_of`) is still set only when the team starts.
+
 ### Agent teams: each task on its own model, and pick up a stopped team (roadmap #52, #51)
 - A team task can name its own `provider`, `model` and `reasoning`, for example the builder on OpenCode and its reviewer on Codex in one team. Each is checked like the team's (on in Settings, installed, signed in, a valid model); a task on another provider gets that provider's defaults, never the team's model. Access stays one per team. The team summary shows each task's provider and model, and a retry keeps them.
 - `agent_action(team_id, action="resume")` picks a stopped team up where it stopped: finished tasks stay finished, an interrupted task continues its own provider session from its checkpoint, a task that had not touched anything yet starts over, and one that already did something it could repeat is left as it is and listed. Tasks skipped because of it wait for it again.
