@@ -417,13 +417,45 @@ def decoded_variants(payload: str) -> list[str]:
     return out
 
 
+# Uploads (#236) are judged by the file's own bytes, not only its path. Printable runs cover text
+# files and secrets stored inside binary ones; compressed formats hide their text either way.
+# Bounded so a large video or archive cannot stall the call.
+_UPLOAD_SCAN_BYTES = 8 * 1024 * 1024
+_PRINTABLE_RUN_RE = re.compile(rb"[\t\n\r\x20-\x7e]{8,}")
+
+
+def scan_upload_content(path: Any, known_fingerprints: Iterable[str]) -> Optional[str]:
+    if not path:
+        return None
+    try:
+        with open(Path(str(path)).expanduser(), "rb") as handle:
+            raw = handle.read(_UPLOAD_SCAN_BYTES)
+    except (OSError, ValueError):
+        return None
+    text = "\n".join(match.group(0).decode("ascii") for match in _PRINTABLE_RUN_RE.finditer(raw))
+    if contains_direct_secret(text):
+        return "artifact_content_secret"
+    known = set(known_fingerprints)
+    if not known:
+        return None
+    found = set(secret_fingerprints(text, include_entropy=True))
+    found.update(_digest(line.strip()) for line in text.splitlines() if len(line.strip()) >= 8)
+    found.update(_payload_candidate_fingerprints(text))
+    whole = raw.decode("utf-8", errors="ignore").strip()
+    if whole:
+        found.add(_digest(whole))
+    return "artifact_content_tainted_secret" if known.intersection(found) else None
+
+
 def scan_sensitive_egress(
     tool: str,
     arguments: Mapping[str, Any],
     known_fingerprints: Iterable[str],
     *,
     clipboard_sensitive: bool = False,
+    upload_content: Optional[str] = None,
 ) -> EgressScan:
+    """upload_content is scan_upload_content's verdict, read by the caller outside its lock."""
     name = str(tool or "")
     if name not in _BROWSER_EGRESS_TOOLS:
         return EgressScan(False)
@@ -432,6 +464,8 @@ def scan_sensitive_egress(
         path_class = sensitive_path_class(arguments.get("path"))
         if path_class:
             return EgressScan(True, "sensitive_artifact_path", path_class)
+        if upload_content:
+            return EgressScan(True, upload_content, "artifact_content")
         return EgressScan(False)
 
     if name == "browser_press_key":

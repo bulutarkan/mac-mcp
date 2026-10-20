@@ -1774,14 +1774,23 @@ class ObservedFastMCP(FastMCP):
                         f"target={target_type}:{target_id}; operation={operation}"
                     ) from exc
 
-            gate = self.security_context.evaluate(
-                key=security_key,
-                public_session_id=public_session_id,
-                tool=name,
-                risk=effective,
-                arguments=arguments,
-                profile=policy_context.profile,
-            )
+            def evaluate_gate():
+                return self.security_context.evaluate(
+                    key=security_key,
+                    public_session_id=public_session_id,
+                    tool=name,
+                    risk=effective,
+                    arguments=arguments,
+                    profile=policy_context.profile,
+                )
+
+            async def gate_decision():
+                # An upload's gate reads the file's bytes (#236), so it runs off the event loop.
+                if name == "browser_upload_artifact":
+                    return await asyncio.to_thread(evaluate_gate)
+                return evaluate_gate()
+
+            gate = await gate_decision()
 
             if (
                 not gate.allowed and gate.approval_required and gate.request_id
@@ -1833,14 +1842,7 @@ class ObservedFastMCP(FastMCP):
                         "deny", str(approval_result.get("decision") or "user_denied"),
                         origin=gate.origin, target_summary=gate.target_summary,
                     )
-                gate = self.security_context.evaluate(
-                    key=security_key,
-                    public_session_id=public_session_id,
-                    tool=name,
-                    risk=effective,
-                    arguments=arguments,
-                    profile=policy_context.profile,
-                )
+                gate = await gate_decision()
 
             if not gate.allowed:
                 result = {

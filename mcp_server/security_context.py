@@ -18,6 +18,7 @@ from .data_guard import (
     safe_target_summary,
     scan_sensitive_egress,
     scan_sensitive_source,
+    scan_upload_content,
     secret_fingerprints,
 )
 from .policy import (
@@ -774,6 +775,12 @@ class SecurityContextManager:
     ) -> ContextGateDecision:
         state = self.touch(key, public_session_id)
         profile_name = str(profile or "standard").strip().lower() or "standard"
+        upload_content = None
+        if tool == "browser_upload_artifact":
+            # The file is read outside the lock: an upload can be megabytes (#236).
+            with self._lock:
+                known = set(state.sensitive_fingerprints)
+            upload_content = scan_upload_content(arguments.get("path"), known)
         with self._lock:
             progress_signature = self._browser_action_signature(tool, arguments)
             if progress_signature and state.breaker_signature == progress_signature:
@@ -809,7 +816,7 @@ class SecurityContextManager:
             if current_origin_is_untrusted:
                 egress = scan_sensitive_egress(
                     tool, arguments, state.sensitive_fingerprints,
-                    clipboard_sensitive=state.clipboard_sensitive,
+                    clipboard_sensitive=state.clipboard_sensitive, upload_content=upload_content,
                 )
                 if egress.sensitive:
                     grant = self._consume_grant_locked(state, tool, fingerprint, origin=current_target_origin)

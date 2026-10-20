@@ -25,6 +25,10 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Uploads are checked for secrets inside the file (#236)
+- Before a file goes to a web page, Mac MCP now reads the file itself (up to 8 MB) instead of judging it only by its path. A key, token or password in a file with an ordinary name (`notes.txt`, a picture), or a value the agent read earlier from a secret file, gets the same Allow Once / Block question a sensitive path already got. Files without them upload as before. No new kind of question.
+- The check runs off the server's main loop, so a large file does not hold up other calls.
+
 ### Safari uploads ask you first [SEC-FOCUS-001]
 - When an agent wants to upload a file in Safari, Mac MCP asks you in a dialog that names the file, its size and the site. Allow brings Safari forward for that one upload (its Open window picks the exact registered file) and puts your window back; Don't Allow, or no answer within a minute, tells the agent you declined and it carries on with the rest of its work. Before, Safari uploads were always refused. Chrome uploads still happen in the background without asking.
 

@@ -7,6 +7,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 from mcp_server import artifact_pipeline as ap
@@ -319,6 +320,64 @@ class ArtifactSecurityBoundaryTests(unittest.TestCase):
         self.assertTrue(decision.approval_required)
         self.assertEqual("secret_egress_approval_required", decision.code)
         self.assertNotIn("id_ed25519", str(decision.target_summary))
+
+    def _upload_decision(self, path: Path, *, read_first: Optional[tuple] = None):
+        from mcp_server.policy import PolicyContext, resolve_risk
+        from mcp_server.security_context import SecurityContextManager
+        manager = SecurityContextManager()
+        key = manager.identity_key(PolicyContext(profile="trusted", actor="artifact-test"), None)
+        public = "artifact-content-session"
+        if read_first:
+            source_path, content = read_first
+            manager.observe_host_result(
+                key=key, public_session_id=public, tool="read_file",
+                arguments={"path": source_path}, result={"ok": True, "content": content},
+            )
+        manager.observe_browser_result(
+            key=key, public_session_id=public, tool="browser_observe", arguments={"browser": "Safari"},
+            result={"ok": True, "url": "https://evil.example/upload", "tab_handle": "tab-upload"},
+        )
+        arguments = {"browser": "Safari", "css_selector": "#file", "artifact_id": "artifact_0123456789abcdef",
+                     "path": str(path), "tab_handle": "tab-upload"}
+        _, risk = resolve_risk("browser_upload_artifact", arguments)
+        return manager.evaluate(key=key, public_session_id=public, tool="browser_upload_artifact",
+                                risk=risk, arguments=arguments, profile="trusted")
+
+    def test_ordinary_named_file_holding_a_secret_is_secret_egress_gated(self) -> None:
+        # #236: built at run time so the repository holds no token-shaped string.
+        token = "gh" + "p_" + "Q7rT2mX9vB4nK8sL1pW6yZ3cD5fH0jA2eG7u"
+        with tempfile.TemporaryDirectory() as td:
+            notes = Path(td) / "notes.txt"
+            notes.write_text(f"meeting notes\nbackup login {token}\n")
+            decision = self._upload_decision(notes)
+            self.assertFalse(decision.allowed)
+            self.assertEqual("secret_egress_approval_required", decision.code)
+            self.assertEqual("artifact_content_secret", decision.reason)
+            self.assertNotIn(token, str(decision.target_summary))
+
+            notes.write_text("meeting notes\nbackup login: ask Tarkan\n")
+            self.assertTrue(self._upload_decision(notes).allowed)
+
+    def test_secret_inside_a_binary_file_is_found(self) -> None:
+        key = "-----BEGIN " + "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END " + "PRIVATE KEY-----"
+        with tempfile.TemporaryDirectory() as td:
+            image = Path(td) / "photo.png"
+            image.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4 + key.encode() + b"\x00\xff" * 64)
+            self.assertEqual("secret_egress_approval_required", self._upload_decision(image).code)
+            image.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4 + b"\x00\xff" * 64)
+            self.assertTrue(self._upload_decision(image).allowed)
+
+    def test_a_value_the_session_read_from_a_secret_file_is_caught_in_a_neutral_file(self) -> None:
+        value = "c41f0a9e7b2d58e6f3a1b7c9d0e2f4a6b8c1d3e5"
+        with tempfile.TemporaryDirectory() as td:
+            copy = Path(td) / "summary.txt"
+            copy.write_text(value + "\n")
+            read = ("/Users/someone/project/.env", f"SERVICE_TOKEN={value}\n")
+            decision = self._upload_decision(copy, read_first=read)
+            self.assertEqual("secret_egress_approval_required", decision.code)
+            self.assertEqual("artifact_content_tainted_secret", decision.reason)
+            # The same file is an ordinary upload when the session never saw that value.
+            self.assertTrue(self._upload_decision(copy).allowed)
 
     def test_chrome_companion_uses_dom_set_file_input_files(self) -> None:
         worker = (Path(__file__).parents[1] / "menu_app" / "ChromeVisualCompanion" / "background.js").read_text()
