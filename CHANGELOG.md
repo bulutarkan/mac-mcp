@@ -25,6 +25,9 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Live Island: a heads-up before the iPhone takes your pointer
+- The first time a chat or agent drives the iPhone (`iphone` `act`, directly or through `tool_invoke`), the Live Island opens a short note: "iPhone Mirroring · Each step briefly takes your pointer and keyboard." It shows once per session for about five seconds, asks nothing and stops nothing. Looking at or reading the iPhone screen (`see`, `read`, `find`) takes neither, so it shows no note.
+
 ### Activity bubble names its lanes (roadmap #26)
 - When several pieces of work run at once, each row of the tool activity bubble says where it comes from: the chat app ("ChatGPT", "Claude Code") or the agent's provider and task ("Codex · Fix the tests"). Before, every row was "Agent 1", "Agent 2". Rows the app cannot place are "Session N" or "Agent N".
 - The header counts by kind ("2 sessions · 3 agents") instead of calling every row an agent, and more than three rows scroll instead of ending in "+2 more working". VoiceOver reads every row. The single-row bubble shows the source too ("Mac MCP · ChatGPT").

@@ -23,6 +23,19 @@ private struct ToolActivityStreamArguments: Decodable, Sendable {
     let description: String?
     let browser: String?
     let app: String?
+    let action: String?
+    /// tool_invoke: the tool it calls and that tool's arguments (for the iPhone note).
+    let toolName: String?
+    let arguments: InvokedToolArguments?
+
+    struct InvokedToolArguments: Decodable, Sendable {
+        let action: String?
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case description, browser, app, action, arguments
+        case toolName = "tool_name"
+    }
 }
 
 private struct ToolActivityStreamPayload: Decodable, Sendable {
@@ -1166,7 +1179,9 @@ final class AppState: ObservableObject {
             agentID: payload.agentID,
             client: payload.client,
             target: arguments.browser ?? arguments.app,
-            startedAt: payload.startedAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+            startedAt: payload.startedAt.map { Date(timeIntervalSince1970: $0) } ?? Date(),
+            action: arguments.action ?? arguments.arguments?.action,
+            invokedTool: arguments.toolName
         ))
         // The bubble is one style of live activity; the island is the other.
         guard settings.requireToolDescriptions, settings.showToolActivity, !settings.showLiveIsland else { return }

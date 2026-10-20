@@ -9,6 +9,7 @@ from __future__ import annotations
 
 SWIFT_ONLY = (
     "test_live_island_hit_area",
+    "test_live_island_iphone_notice",
     "test_live_island_waiting_peeks",
     "test_login_item",
     "test_menu_agent_failure_aging",

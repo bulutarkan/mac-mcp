@@ -83,6 +83,7 @@ extension LiveTone {
         case .done: return Color(red: 0.30, green: 0.85, blue: 0.50)
         case .attention: return Color(red: 1.0, green: 0.66, blue: 0.25)
         case .problem: return Color(red: 1.0, green: 0.38, blue: 0.36)
+        case .notice: return Color(red: 0.58, green: 0.68, blue: 0.82)
         }
     }
 }
@@ -305,6 +306,8 @@ final class LiveIslandController {
     private var agentStatus: [String: String] = [:]
     private var agentsSeeded = false
     private var peekQueue: [LivePeek] = []
+    /// Sessions already told that iPhone steps borrow the pointer and keyboard.
+    private var iPhoneNoticeShown = Set<String>()
     private var peekTask: Task<Void, Never>?
     private var finishTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
@@ -382,6 +385,11 @@ final class LiveIslandController {
         tools[call.eventID] = call
         rebuild()
         refreshSlot()
+        // The first time a session drives the iPhone, say that each step borrows the pointer and keyboard.
+        if let session = IPhoneNotice.sessionKey(for: call), iPhoneNoticeShown.insert(session).inserted {
+            enqueuePeek(LivePeek(id: "iphone-notice-\(session)", symbol: "iphone", title: IPhoneNotice.title,
+                                 detail: IPhoneNotice.detail, tone: .notice))
+        }
     }
 
     private func toolFinished(_ eventID: String, ok: Bool) {
@@ -731,7 +739,7 @@ final class LiveIslandController {
             model.peek = next
             model.settle()
         }
-        let hold: UInt64 = next.tone == .attention ? 5_000_000_000 : 3_500_000_000
+        let hold: UInt64 = next.tone == .attention || next.tone == .notice ? 5_000_000_000 : 3_500_000_000
         peekTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: hold)
             guard !Task.isCancelled else { return }

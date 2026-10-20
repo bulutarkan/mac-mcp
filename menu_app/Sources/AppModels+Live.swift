@@ -5,7 +5,8 @@ import Foundation
 /// so AppState (and its test harnesses) can feed it without the AppKit window code.
 
 enum LiveTone: Equatable {
-    case working, done, attention, problem
+    /// notice: a heads-up that asks nothing of the owner (the iPhone Mirroring note).
+    case working, done, attention, problem, notice
 }
 
 enum LiveTarget: Equatable {
@@ -57,6 +58,24 @@ struct LiveToolCall: Equatable {
     /// The browser or app the call works in ("safari", "chrome", "Reminders"), for its icon.
     let target: String?
     let startedAt: Date
+    /// The tool's action argument ("act", "see"), and for tool_invoke the tool it calls with its action.
+    var action: String? = nil
+    var invokedTool: String? = nil
+}
+
+/// The once-a-session heads-up in the island when an agent starts using the iPhone.
+enum IPhoneNotice {
+    static let title = "iPhone Mirroring"
+    static let detail = "Each step briefly takes your pointer and keyboard."
+
+    /// The session this call belongs to when it drives the iPhone (iphone act, directly or through
+    /// tool_invoke); nil for any other call. see, read and find only capture the screen and take nothing.
+    static func sessionKey(for call: LiveToolCall) -> String? {
+        let tool = (call.invokedTool ?? call.tool).lowercased()
+        guard tool == "iphone" || tool.hasSuffix("__iphone") || tool.hasSuffix("_iphone"),
+              call.action?.lowercased() == "act" else { return nil }
+        return call.sessionID ?? call.agentID ?? "local"
+    }
 }
 
 /// Something that happened, for the island's Recent list.
