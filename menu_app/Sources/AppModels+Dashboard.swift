@@ -374,13 +374,29 @@ struct BrowserTabFrameEnvelope: Decodable {
         let height: Double
     }
 
+    /// Where the tab was found, sent back to follow it cheaply while the pulse plays.
+    struct Hint: Codable {
+        let windowIndex: Int
+        let tabIndex: Int
+        let title: String
+
+        enum CodingKeys: String, CodingKey {
+            case title
+            case windowIndex = "window_index"
+            case tabIndex = "tab_index"
+        }
+
+        var body: [String: Any] { ["window_index": windowIndex, "tab_index": tabIndex, "title": title] }
+    }
+
     let ok: Bool
     let active: Bool?
     let frame: Frame?
     let windowID: Int?
+    let hint: Hint?
 
     enum CodingKeys: String, CodingKey {
-        case ok, active, frame
+        case ok, active, frame, hint
         case windowID = "window_id"
     }
 

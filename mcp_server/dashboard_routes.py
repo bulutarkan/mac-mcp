@@ -1520,8 +1520,9 @@ def create_dashboard_routes(
         if not browser or not tab_handle:
             return JSONResponse({"ok": False, "error": "browser_and_tab_handle_required"}, status_code=400)
         from .browser_tab_frame import tab_frame
+        hint = body.get("hint") if isinstance(body.get("hint"), dict) else None
         try:
-            result = await asyncio.to_thread(tab_frame, browser, tab_handle)
+            result = await asyncio.to_thread(tab_frame, browser, tab_handle, hint)
         except Exception:
             result = {"ok": False, "error": "tab_frame_failed"}
         return JSONResponse(result)

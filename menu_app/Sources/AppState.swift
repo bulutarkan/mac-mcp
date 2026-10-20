@@ -1181,12 +1181,24 @@ final class AppState: ObservableObject {
         if let last = tabPulseAskedAt[handle], now.timeIntervalSince(last) < 1.0 { return }
         tabPulseAskedAt[handle] = now
         let reduceMotion = self.reduceMotion
+        let url = base.appendingPathComponent("dashboard/api/browser/tab-frame")
         Task {
             guard let response: BrowserTabFrameEnvelope = try? await post(
-                base.appendingPathComponent("dashboard/api/browser/tab-frame"),
-                body: ["browser": browser, "tab_handle": handle], timeout: 3.0
+                url, body: ["browser": browser, "tab_handle": handle], timeout: 3.0
             ), let target = response.target, settings.showBrowserTabPulse else { return }
-            BrowserTabPulseController.shared.pulse(axFrame: target.frame, windowID: target.windowID, reduceMotion: reduceMotion)
+            // While the glow shows, follow the tab: tabs opening or closing beside it resize and move it.
+            var hint = response.hint
+            let follow: () async -> CGRect? = { [weak self] in
+                guard let self, let current = hint else { return nil }
+                guard let next: BrowserTabFrameEnvelope = try? await self.post(
+                    url, body: ["browser": browser, "tab_handle": handle, "hint": current.body], timeout: 1.0
+                ), let found = next.target, found.windowID == target.windowID else { return nil }
+                hint = next.hint ?? current
+                return found.frame
+            }
+            BrowserTabPulseController.shared.pulse(
+                axFrame: target.frame, windowID: target.windowID, reduceMotion: reduceMotion, follow: follow
+            )
         }
     }
 

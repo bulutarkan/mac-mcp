@@ -1,3 +1,10 @@
+## Unreleased
+
+### The agent's browser tab glows while you look elsewhere (roadmap #79)
+- When an agent works in a Safari or Chrome tab you are not on, that tab glows briefly in the tab bar each time it acts: a pale blue wave sweeps across it twice and fades, about 1.6 s. The tab you are on never glows, and switching to the agent's tab stops it at once.
+- The glow follows its tab while it plays and comes back above the browser after you click in it; when tabs open or close beside it, that pulse stops and the next one finds the tab again. It shows on whichever desktop the browser is on, ignores the mouse, never takes focus and stays out of screenshots. Reduce Motion gets a still tint.
+- On by default; **Settings › Live activity › Glow on the agent's browser tab** turns it off.
+
 ## [2.3.0] - 2026-10-20
 
 **In short:** agents can use your other Macs and your iPhone; what they change in Notes, Reminders, Calendar and Mail can be undone; Safari uploads ask you first and uploads are checked for secrets inside the file; a browser click can wait for the file it downloads, Chrome opens tabs in the window you ask for and saved logins work inside sign-in frames; Claude Desktop keeps its connection and its key; and many reports that said "done" too early now tell the truth. Install with npm, `install.sh` or the package; existing installs get it with `mac-mcp update`.

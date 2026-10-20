@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional
 from . import ax_native, browser_tabs
 
 _APP_NAMES = {"Safari": "Safari", "Google Chrome": "Google Chrome"}
+# Safari's tab buttons are two levels under the window; Chrome nests its tab strip deeper. Going no
+# deeper keeps the page itself out of the walk, so following a tab stays quick.
+_TAB_DEPTH = {"Safari": 3, "Google Chrome": 8}
 # Tab buttons sit in the window's top strip; anything lower is page content.
 _TAB_STRIP_DEPTH_PT = 140
 
@@ -54,22 +57,30 @@ def pick_tab_button(buttons: List[Dict[str, Any]], tab_index: int, title: str) -
     return matches[0] if len(matches) == 1 else None
 
 
-def tab_frame(browser: str, tab_handle: str) -> Dict[str, Any]:
+def tab_frame(browser: str, tab_handle: str, hint: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The tab button's frame. With hint (window_index, tab_index, title from an earlier answer), only
+    the tab bar is read again, cheap enough to follow the tab while its pulse plays (tabs opening or
+    closing resize it)."""
     from .tools_ui import _parse_observation
 
     app = browser_tabs._browser_key(browser)
     if app not in _APP_NAMES:
         return {"ok": False, "error": "unsupported_browser"}
-    try:
-        window_index, tab_index, row = browser_tabs.resolve_tab(app, tab_handle)
-    except (KeyError, browser_tabs.AmbiguousTabHandleError):
-        return {"ok": False, "error": "tab_not_found"}
-    if row.get("active"):
-        # The tab shows in its window: the owner sees its page, so there is nothing to point at.
-        return {"ok": True, "active": True}
+    hint = hint if isinstance(hint, dict) else {}
+    if int(hint.get("window_index") or 0) > 0 and str(hint.get("title") or "").strip():
+        window_index, tab_index = int(hint["window_index"]), int(hint.get("tab_index") or 0)
+        row: Dict[str, Any] = {"title": str(hint["title"])}
+    else:
+        try:
+            window_index, tab_index, row = browser_tabs.resolve_tab(app, tab_handle)
+        except (KeyError, browser_tabs.AmbiguousTabHandleError):
+            return {"ok": False, "error": "tab_not_found"}
+        if row.get("active"):
+            # The tab shows in its window: the owner sees its page, so there is nothing to point at.
+            return {"ok": True, "active": True}
     observed = ax_native.observe(
         app=_APP_NAMES[app], app_pid=None, window_index=window_index,
-        max_depth=8, max_children=60, max_nodes=900, timeout_s=2.0,
+        max_depth=_TAB_DEPTH[app], max_children=80, max_nodes=600, timeout_s=2.0,
     )
     if not observed or not observed[0]:
         return {"ok": False, "error": "tab_bar_unavailable"}
@@ -78,13 +89,19 @@ def tab_frame(browser: str, tab_handle: str) -> Dict[str, Any]:
     if not window or window.get("on_shown_desktop") is False:
         return {"ok": False, "error": "window_not_shown"}
     top = float((window.get("position") or {}).get("y") or 0)
-    button = pick_tab_button(tab_buttons(nodes, top), tab_index, str(row.get("title") or ""))
+    buttons = tab_buttons(nodes, top)
+    title = str(row.get("title") or "")
+    button = pick_tab_button(buttons, tab_index, title)
     if button is None:
         return {"ok": False, "error": "tab_button_not_matched"}
+    if str(button.get("value") or "").strip().lower() == "true":
+        # The owner switched to this tab meanwhile.
+        return {"ok": True, "active": True}
     pos = button["position"]
     return {
         "ok": True, "active": False,
         "frame": {key: float(pos[key]) for key in ("x", "y", "width", "height")},
         "window_id": window.get("window_id"),
         "app_pid": metadata.get("pid"),
+        "hint": {"window_index": window_index, "tab_index": buttons.index(button) + 1, "title": title},
     }

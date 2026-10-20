@@ -55,11 +55,28 @@ class BrowserTabPulseTests(unittest.TestCase):
     def test_panel_is_click_through_above_the_browser_and_out_of_captures(self) -> None:
         self.assertIn("panel.ignoresMouseEvents = true", PULSE)
         self.assertIn(".nonactivatingPanel", PULSE)
+        # Shown over a browser on whichever desktop is on show, not only the first one it appeared on.
+        self.assertIn("panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]", PULSE)
         self.assertIn("panel.order(.above, relativeTo: windowID)", PULSE)
         self.assertIn("panel.sharingType = capturableForTesting ? .readOnly : .none", PULSE)
         self.assertIn("band.isHidden = reduceMotion", PULSE)
         # A fade that ends after a newer pulse began leaves that pulse alone.
         self.assertIn("self.generation == mine", PULSE)
+
+    def test_the_glow_follows_a_tab_that_moves_or_resizes(self) -> None:
+        # The band moves by gradient stops (fractions of the width), so any tab size gets a full pass.
+        self.assertIn('CABasicAnimation(keyPath: "locations")', PULSE)
+        self.assertNotIn('keyPath: "position.x"', PULSE)
+        play = PULSE[PULSE.index("func pulse(axFrame:"):PULSE.index("func hideImmediately()")]
+        self.assertIn("guard let next = await follow() else { break }", play)
+        self.assertIn("self.place(next, animated: true)", play)
+        # Clicking another tab raises the browser window; the glow goes back above it on each step.
+        follow_loop = play[play.index("while Date() < ends"):]
+        self.assertIn("self.panel?.order(.above, relativeTo: windowID)", follow_loop)
+        self.assertIn("Self.followSeconds", play)
+        pulse = STATE[STATE.index("private func pulseBrowserTab("):STATE.index("private static let tabPulseSkippedTools")]
+        self.assertIn('"hint": current.body', pulse)
+        self.assertIn("found.windowID == target.windowID", pulse)
 
     def test_each_tool_use_pulses_once_and_only_for_a_tab_not_on_show(self) -> None:
         handler = STATE[STATE.index("private func handleToolActivityPayload("):STATE.index("/// \"Chat 2\"")]

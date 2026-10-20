@@ -56,8 +56,32 @@ class TabFrameTests(unittest.TestCase):
     def test_a_background_tab_gets_its_button_frame_and_window(self) -> None:
         result, observe = self.run_frame({"title": "bulutarkan/mac-mcp | ghloc", "active": False, "tab_index": 4})
         self.assertEqual({"ok": True, "active": False, "frame": {"x": 881.0, "y": 85.0, "width": 290.0, "height": 32.0},
-                          "window_id": 4242, "app_pid": 98854}, result)
+                          "window_id": 4242, "app_pid": 98854,
+                          "hint": {"window_index": 1, "tab_index": 4, "title": "bulutarkan/mac-mcp | ghloc"}}, result)
         self.assertEqual("Safari", observe.call_args.kwargs["app"])
+
+    def test_following_with_a_hint_reads_only_the_tab_bar(self) -> None:
+        # While the pulse plays the tab is followed: no tab rescan, and a tab that moved is found by title.
+        windows = [{"index": 1, "position": {"y": 33}, "on_shown_desktop": True, "window_id": 4242}]
+        moved = [TABS[0], TABS[3], TABS[1]]  # a tab closed and the agent's tab slid left
+        moved = [dict(node, position=dict(node["position"], x=index * 300 + 8)) for index, node in enumerate(moved)]
+        with patch.object(frame.browser_tabs, "resolve_tab") as resolve, \
+             patch.object(frame.ax_native, "observe", return_value=(True, "raw", "")), \
+             patch("mcp_server.tools_ui._parse_observation", return_value=({"windows": windows}, moved)):
+            result = frame.tab_frame("safari", "btab_safari_x",
+                                     {"window_index": 1, "tab_index": 4, "title": "bulutarkan/mac-mcp | ghloc"})
+        resolve.assert_not_called()
+        self.assertEqual(308.0, result["frame"]["x"])
+        self.assertEqual(2, result["hint"]["tab_index"])
+
+    def test_switching_to_the_tab_stops_the_glow(self) -> None:
+        selected = [dict(TABS[3], value="true")]
+        windows = [{"index": 1, "position": {"y": 33}, "on_shown_desktop": True, "window_id": 4242}]
+        with patch.object(frame.ax_native, "observe", return_value=(True, "raw", "")), \
+             patch("mcp_server.tools_ui._parse_observation", return_value=({"windows": windows}, selected)):
+            result = frame.tab_frame("safari", "btab_safari_x",
+                                     {"window_index": 1, "tab_index": 1, "title": "bulutarkan/mac-mcp | ghloc"})
+        self.assertEqual({"ok": True, "active": True}, result)
 
     def test_the_tab_on_show_draws_nothing_and_reads_no_tree(self) -> None:
         result, observe = self.run_frame({"title": "Kod Ölçeğini Değerlendir", "active": True, "tab_index": 3})
