@@ -155,6 +155,53 @@ struct BubbleFadeHarness {
 '''
         self._run_harness(harness, "BUBBLE_FADE_HARNESS_PASS")
 
+    def test_lanes_are_named_by_their_source_and_more_than_three_all_show(self) -> None:
+        # Roadmap #26: every lane said "Agent N", the header counted sessions as agents, and lanes past
+        # the third were only a "+N more" count.
+        harness = r'''
+import AppKit
+import Foundation
+
+@main
+struct BubbleLaneHarness {
+    @MainActor
+    static func main() async {
+        typealias B = ToolActivityBubbleController
+        precondition(B.laneLabel(source: "ChatGPT", laneKey: "session:s1", ordinal: 1) == "ChatGPT")
+        precondition(B.laneLabel(source: nil, laneKey: "agent:a1", ordinal: 2) == "Agent 2")
+        precondition(B.laneLabel(source: "", laneKey: "session:s9", ordinal: 3) == "Session 3")
+        precondition(B.headerText(laneKeys: ["session:s1"]) == "1 session")
+        precondition(B.headerText(laneKeys: ["session:s1", "agent:a1", "agent:a2"]) == "1 session · 2 agents")
+        precondition(B.headerText(laneKeys: ["event:e1", "agent:a1"]) == "1 session · 1 agent")
+
+        let controller = B.shared
+        func visiblePanel() -> NSWindow? { NSApplication.shared.windows.first(where: { $0.isVisible }) }
+        func wait(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+        let sources = ["ChatGPT", "Claude Code", "Codex · Fix the tests", "Codex · Review", "Goose agent"]
+        for (index, source) in sources.enumerated() {
+            controller.begin(eventID: "l\\(index)", tool: "read_file", description: "Lane \\(index) work",
+                             sessionID: index < 2 ? "s\\(index)" : nil, agentID: index >= 2 ? "a\\(index)" : nil,
+                             source: source)
+        }
+        await wait(0.6)
+        guard let panel = visiblePanel() else { fatalError("panel not visible") }
+        let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
+        precondition(panel.frame.height < 360 && panel.frame.height < screenHeight, "five lanes made the panel \\(panel.frame.height) tall")
+        controller.hideImmediately()
+        print("BUBBLE_LANE_HARNESS_PASS")
+    }
+}
+'''
+        self._run_harness(harness, "BUBBLE_LANE_HARNESS_PASS")
+        source = BUBBLE.read_text(encoding="utf-8")
+        self.assertIn("ForEach(model.lanes) { lane in", source)
+        self.assertIn("ScrollView(.vertical, showsIndicators: true)", source)
+        self.assertNotIn("more working", source)
+        self.assertNotIn("agents active", source)
+        self.assertIn('model.lanes.map { "\\($0.label): \\($0.description)" }', source)
+        state = (ROOT / "menu_app" / "Sources" / "AppState.swift").read_text(encoding="utf-8")
+        self.assertIn("source: bubbleSource(agentID: payload.agentID, client: payload.client)", state)
+
     def _run_harness(self, harness: str, marker: str) -> None:
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / "BubbleEpochHarness.swift"

@@ -9,6 +9,8 @@ private struct ToolActivityLane: Identifiable, Equatable {
     let startedAt: Date
     let ordinal: Int
     let settling: Bool
+    /// Where the work comes from ("ChatGPT", "Codex · Fix the tests"), when the app knows it.
+    var source: String? = nil
 }
 
 @MainActor
@@ -45,16 +47,15 @@ private struct ToolActivityBubbleView: View {
         )
     }
 
-    private var visibleLanes: [ToolActivityLane] {
-        Array(model.lanes.prefix(3))
+    /// Up to this many lanes show at full height; more scroll, with the next row half in view (#26).
+    private static let rowsBeforeScrolling = 3
+
+    private var activeLanes: [ToolActivityLane] {
+        model.lanes.filter { !$0.settling }
     }
 
-    private var hiddenCount: Int {
-        max(0, model.lanes.count - visibleLanes.count)
-    }
-
-    private var activeLaneCount: Int {
-        model.lanes.filter { !$0.settling }.count
+    private var headerText: String {
+        activeLanes.isEmpty ? "Finishing" : ToolActivityBubbleController.headerText(laneKeys: activeLanes.map(\.id))
     }
 
     var body: some View {
@@ -74,9 +75,10 @@ private struct ToolActivityBubbleView: View {
             toolIcon(for: primaryLane.tool, size: 27, symbolSize: 12)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Mac MCP")
+                Text(primaryLane.source.map { "Mac MCP · \($0)" } ?? "Mac MCP")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .lineLimit(1)
 
                 Text(primaryLane.description)
                     .font(.callout.weight(.semibold))
@@ -122,51 +124,18 @@ private struct ToolActivityBubbleView: View {
 
                 Spacer()
 
-                Text(activeLaneCount > 0 ? "\(activeLaneCount) agents active" : "Finishing")
+                Text(headerText)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
 
-            ForEach(visibleLanes) { lane in
-                HStack(alignment: .center, spacing: 9) {
-                    toolIcon(for: lane.tool, size: 25, symbolSize: 11)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(lane.description)
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .contentTransition(.opacity)
-
-                        Text(lane.label)
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    Spacer(minLength: 3)
-
-                    if lane.settling {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10 * iconScale, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.72)
-                            .tint(.secondary)
-                    }
+            if model.lanes.count > Self.rowsBeforeScrolling {
+                ScrollView(.vertical, showsIndicators: true) {
+                    laneRows
                 }
-                .padding(.vertical, 3)
-                .opacity(lane.settling ? 0.58 : 1)
-                .transition(.opacity)
-            }
-
-            if hiddenCount > 0 {
-                Text("+\(hiddenCount) more working")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 34)
+                .frame(height: 160 * iconScale)
+            } else {
+                laneRows
             }
 
             Spacer(minLength: 0)
@@ -189,12 +158,52 @@ private struct ToolActivityBubbleView: View {
         .padding(6)
     }
 
+    private var laneRows: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(model.lanes) { lane in
+                HStack(alignment: .center, spacing: 9) {
+                    toolIcon(for: lane.tool, size: 25, symbolSize: 11)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(lane.description)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .contentTransition(.opacity)
+
+                        Text(lane.label)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 3)
+
+                    if lane.settling {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10 * iconScale, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.72)
+                            .tint(.secondary)
+                    }
+                }
+                .padding(.vertical, 3)
+                .opacity(lane.settling ? 0.58 : 1)
+                .transition(.opacity)
+            }
+        }
+    }
+
     private var accessibilityText: String {
         if !model.expanded {
             return "Mac MCP tool activity, \(primaryLane.description)"
         }
-        return "Mac MCP, \(activeLaneCount) agents active, " +
-            visibleLanes.map { "\($0.label): \($0.description)" }.joined(separator: ", ")
+        return "Mac MCP, \(headerText), " +
+            model.lanes.map { "\($0.label): \($0.description)" }.joined(separator: ", ")
     }
 
     @ViewBuilder
@@ -251,6 +260,7 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         let tool: String
         let description: String
         let startedAt: Date
+        let source: String?
     }
 
     private struct SettlingLane {
@@ -258,6 +268,7 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         let tool: String
         let description: String
         let startedAt: Date
+        let source: String?
     }
 
     private let model = ToolActivityBubbleModel()
@@ -286,7 +297,8 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         description: String,
         sessionID: String? = nil,
         agentID: String? = nil,
-        teamID: String? = nil
+        teamID: String? = nil,
+        source: String? = nil
     ) {
         let cleanDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !eventID.isEmpty, !cleanDescription.isEmpty else { return }
@@ -309,7 +321,8 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
             laneKey: laneKey,
             tool: tool,
             description: cleanDescription,
-            startedAt: Date()
+            startedAt: Date(),
+            source: source.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         )
         refreshPresentation()
     }
@@ -326,7 +339,8 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
             laneKey: finished.laneKey,
             tool: finished.tool,
             description: finished.description,
-            startedAt: finished.startedAt
+            startedAt: finished.startedAt,
+            source: finished.source
         )
 
         if active.isEmpty {
@@ -390,6 +404,21 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         }
 
         return "event:\(eventID)"
+    }
+
+    /// A lane's name: where its work comes from, or its kind and number when the app does not know (#26).
+    nonisolated static func laneLabel(source: String?, laneKey: String, ordinal: Int) -> String {
+        if let source, !source.isEmpty { return source }
+        return laneKey.hasPrefix("agent:") ? "Agent \(ordinal)" : "Session \(ordinal)"
+    }
+
+    /// The expanded bubble's count of what is working, by kind: "1 session · 2 agents".
+    nonisolated static func headerText(laneKeys: [String]) -> String {
+        let agents = laneKeys.filter { $0.hasPrefix("agent:") }.count
+        let sessions = laneKeys.count - agents
+        let parts = [(sessions, "session"), (agents, "agent")].filter { $0.0 > 0 }
+            .map { "\($0.0) \($0.1)\($0.0 == 1 ? "" : "s")" }
+        return parts.joined(separator: " · ")
     }
 
     private func ensureLaneOrdinal(_ laneKey: String) {
@@ -477,12 +506,13 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         var lanes: [ToolActivityLane] = latestByLane.map { laneKey, intent in
             ToolActivityLane(
                 id: laneKey,
-                label: "Agent \(laneOrdinals[laneKey] ?? 999)",
+                label: Self.laneLabel(source: intent.source, laneKey: laneKey, ordinal: laneOrdinals[laneKey] ?? 999),
                 tool: intent.tool,
                 description: intent.description,
                 startedAt: intent.startedAt,
                 ordinal: laneOrdinals[laneKey] ?? 999,
-                settling: false
+                settling: false,
+                source: intent.source
             )
         }
 
@@ -490,12 +520,13 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
             lanes.append(
                 ToolActivityLane(
                     id: laneKey,
-                    label: "Agent \(laneOrdinals[laneKey] ?? 999)",
+                    label: Self.laneLabel(source: lane.source, laneKey: laneKey, ordinal: laneOrdinals[laneKey] ?? 999),
                     tool: lane.tool,
                     description: lane.description,
                     startedAt: lane.startedAt,
                     ordinal: laneOrdinals[laneKey] ?? 999,
-                    settling: true
+                    settling: true,
+                    source: lane.source
                 )
             )
         }

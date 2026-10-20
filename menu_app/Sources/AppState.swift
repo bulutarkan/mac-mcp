@@ -1177,8 +1177,30 @@ final class AppState: ObservableObject {
             description: description,
             sessionID: payload.sessionID,
             agentID: payload.agentID,
-            teamID: payload.teamID
+            teamID: payload.teamID,
+            source: bubbleSource(agentID: payload.agentID, client: payload.client)
         )
+    }
+
+    /// Who a bubble lane belongs to (#26): an agent's provider and task title, or the chat app's name.
+    private func bubbleSource(agentID: String?, client: String?) -> String? {
+        if let agentID, !agentID.isEmpty {
+            let info = agents.first { $0.agentID == agentID }
+            let provider = AgentProviders.name(info?.provider)
+            let title = Self.nonBlank(info?.title)
+            switch (provider, title) {
+            case let (provider?, title?): return "\(provider) · \(title)"
+            case let (provider?, nil): return "\(provider) agent"
+            case let (nil, title?): return title
+            default: return nil
+            }
+        }
+        return Self.nonBlank(client)
+    }
+
+    private static func nonBlank(_ text: String?) -> String? {
+        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return trimmed
     }
 
     /// Background polls re-read permission semantics only when they are older than a minute;
