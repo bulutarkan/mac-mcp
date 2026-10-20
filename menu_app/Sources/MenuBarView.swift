@@ -1571,6 +1571,7 @@ struct MenuBarView: View {
 
     private func relativeTime(_ timestamp: Double) -> String {
         let seconds = max(0, Int(Date().timeIntervalSince1970 - timestamp))
+        if seconds < 5 { return "just now" }
         if seconds < 60 { return "\(seconds)s ago" }; if seconds < 3600 { return "\(seconds / 60)m ago" }; return "\(seconds / 3600)h ago"
     }
 }
