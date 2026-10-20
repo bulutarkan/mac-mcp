@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Agent teams: each task on its own model, and pick up a stopped team (roadmap #52, #51)
+- A team task can name its own `provider`, `model` and `reasoning`, for example the builder on OpenCode and its reviewer on Codex in one team. Each is checked like the team's (on in Settings, installed, signed in, a valid model); a task on another provider gets that provider's defaults, never the team's model. Access stays one per team. The team summary shows each task's provider and model, and a retry keeps them.
+- `agent_action(team_id, action="resume")` picks a stopped team up where it stopped: finished tasks stay finished, an interrupted task continues its own provider session from its checkpoint, a task that had not touched anything yet starts over, and one that already did something it could repeat is left as it is and listed. Tasks skipped because of it wait for it again.
+
 ### Agent teams: no skipped messages, and a guide to working together (roadmap #73, #77)
 - An agent reading its team inbox gets the oldest unread messages first, a page at a time: with more unread than the page holds, the rest stay unread and `has_more` says so. Before, the newest ones were shown and the older ones were marked read without ever being shown. A note that arrives on its own says when more are waiting.
 - Mac MCP ships a team coordination guide (the `mac-mcp-team-coordination` skill): when to message a teammate, whom, which kind, how to read the inbox and what not to send. Every agent can load it with `skill_get`, whatever CLI it runs in, and each team task now starts by pointing to it. A skill of yours with the same name wins.

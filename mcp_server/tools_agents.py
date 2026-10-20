@@ -1292,6 +1292,61 @@ def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict
     return "\n\n".join(piece for piece in pieces if piece)
 
 
+_RESUMABLE_STATUSES = {"failed", "timeout", "stalled", "cancelled"}
+
+
+def _team_task_can_resume(agent_id: str) -> bool:
+    """The task's last agent could continue its own provider session from a durable checkpoint (#51)."""
+    try:
+        meta = _read_meta(agent_id)
+    except HTTPException:
+        return False
+    return (meta.get("status") in _RESUMABLE_STATUSES and bool(str(meta.get("workflow_input_hash") or "").strip())
+            and bool(_recover_provider_session_id(meta, agent_id)))
+
+
+def _team_task_rerun_safe(agent_id: str) -> bool:
+    """Starting the task over cannot replay a side effect: the same rule as a team retry."""
+    try:
+        checkpoint = workflow_for_agent(agent_id)
+    except WorkflowCheckpointError:
+        return False
+    return checkpoint is None or (
+        str(checkpoint.get("safety") or "unknown") == "verified"
+        and int(checkpoint.get("receipt_count") or 0) == 0
+        and int(checkpoint.get("resume_generation") or 0) == 0
+        and not checkpoint.get("pending_effects")
+    )
+
+
+def _team_resume_spawn_args(agent_id: str) -> Optional[Dict[str, Any]]:
+    """Arguments that make a team task's next agent continue agent_id's session; None when it cannot."""
+    try:
+        meta = _read_meta(agent_id)
+    except HTTPException:
+        return None
+    input_hash = str(meta.get("workflow_input_hash") or "").strip()
+    session_id = _recover_provider_session_id(meta, agent_id)
+    if meta.get("status") not in _RESUMABLE_STATUSES or not input_hash or not session_id:
+        return None
+    try:
+        _update_meta(agent_id, lambda current: current.update({"session_id": session_id, "updated_at": _now()}))
+        update_provider_state(agent_id, session_id=session_id)
+        checkpoint = prepare_resume(agent_id, expected_input_hash=input_hash, session_id=session_id)
+    except (CheckpointUnknownError, CheckpointConflictError, WorkflowCheckpointError):
+        return None
+    return {
+        "prompt": durable_resume_prompt(checkpoint),
+        "resume_session_id": session_id,
+        "attempt": int(meta.get("attempt", 1)) + 1,
+        "workflow_id": str(checkpoint["workflow_id"]),
+        "workflow_input_hash_value": str(checkpoint["input_hash"]),
+        "resume_generation": int(checkpoint["resume_generation"]),
+        "resume_token": str(checkpoint["resume_token"]),
+        "resume_parent_agent_id": agent_id,
+    }
+
+
 def _find_spawned_team_agent(team_id: str, task: Dict[str, Any]) -> Optional[str]:
     """The newest agent started for this team task that the task does not know yet, if any."""
     known = {str(item) for item in (task.get("agent_ids") or [])}
@@ -1487,7 +1542,7 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                     request_id=request_id,
                     team_id=team_id,
                     task_id=str(task["id"]),
-                    provider=str(team["provider"]),
+                    provider=_task_selection(team, task)["provider"],
                     resources=resource_claims,
                 )
             except AdmissionError as exc:
@@ -1515,9 +1570,18 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             task["queue_position"] = None
             task["state"] = "spawning"
             task["spawn_started_at"] = _now()
+            resume_from = str(task.pop("resume_from_agent_id", None) or "").strip()
+            resume_args = _team_resume_spawn_args(resume_from) if resume_from else None
+            if resume_from and resume_args is None and not _team_task_rerun_safe(resume_from):
+                # It cannot continue, and starting over could repeat a side effect: leave it to the owner.
+                _release_task_admission(task)
+                task["state"] = "failed"
+                task["failure_reason"] = "resume_unsafe"
+                changed = True
+                continue
             team["updated_at"] = _now()
             _write_team_unlocked(team_id, team)
-            prompt = _team_task_prompt(team, task, task_map)
+            prompt = (resume_args or {}).pop("prompt", None) or _team_task_prompt(team, task, task_map)
             parent_agent_id = (
                 str(task.get("latest_agent_id") or "").strip()
                 or str(team.get("owner_agent_id") or "").strip()
@@ -1534,13 +1598,14 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                     seed_agent = str((seed_task or {}).get("latest_agent_id") or "").strip()
                     if seed_agent and seed_agent not in seed_agent_ids:
                         seed_agent_ids.append(seed_agent)
+            chosen = _task_selection(team, task)
             try:
                 item = _spawn_internal(
                     settings=None,
-                    provider=str(team["provider"]),
+                    provider=chosen["provider"],
                     prompt=prompt,
-                    model=team.get("model"),
-                    reasoning=team.get("reasoning"),
+                    model=chosen["model"],
+                    reasoning=chosen["reasoning"],
                     cwd=team.get("cwd"),
                     timeout_s=team.get("timeout_s"),
                     title=task.get("title"),
@@ -1570,9 +1635,13 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                         else None
                     ),
                     admission_resources=resource_claims,
-                    selection_validation=team.get("model_selection_validation"),
+                    selection_validation=chosen["selection_validation"],
+                    **(resume_args or {}),
                 )
             except Exception as exc:
+                if resume_args:
+                    abort_resume(resume_args["workflow_id"], resume_token=resume_args["resume_token"],
+                                 reason="resume_spawn_failed_before_provider")
                 _release_task_admission(task)
                 task["state"] = "failed"
                 task["failure_reason"] = f"spawn_failed:{str(exc)[:240]}"
@@ -1737,10 +1806,13 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         task_result_outcome = task_envelope.get("outcome") if isinstance(task_envelope, dict) else None
         if state == "completed" and task_result_outcome == "partial_failure":
             typed_partial_tasks.append(str(task.get("id") or ""))
+        chosen = _task_selection(team, task) if team.get("provider") else {}
         public_tasks.append({
             "id": task.get("id"),
             "title": task.get("title"),
             "role": task.get("role"),
+            "provider": chosen.get("provider"),
+            "model": chosen.get("model"),
             "state": state,
             "depends_on": list(task.get("depends_on") or []),
             "review_of": task.get("review_of"),
@@ -5465,6 +5537,48 @@ def _resolve_team_admission_budget(
     return value
 
 
+def _task_agent_selection(override: Dict[str, str], provider: str, model: Optional[str],
+                          reasoning: Optional[str], access_mode: str) -> Dict[str, Any]:
+    """A task's own provider/model/reasoning (#52), checked like the team's; nothing when it uses the team's.
+
+    A task that names another provider gets that provider's defaults for whatever it leaves out, never the
+    team's model, which belongs to the team's provider.
+    """
+    if not override:
+        return {"provider": None, "model": None, "reasoning": None, "selection_validation": None}
+    task_provider = str(override.get("provider") or provider).lower()
+    same = task_provider == provider
+    selection = _resolve_agent_selection(
+        task_provider,
+        override.get("model") or (model if same else None),
+        override.get("reasoning") or (reasoning if same else None),
+    )
+    task_provider = str(selection["provider"])
+    if not provider_enabled(task_provider):
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            f"provider_disabled: {task_provider} is disabled in Mac MCP Settings > Subagents.")
+    binary = _find_binary(task_provider)
+    if not binary:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{task_provider} CLI is not installed or not executable.")
+    _require_provider_compatible(task_provider, binary)
+    _validate_provider_access_mode(task_provider, access_mode)
+    _require_provider_sign_in(task_provider, access_mode, binary)
+    task_model, task_reasoning = selection.get("model"), selection.get("reasoning")
+    validation = (dict(selection["selection_validation"]) if isinstance(selection.get("selection_validation"), dict)
+                  else _validate_provider_model_selection(task_provider, binary, task_model, task_reasoning))
+    return {"provider": task_provider, "model": task_model, "reasoning": task_reasoning,
+            "selection_validation": validation}
+
+
+def _task_selection(team: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    """The provider, model and reasoning a team task runs with: its own (#52), else the team's."""
+    if task.get("provider"):
+        return {"provider": str(task["provider"]), "model": task.get("model"), "reasoning": task.get("reasoning"),
+                "selection_validation": task.get("selection_validation")}
+    return {"provider": str(team["provider"]), "model": team.get("model"), "reasoning": team.get("reasoning"),
+            "selection_validation": team.get("model_selection_validation")}
+
+
 def spawn_agents(
     settings: Settings,
     tasks: List[Dict[str, Any]],
@@ -5556,7 +5670,8 @@ def spawn_agents(
         maximum=MAX_TEAM_TOKEN_BUDGET,
     )
 
-    forbidden = {"provider", "model", "reasoning", "access_mode", "result_style"}
+    # provider/model/reasoning may differ per task (#52); access and result style stay one per team.
+    forbidden = {"access_mode", "result_style"}
     normalized: List[Dict[str, Any]] = []
     for index, task in enumerate(tasks, start=1):
         if not isinstance(task, dict):
@@ -5567,6 +5682,8 @@ def spawn_agents(
                 status.HTTP_400_BAD_REQUEST,
                 f"Team child settings {mixed} must be supplied once at team level so every agent uses the same configuration.",
             )
+        override = {key: str(task[key]).strip() for key in ("provider", "model", "reasoning")
+                    if isinstance(task.get(key), str) and str(task[key]).strip()}
         prompt = str(task.get("prompt") or task.get("task") or "").strip()
         if not prompt:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].prompt is required.")
@@ -5614,6 +5731,7 @@ def spawn_agents(
             "review_of": review_of,
             "max_revisions": task_max_revisions,
             "resources": [dict(item) for item in resources_raw],
+            "_override": override,
         })
 
     _validate_team_graph(normalized)
@@ -5636,6 +5754,8 @@ def spawn_agents(
         if isinstance(selection.get("selection_validation"), dict)
         else _validate_provider_model_selection(provider, provider_binary, model, reasoning)
     )
+    for task in normalized:
+        task.update(_task_agent_selection(task.pop("_override", {}), provider, model, reasoning, access_mode))
 
     persisted_tasks: List[Dict[str, Any]] = []
     for task in normalized:
@@ -5791,7 +5911,8 @@ def _team_messaging_instruction(team: Dict[str, Any], task: Dict[str, Any]) -> s
     ) or "none"
     lead = ("\nThe lead who started the team gets your final answer; message it (to='lead') only with a question or a "
             "blocker." if (team.get("messaging") or {}).get("lead") else "")
-    check = ("" if str(team.get("provider") or "").lower() in agent_message_bridge.HOOK_PROVIDERS else
+    task_provider = str(task.get("provider") or team.get("provider") or "").lower()
+    check = ("" if task_provider in agent_message_bridge.HOOK_PROVIDERS else
              "\n- Your CLI cannot show teammates' messages on its own: call team_messages action=\"inbox\" every few "
              "steps and once before you finish.")
     return (
@@ -6586,7 +6707,9 @@ def agent_action(
     normalized_action = action.lower().strip()
     team = _authorize_team_control(str(team_id), f"agent_action:{normalized_action}")
     ids = list(team.get("agent_ids") or [])
-    if normalized_action in {"message", "resume", "apply", "discard"}:
+    if normalized_action == "resume":
+        return _resume_team(str(team_id), team)
+    if normalized_action in {"message", "apply", "discard"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{normalized_action} is only supported for an individual agent session.")
     if normalized_action == "cancel":
         if int(team.get("scheduler_version") or 0) >= 1:
@@ -6677,6 +6800,7 @@ def agent_action(
                     "depends_on": list(task.get("depends_on") or []),
                     "review_of": task.get("review_of"),
                     "max_revisions": int(task["max_revisions"] if task.get("max_revisions") is not None else (team.get("max_revisions") or 0)),
+                    **{key: task[key] for key in ("provider", "model", "reasoning") if task.get(key)},
                 })
             return spawn_agents(
                 settings=settings, tasks=tasks, provider=team["provider"], model=team.get("model"),
@@ -6722,6 +6846,9 @@ def agent_action(
                 "prompt": prompt_path.read_text(encoding="utf-8", errors="replace"),
                 "title": child.get("title") or f"Agent {index}",
                 "role": child.get("role"),
+                **({"provider": child.get("provider"), "model": child.get("requested_model"),
+                    "reasoning": child.get("requested_reasoning")}
+                   if child.get("provider") and child.get("provider") != team.get("provider") else {}),
             })
         return spawn_agents(
             settings=settings, tasks=tasks, provider=team["provider"], model=team.get("model"),
@@ -6734,6 +6861,49 @@ def agent_action(
             git_isolation=str(team.get("git_isolation") or "auto"),
         )
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, despawn, apply, or discard.")
+
+
+def _resume_team(team_id: str, team: Dict[str, Any]) -> Dict[str, Any]:
+    """Pick a stopped team up where it stopped (#51): finished tasks stay, interrupted ones continue.
+
+    A task whose last agent has a durable checkpoint continues that agent's provider session; one that never
+    crossed a side effect starts over; one that did is left as it is and listed. Tasks skipped for a failed
+    dependency wait for it again. The team scheduler starts them under the usual admission and resources.
+    """
+    if int(team.get("scheduler_version") or 0) < 1:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "resume needs a team started with task ids; use action=retry for this older team.")
+    if not all(str(task.get("state") or "") in _GRAPH_TASK_TERMINAL for task in team.get("tasks") or []):
+        raise HTTPException(status.HTTP_409_CONFLICT, "The team is still running; wait for it or cancel it first.")
+    plan: Dict[str, List[str]] = {"continued": [], "restarted": [], "waiting": [], "left": []}
+
+    def mark(current: Dict[str, Any]) -> None:
+        current["cancelled"] = False
+        for task in current.get("tasks") or []:
+            state, task_id = str(task.get("state") or ""), str(task.get("id"))
+            if state == "completed":
+                continue
+            if state == "skipped":
+                task.update({"state": "blocked", "failure_reason": None})
+                plan["waiting"].append(task_id)
+                continue
+            latest = str(task.get("latest_agent_id") or "").strip()
+            if state == "quality_failed":
+                plan["left"].append(task_id)  # its reviewer said no and the revisions ran out
+                continue
+            if latest and _team_task_can_resume(latest):
+                task.update({"state": "ready", "failure_reason": None, "resume_from_agent_id": latest})
+                plan["continued"].append(task_id)
+            elif not latest or _team_task_rerun_safe(latest):
+                task.update({"state": "ready", "failure_reason": None})
+                plan["restarted"].append(task_id)
+            else:
+                plan["left"].append(task_id)
+        current["updated_at"] = _now()
+
+    _update_team(team_id, mark)
+    summary = _team_summary(team_id)
+    return {"ok": True, "team_id": team_id, **plan, "team": summary}
 
 
 def _extract_opencode(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:

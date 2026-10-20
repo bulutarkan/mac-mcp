@@ -939,8 +939,8 @@ def create_app():
             "These usage budgets are admission thresholds, not hard runtime caps: once observed usage reaches a threshold, no new DAG node "
             "or retry is admitted, while already-running agents may finish and overshoot. max_total_tool_calls/max_total_tokens remain deprecated "
             "aliases for compatibility and have the same admission-only semantics. "
-            "Retries are adaptive and only transient/retry-safe failures are replayed. All children inherit provider, model, reasoning, "
-            "access_mode and git_isolation. workspace_write Git children default to separate ephemeral worktrees; task revisions reuse the "
+            "Retries are adaptive and only transient/retry-safe failures are replayed. Children inherit provider, model and reasoning "
+            "unless a task sets its own (e.g. a reviewer on another provider); all share access_mode and git_isolation. workspace_write Git children default to separate ephemeral worktrees; task revisions reuse the "
             "same isolated worktree while sibling tasks remain separated. A task may add resources=[{kind,id,mode,expected_revision?}] "
             "for global cross-team admission of workspace/path/file, browser_tab, native_app/window, process or clipboard resources; "
             "path/browser claims are scope-checked and file expected_revision fails closed before provider start. "
@@ -1130,8 +1130,9 @@ def create_app():
             "apply (local/root-only, base/touched-file/CAS checked copy into the source working tree) and discard (explicitly remove the isolated worktree). "
             "message is available for individual resumable agent sessions. Delegated callers may control only themselves/descendants or "
             "teams they own within their persisted lineage; siblings and unrelated lineages fail closed. retry is refused after a verified "
-            "side-effect or uncertain crash boundary; resume preserves the provider session, worktree and durable receipts. Team cancel "
-            "cascades to all children; team despawn refuses unapplied isolated changes."
+            "side-effect or uncertain crash boundary; resume preserves the provider session, worktree and durable receipts. Team resume "
+            "(a stopped team) keeps finished tasks, continues interrupted ones from their checkpoints, restarts only those with no side "
+            "effect yet and lists the rest. Team cancel cascades to all children; team despawn refuses unapplied isolated changes."
         ),
     )
     def _agent_action(action: str, agent_id: Optional[str] = None, team_id: Optional[str] = None,

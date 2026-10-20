@@ -114,7 +114,7 @@ class TeamSchedulingTests(_TempAgents):
 
     def test_spawn_records_when_it_started(self) -> None:
         source = Path(agents.__file__).read_text(encoding="utf-8")
-        spawning = source[source.index('task["state"] = "spawning"'):source.index("prompt = _team_task_prompt(")]
+        spawning = source[source.index('task["state"] = "spawning"'):source.index("_team_task_prompt(team, task, task_map)")]
         self.assertIn('task["spawn_started_at"] = _now()', spawning)
 
     def test_memory_pressure_queue_schedules_a_wake(self) -> None:
