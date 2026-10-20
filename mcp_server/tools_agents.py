@@ -3064,6 +3064,16 @@ def _owner_codex_has_mac_mcp() -> bool:
     return isinstance(servers, dict) and "mac-mcp" in servers
 
 
+def _codex_no_connector_args() -> List[str]:
+    """No ChatGPT apps in a delegated Codex agent (Codex 0.16x turns them on by default).
+
+    The agent signs in with the owner's ChatGPT account, so its apps include the owner's own connectors, a Mac MCP
+    connector among them: through it a read-only agent ran commands outside its sandbox and scope, as the owner.
+    The agent's only Mac MCP is its scoped server.
+    """
+    return ["--config", "features.apps=false"]
+
+
 def _codex_reasoning_summary_args() -> List[str]:
     """Ask Codex for summaries of its reasoning so run reports can show its thinking.
 
@@ -7261,6 +7271,7 @@ def _build_provider_command(
         ]
         cmd += _codex_shell_home_args(access_mode, shell_home)
         cmd += _codex_scoped_mcp_args(meta)
+        cmd += _codex_no_connector_args()
         cmd += _codex_reasoning_summary_args()
         if model:
             cmd += ["--model", model]
@@ -7284,6 +7295,7 @@ def _build_provider_command(
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
     cmd += _codex_shell_home_args(access_mode, shell_home)
     cmd += _codex_scoped_mcp_args(meta)
+    cmd += _codex_no_connector_args()
     cmd += _codex_reasoning_summary_args()
     if model:
         cmd += ["--model", model]

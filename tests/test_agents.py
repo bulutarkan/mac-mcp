@@ -64,6 +64,18 @@ class AgentDelegationTests(unittest.TestCase):
         self.assertTrue(any('model_reasoning_effort="low"' in item for item in cmd))
         self.assertFalse(any('approval_policy="never"' in item for item in cmd))
 
+    def test_codex_agents_get_no_chatgpt_apps(self):
+        # The owner's ChatGPT connectors (a Mac MCP one among them) would reach past the agent's sandbox and scope.
+        for resume in (None, "thread-1"):
+            for access_mode in ("read_only", "full"):
+                meta = {
+                    "provider": "codex", "binary": "/opt/homebrew/bin/codex", "cwd": "/tmp", "model": None,
+                    "reasoning": None, "resume_session_id": resume, "access_mode": access_mode,
+                }
+                cmd = _build_provider_command(meta, "PROMPT", Path("/tmp/result.txt"))
+                self.assertIn("features.apps=false", cmd, (resume, access_mode))
+                self.assertEqual("--config", cmd[cmd.index("features.apps=false") - 1])
+
     def test_concise_handoff_instruction_discourages_process_narration(self):
         text = _handoff_instruction("concise")
         self.assertIn("concise handoff", text)

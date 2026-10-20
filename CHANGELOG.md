@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Security: Codex agents no longer see your ChatGPT connectors
+- Codex 0.16x turns ChatGPT apps on by default, and a delegated Codex agent signs in with your ChatGPT account, so it also got your own ChatGPT connectors, including a Mac MCP connector. Through it, a read-only agent could run commands outside its sandbox and scope, as you. Delegated Codex agents now start with apps turned off; their only Mac MCP is their own scoped connection. Found in a live test, where an agent ran `sleep 5` this way.
+
 ### Team messages: fixes from a live team review
 - A message an agent already opened in its inbox is no longer shown to it again as a note after its next tool call.
 - A Codex agent in a team can no longer hang at start when Codex's app-server stays silent: setting up its message hook gives up after 20 seconds and the agent runs with its inbox.
