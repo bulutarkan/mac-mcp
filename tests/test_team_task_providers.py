@@ -216,3 +216,11 @@ class TeamResumeTests(TeamTaskProviderTests):
             agents.agent_action(load_settings(), "resume", team_id=team_id)
         task = agents._read_team(team_id)["tasks"][0]
         self.assertEqual(("failed", "resume_unsafe"), (task["state"], task["failure_reason"]))
+
+
+class MixedTeamDataNoticeTests(unittest.TestCase):
+    def test_every_provider_of_a_mixed_team_is_named(self) -> None:
+        from mcp_server import privacy_inventory
+        result = privacy_inventory.with_provider_notice({
+            "provider": "codex", "tasks": [{"id": "a", "provider": "codex"}, {"id": "b", "provider": "claude"}]})
+        self.assertIn("Anthropic (Claude Code) and OpenAI (Codex)", result["data_notice"])

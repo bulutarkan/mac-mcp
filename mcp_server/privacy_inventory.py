@@ -254,8 +254,10 @@ def with_provider_notice(result: Any) -> Any:
     """Name where a started agent's data goes, at the moment it starts (#19)."""
     if not isinstance(result, dict):
         return result
+    # A team's tasks may each run on their own provider (#52): name every one that gets data.
     providers = {str(result.get("provider") or "")} | {
-        str(agent.get("provider") or "") for agent in result.get("agents") or [] if isinstance(agent, dict)}
+        str(item.get("provider") or "") for key in ("agents", "tasks") for item in result.get(key) or []
+        if isinstance(item, dict)}
     vendors = [_PROVIDER_VENDORS[key] for key in sorted(providers) if key in _PROVIDER_VENDORS]
     if vendors:
         result["data_notice"] = (f"This task's prompt, and the files and tool results the agent reads, go to "
