@@ -486,12 +486,13 @@ def _site(url: Any) -> Optional[str]:
     return ".".join(tail)
 
 
-def expect_safari_navigation(tab_handle: Optional[str], *, expected_url: Optional[str] = None) -> None:
+def expect_safari_navigation(tab_handle: Optional[str], *, expected_url: Optional[str] = None,
+                             ttl_s: float = _EXPECTED_NAVIGATION_TTL_S) -> None:
     """Allow one guarded handle rebind if this tab's Safari process swaps soon.
 
-    Called right after Mac MCP itself navigated or mutated the tab. The rebind
-    in list_tabs still requires the same window and position, an unchanged tab
-    count in that window, and the old pid gone from every tab.
+    Called right after Mac MCP itself navigated or mutated the tab, and kept open while a person signs in
+    at a browser checkpoint (ttl_s). The rebind in list_tabs still requires the same window and position,
+    an unchanged tab count in that window, and the old pid gone from every tab.
     """
     handle = str(tab_handle or "").strip()
     if not handle:
@@ -510,7 +511,7 @@ def expect_safari_navigation(tab_handle: Optional[str], *, expected_url: Optiona
                 if other.get("browser") == "Safari" and int(other.get("window_index") or 0) == window_index
             ),
             "site": _site(expected_url) if expected_url else None,
-            "expires_at": time.monotonic() + _EXPECTED_NAVIGATION_TTL_S,
+            "expires_at": time.monotonic() + float(ttl_s),
         }
 
 

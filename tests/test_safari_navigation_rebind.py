@@ -77,6 +77,38 @@ class SafariNavigationRebindTests(unittest.TestCase):
         self.assertEqual(target, reordered[1])
         self.assertNotEqual(target, reordered[2])
 
+    def test_a_sign_in_at_a_checkpoint_keeps_the_tab_across_redirects(self) -> None:
+        # Roadmap #30: the person is sent to another site minutes after the checkpoint opened.
+        _, target = self._start()
+        clock = [1000.0]
+        with patch.object(browser_tabs.time, "monotonic", side_effect=lambda: clock[0]):
+            browser_tabs.expect_safari_navigation(target, ttl_s=1800)
+            clock[0] += 600  # far past the 20 s of an own navigation
+            idp = self._scan([_row(1, 100, "https://docs.example.org/a"), _row(2, 300, "https://login.idp.test/")])
+            back = self._scan([_row(1, 100, "https://docs.example.org/a"), _row(2, 400, "https://example.com/home")])
+        self.assertEqual(target, idp[2])
+        self.assertEqual(target, back[2])
+
+    def test_checkpoint_create_and_wait_arm_the_rebind_for_its_lifetime(self) -> None:
+        import asyncio
+        import os
+        from mcp_server import browser_checkpoint
+        from tests.test_core_catalog_descriptions import _build_mcp
+        with patch.dict(os.environ, {"MAC_MCP_PERMISSION_PROFILE": "trusted"}):
+            mcp = _build_mcp()
+            with patch.object(browser_tabs, "expect_safari_navigation") as arm, \
+                 patch.object(browser_checkpoint, "create", return_value={"ok": True}), \
+                 patch.object(browser_checkpoint, "check", return_value={"ok": True}), \
+                 patch.object(browser_checkpoint, "handle_for", return_value="btab_safari_x"):
+                asyncio.run(mcp.call_tool("browser_checkpoint", {"browser": "Safari", "action": "create",
+                                                                 "tab_handle": "btab_safari_x", "description": "Sign in"}))
+                asyncio.run(mcp.call_tool("browser_checkpoint", {"browser": "Safari", "action": "status",
+                                                                 "checkpoint_id": "cp_1", "description": "Sign in"}))
+        self.assertEqual(2, arm.call_count)
+        for call in arm.call_args_list:
+            self.assertEqual("btab_safari_x", call.args[0])
+            self.assertEqual(browser_checkpoint.CHECKPOINT_TTL_S, call.kwargs["ttl_s"])
+
     def test_expired_marker_is_ignored(self) -> None:
         _, target = self._start()
         browser_tabs.expect_safari_navigation(target)

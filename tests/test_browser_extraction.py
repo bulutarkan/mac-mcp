@@ -22,6 +22,22 @@ class ExtractionContractTests(unittest.TestCase):
             with self.subTest(fields=fields), self.assertRaises(ValidationError):
                 adapter.validate_python([{"type": "extract", "fields": fields}])
 
+    def test_close_after_without_url_is_refused_before_any_action(self):
+        # Roadmap #32: without url no tab is opened, so the call failed only after its actions had run.
+        profile = patch.dict(os.environ, {"MAC_MCP_PERMISSION_PROFILE": "trusted"})
+        profile.start()
+        self.addCleanup(profile.stop)
+        mcp = _build_mcp()
+        with patch.object(main, "browser_act", side_effect=AssertionError("actions ran")) as act, \
+             patch.object(main, "browser_open_url", side_effect=AssertionError("tab opened")):
+            for args in ({"tab_handle": "test"}, {"tab_handle": "test", "new_tab": False, "url": "https://example.com"}):
+                with self.subTest(args=args), self.assertRaises(Exception) as raised:
+                    asyncio.run(mcp.call_tool("browser_do", {"browser": "Safari", "close_after": True,
+                                                             "actions": [{"type": "click", "query": "Delete"}],
+                                                             "description": "Close after", **args}))
+                self.assertIn("close_after needs url", str(raised.exception))
+        act.assert_not_called()
+
     def test_direct_call_rejects_malformed_extract_before_browser_transport(self):
         with patch.object(agent, "_run_json_js", side_effect=AssertionError("transport reached")):
             result = agent._extract_action(None, "Safari", {"fields": [{"name": "x"}]}, 1, 1)

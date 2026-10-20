@@ -208,10 +208,27 @@ class MoreProviderTests(Fixture):
         self.assertIn("early note", note_file.read_text())
         self.as_caller(tm.Caller(member_id="session:lead", label="lead"))
         tools_team_messages.team_messages(action="send", team_id="team_t", body="second note")
-        self.assertIn("second note", note_file.read_text())
-        self.assertNotIn("early note", note_file.read_text())  # each message once
+        # Roadmap #46: Goose may not have taken a turn between the two; the second must not wipe the first.
+        text = note_file.read_text()
+        self.assertIn("second note", text)
+        self.assertIn("early note", text)
+        self.assertLess(text.index("second note"), text.index("early note"))  # newest first
+        self.assertEqual(1, text.count("early note"))
         bridge_mod.finish(bridge, terminal=True)
         self.assertIsNone(self.store.push_file("agent:agt_goose"))
+        self.assertFalse(note_file.with_name(f".{note_file.name}.recent.json").exists())
+
+    def test_goose_push_file_keeps_only_the_most_recent_messages(self) -> None:
+        bridge, _, env = self.prepare("goose")
+        note_file = Path(env["GOOSE_MOIM_MESSAGE_FILE"])
+        self.as_caller(tm.Caller(member_id="session:lead", label="lead"))
+        with patch.object(bridge_mod, "PUSH_RECENT", 3):
+            for index in range(5):
+                tools_team_messages.team_messages(action="send", team_id="team_t", body=f"note number {index}")
+        text = note_file.read_text()
+        self.assertEqual(["note number 4", "note number 3", "note number 2"],
+                         [line.split(": ", 1)[1] for line in text.splitlines() if "note number" in line])
+        bridge_mod.finish(bridge, terminal=True)
 
     def test_antigravity_pre_invocation_hook_in_its_added_folder(self) -> None:
         _, home, _ = self.prepare("antigravity")

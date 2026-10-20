@@ -29,6 +29,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -195,7 +196,7 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
             # before every model call: Mac MCP writes this agent's new messages there itself.
             note_file = folder / "team-messages.md"
             _private_file(note_file, "")
-            bridge.files.append(note_file)
+            bridge.files += [note_file, note_file.with_name(f".{note_file.name}.recent.json")]
             env["GOOSE_MOIM_MESSAGE_FILE"] = str(note_file)
             store.set_push_file(member_id, str(note_file))
             push_pending(member_id)
@@ -240,16 +241,35 @@ def _pi_extension(headers: Path, url: str) -> str:
     )
 
 
+PUSH_RECENT = 20  # messages a push file keeps, newest first
+_PUSH_LOCK = threading.Lock()
+
+
 def push_pending(member_id: str) -> None:
-    """Write a member's unseen messages to its push file (Goose reads it before each model call)."""
+    """Add a member's unseen messages to its push file (Goose reads it before each model call).
+
+    Goose shows the file on every turn and never empties it, so it is a view of the recent messages:
+    new ones are added to it, never put in place of it. Two batches that arrive between two of the
+    agent's turns are both shown (roadmap #46); the oldest leave once PUSH_RECENT newer ones are in.
+    """
     path = tm.store().push_file(member_id)
     if not path:
         return
-    messages = tm.store().claim(member_id, channel="hook")
-    if messages:
+    with _PUSH_LOCK:
+        messages = tm.store().claim(member_id, channel="hook")
+        if not messages:
+            return
         target = Path(path)
+        recent_file = target.with_name(f".{target.name}.recent.json")
+        try:
+            earlier = json.loads(recent_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            earlier = []
+        recent = (list(reversed(messages)) + [m for m in earlier if isinstance(m, dict)])[:PUSH_RECENT]
         temporary = target.with_name(f".{target.name}.{os.getpid()}")
-        _private_file(temporary, tm.note(messages) + "\n")
+        _private_file(temporary, json.dumps(recent, ensure_ascii=False))
+        os.replace(temporary, recent_file)
+        _private_file(temporary, tm.note(recent) + "\n")
         os.replace(temporary, target)
 
 

@@ -2087,7 +2087,12 @@ def create_app():
         def work() -> Dict[str, Any]:
             if action == "cancel":
                 return browser_checkpoint.cancel(checkpoint_id or "")
+            # The person signing in may be sent to another site, and Safari then gives the tab a new process:
+            # keep the guarded rebind open while the checkpoint lives, so the tab is not taken for closed (#30).
+            keep_tab = (lambda handle: browser_tabs.expect_safari_navigation(
+                handle, ttl_s=browser_checkpoint.CHECKPOINT_TTL_S)) if b == "Safari" else (lambda handle: None)
             if action == "create":
+                keep_tab(tab_handle)
                 return browser_checkpoint.create(
                     b, tab_handle or "",
                     probe=lambda: _run_json_js(settings, b, browser_checkpoint.CHALLENGE_JS, tab_handle=tab_handle),
@@ -2095,6 +2100,7 @@ def create_app():
                     category=category, message=message, completed_actions=completed_actions,
                 )
             record_handle = browser_checkpoint.handle_for(checkpoint_id or "")
+            keep_tab(record_handle)
             return browser_checkpoint.check(
                 checkpoint_id or "",
                 probe=lambda: _run_json_js(settings, b, browser_checkpoint.CHALLENGE_JS, tab_handle=record_handle),
@@ -2210,8 +2216,11 @@ def create_app():
             automatic_actions = (1 if semantic_fields else 0) + (1 if url and wait_after_open else 0)
             if len(work_actions) + automatic_actions > 20:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser_do transaction may contain at most 20 actions including automatic wait/extract actions.")
-            if close_after and not new_tab:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "close_after is only allowed for a tab newly opened by browser_do.")
+            # close_after closes the tab this call opens: without a url no tab is opened, and finding that out after
+            # the actions ran reported a failure for work that was done (roadmap #32).
+            if close_after and (not new_tab or not url):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    "close_after needs url and new_tab=true: it closes the tab browser_do opens.")
             if url:
                 opened = browser_open_url(
                     settings, browser=browser, url=url, new_tab=new_tab, background=background,
