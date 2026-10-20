@@ -719,6 +719,9 @@ def _effective_env_value(env: dict[str, str], name: str) -> str | None:
     # The running server loads runtime .env into its process environment, so an
     # explicit inherited value is the best representation of what a managed
     # restart will see. Fall back to the runtime file for standalone updater use.
+    # Except the API key: the server takes it from .env over the environment (security.load_env_file).
+    if name == "MCP_API_KEY" and str(env.get(name) or "").strip():
+        return str(env[name]).strip()
     inherited = os.getenv(name)
     if inherited is not None:
         return inherited.strip()

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Deque, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from fastapi import HTTPException, Request, status
 
 from . import paths
@@ -132,8 +132,35 @@ class Settings:
     max_wait_s: int
 
 
+_KEY_SOURCE_WARNED = False
+
+
+def load_env_file(path: Path) -> None:
+    """Load a Mac MCP .env without overriding the environment, except for MCP_API_KEY.
+
+    The key in .env is the one Mac MCP hands to its clients (`mac-mcp stdio`, connect, the
+    dashboard), so an older key still exported in a shell or the login environment must not
+    win over it: the server would then reject every client that uses the .env key.
+    """
+    global _KEY_SOURCE_WARNED
+    inherited = os.environ.get("MCP_API_KEY")
+    load_dotenv(path)
+    try:
+        from_file = str(dotenv_values(path).get("MCP_API_KEY") or "").strip()
+    except OSError:
+        from_file = ""
+    if not from_file:
+        return
+    os.environ["MCP_API_KEY"] = from_file
+    if inherited is not None and inherited.strip() != from_file and not _KEY_SOURCE_WARNED:
+        _KEY_SOURCE_WARNED = True
+        logging.getLogger("mac_mcp.security").warning(
+            "MCP_API_KEY in the environment differs from the one in %s; using the .env key.", path,
+        )
+
+
 def load_settings() -> Settings:
-    load_dotenv(BASE_DIR / ".env")
+    load_env_file(BASE_DIR / ".env")
     workdir_env = os.getenv("WORKDIR", "").strip()
     workdir = Path(workdir_env).expanduser().resolve() if workdir_env else HOME_DIR
     workdir.mkdir(parents=True, exist_ok=True)

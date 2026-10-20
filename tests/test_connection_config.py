@@ -177,12 +177,13 @@ class ClaudeCodeConfigTests(unittest.TestCase):
         self.assertNotIn("real-secret-value", argv_json)
         self.assertEqual("Bearer ${MAC_MCP_API_KEY}", json.loads(argv_json)["headers"]["Authorization"])
 
-    def test_claude_desktop_is_not_given_an_unverified_snippet(self) -> None:
+    def test_claude_desktop_is_pointed_to_one_step_connect(self) -> None:
         with self.assertRaises(ConnectionConfigError) as ctx:
             render_connection_config(client="claude-desktop", endpoint_url="http://127.0.0.1:8765/mcp",
                                      auth_required=True)
-        self.assertIn("not guided yet", str(ctx.exception))
-        self.assertIn("--client claude-code", str(ctx.exception))
+        self.assertIn("mac-mcp connect --client claude-desktop", str(ctx.exception))
+        self.assertIn('\"args\": [\"stdio\"]', str(ctx.exception))
+        self.assertNotIn("not guided yet", str(ctx.exception))
         self.assertNotIn("claude-desktop", SUPPORTED_CLIENTS)
 
     @unittest.skipUnless(shutil.which("claude"), "Claude Code CLI not installed")

@@ -22,7 +22,6 @@ from types import SimpleNamespace
 from urllib.parse import quote, urlencode
 from urllib.request import Request as UrlRequest, urlopen
 
-from dotenv import load_dotenv
 
 from . import paths
 from .cli_style import INDENT, Style, ThemedArgumentParser, home_path
@@ -106,7 +105,9 @@ DEFAULT_STARTUP_HEALTH_TIMEOUT_S = 10.0
 
 
 def _load_env() -> None:
-    load_dotenv(ENV_FILE)
+    from .security import load_env_file
+
+    load_env_file(ENV_FILE)
 
 
 def _startup_health_timeout_s() -> float:

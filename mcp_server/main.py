@@ -566,6 +566,23 @@ async def _invoke_registered_tool(mcp: ObservedFastMCP, tool_name: str, argument
     return wrapper
 
 
+DEFAULT_SESSION_IDLE_TIMEOUT_S = 1800.0
+
+
+def session_idle_timeout_s() -> float:
+    """How long an MCP session may sit without a request before the server forgets it.
+
+    Only requests count: an open event stream does not. `mac-mcp stdio` sets a forgotten session up
+    again on its own; MAC_MCP_SESSION_IDLE_TIMEOUT_S (60 s to 1 day) helps clients that do not.
+    """
+    raw = os.getenv("MAC_MCP_SESSION_IDLE_TIMEOUT_S", "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_SESSION_IDLE_TIMEOUT_S
+    except ValueError:
+        value = DEFAULT_SESSION_IDLE_TIMEOUT_S
+    return max(60.0, min(value, 86400.0))
+
+
 def create_app():
     bootstrap_menu_app_and_legacy_state()
     ensure_cli_launcher(strict=False)
@@ -3004,7 +3021,7 @@ def create_app():
     # ChatGPT currently opens a fresh stateful transport for many tool calls. Keep
     # those protocol transports bounded while logical steering sessions (derived
     # from request metadata when available) can remain visible independently.
-    mcp.session_manager.session_idle_timeout = 1800.0
+    mcp.session_manager.session_idle_timeout = session_idle_timeout_s()
     app.add_middleware(SecurityMiddleware)
 
     async def health(request: Request) -> Response:

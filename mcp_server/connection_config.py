@@ -8,11 +8,14 @@ from urllib.parse import urlsplit
 
 
 SUPPORTED_CLIENTS = ("chatgpt", "codex", "opencode", "claude-code")
-# Clients people ask for whose setup Mac MCP has not verified; they get guidance, not a snippet.
+# Clients set up another way; they get guidance, not a snippet.
 UNGUIDED_CLIENTS = {
     "claude-desktop": (
-        "Claude Desktop is not guided yet: Mac MCP has not verified a Claude Desktop connection format. "
-        "To use Mac MCP from Claude today, run: mac-mcp connect-config --client claude-code"
+        "Claude Desktop is set up in one step instead: mac-mcp connect --client claude-desktop "
+        "(or Mac MCP Settings > Connect). It adds {\"mcpServers\": {\"mac-mcp\": {\"command\": "
+        "\"/Users/YOU/.local/bin/mac-mcp\", \"args\": [\"stdio\"]}}} to claude_desktop_config.json: no address and "
+        "no key in Claude's config, the key is read from Mac MCP's .env each time Claude starts it, and the "
+        "session is set up again after a server restart or an idle timeout. Restart Claude Desktop afterwards."
     ),
 }
 SUPPORTED_ENDPOINTS = ("auto", "local", "public")
