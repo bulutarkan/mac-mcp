@@ -918,7 +918,7 @@ final class LiveIslandController {
             "mac_act": "Working in an app", "mac_app": "Using an app", "spawn_agent": "Starting an agent",
             "spawn_agents": "Starting agents", "wait_agents": "Waiting for agents", "ask_user": "Asking you",
             "http_request": "Calling a web service", "scheduled_tasks": "Scheduled Tasks", "tool_invoke": "Using a tool",
-            "tool_discover": "Finding a tool",
+            "tool_discover": "Finding a tool", "browser_upload_artifact": "Uploading a file",
             // The agents' own tools
             "Bash": "Running a command", "bash": "Running a command", "shell": "Running a command",
             "run_commands": "Running a command", "command_execution": "Running a command",

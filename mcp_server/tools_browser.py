@@ -26,7 +26,7 @@ from .artifact_pipeline import (
 from .context_handoff import (
     HandoffError, mark_handoff_consumed, resolve_browser_upload_handoff,
 )
-from .tools_interactive import ask_confirmation
+from .tools_interactive import ask_confirmation, owner_question
 from .foreground_guard import current_foreground_authorization, foreground_authorization, require_foreground_authorization
 from .tool_cancellation import cancellation_checkpoint
 
@@ -2076,8 +2076,9 @@ def _owner_allows_safari_upload(settings: Settings, artifact: Dict[str, Any], ta
         "To pick the file, Safari comes to the front for a moment and its Open window appears; then your window "
         "goes back. The file is only selected, not sent."
     )
-    return ask_confirmation(settings, question=question, sender="Mac MCP", timeout_s=60,
-                            confirm_label="Allow Upload", deny_label="Don’t Allow")
+    with owner_question("browser_upload_artifact", origin=site, summary=str(artifact.get("filename") or "")):
+        return ask_confirmation(settings, question=question, sender="Mac MCP", timeout_s=60,
+                                confirm_label="Allow Upload", deny_label="Don’t Allow")
 
 
 def browser_upload_artifact(

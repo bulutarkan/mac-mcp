@@ -181,6 +181,21 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
         self.assertIn("upload.example.test", question)
         self.assertIn("63 KB", question)
 
+    def test_the_question_is_listed_for_the_island_while_it_shows(self) -> None:
+        from mcp_server.tools_interactive import pending_owner_questions
+        listed = []
+
+        def ask(*args, **kwargs):
+            listed.extend(pending_owner_questions())
+            return {"ok": True, "confirmed": False, "decision": "denied"}
+        with patch("mcp_server.tools_browser.ask_confirmation", side_effect=ask):
+            from mcp_server.tools_browser import _owner_allows_safari_upload
+            target = type("Target", (), {"url": "https://upload.example.test/form"})()
+            _owner_allows_safari_upload(load_settings(), {"filename": "fake.webp", "size": 2048}, target)
+        self.assertEqual([("browser_upload_artifact", "upload.example.test", "fake.webp")],
+                         [(row["tool"], row["origin"], row["target_summary"]) for row in listed])
+        self.assertEqual([], pending_owner_questions())  # gone once answered
+
     def test_allow_grants_foreground_for_exactly_that_upload(self) -> None:
         from mcp_server.foreground_guard import current_foreground_authorization
         result, ask, safari, _, _, seen = self._safari_upload_with_answer({"ok": True, "confirmed": True, "decision": "confirmed"})

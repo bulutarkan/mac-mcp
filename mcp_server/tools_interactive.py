@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Dict, List, Optional
+import time
+import uuid
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from .process_supervision import run_osascript
 from .tool_cancellation import ToolCancelledError
@@ -296,6 +299,36 @@ end try
         "cancelled": False,
         "timed_out": False,
     }
+
+
+# Questions Mac MCP itself has put in front of the owner (an upload in Safari, say), listed while their dialog
+# shows so the dashboard and the Live Island can say "Waiting for your answer" next to the security approvals.
+_OWNER_QUESTIONS: Dict[str, Dict[str, Any]] = {}
+_OWNER_QUESTIONS_LOCK = threading.Lock()
+
+
+@contextmanager
+def owner_question(tool: str, *, origin: Optional[str] = None, summary: Optional[str] = None,
+                   timeout_s: int = 60) -> Iterator[str]:
+    now = time.time()
+    request_id = "q_" + uuid.uuid4().hex[:16]
+    row = {"request_id": request_id, "tool": tool, "origin": origin, "tab_title": None,
+           "reason_code": "OWNER_QUESTION", "target_summary": summary, "created_at": now,
+           "expires_at": now + max(1, int(timeout_s)) + 5}
+    with _OWNER_QUESTIONS_LOCK:
+        _OWNER_QUESTIONS[request_id] = row
+    try:
+        yield request_id
+    finally:
+        with _OWNER_QUESTIONS_LOCK:
+            _OWNER_QUESTIONS.pop(request_id, None)
+
+
+def pending_owner_questions() -> List[Dict[str, Any]]:
+    now = time.time()
+    with _OWNER_QUESTIONS_LOCK:
+        rows = [dict(row) for row in _OWNER_QUESTIONS.values() if row["expires_at"] > now]
+    return sorted(rows, key=lambda row: row["created_at"], reverse=True)
 
 
 def ask_confirmation(

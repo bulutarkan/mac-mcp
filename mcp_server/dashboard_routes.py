@@ -515,6 +515,10 @@ def create_dashboard_routes(
         if denied:
             return denied
         pending = security_context.pending_requests() if security_context is not None else []
+        # Mac MCP's own questions to the owner (a Safari upload) wait in a dialog of their own.
+        from .tools_interactive import pending_owner_questions
+
+        pending = pending_owner_questions() + pending
         try:
             blocked_count, blocked_recent = telemetry.attention_security_summary(hours=24, recent_limit=5)
         except sqlite3.Error:

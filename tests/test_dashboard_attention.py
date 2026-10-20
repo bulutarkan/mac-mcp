@@ -63,6 +63,18 @@ class AttentionRouteTests(unittest.TestCase):
                           "created_at", "expires_at"}, set(row))
         self.assertNotIn("session_id", row)  # read-only: nothing here can be used to grant
 
+    def test_an_open_owner_question_is_listed_until_its_dialog_closes(self) -> None:
+        from mcp_server.tools_interactive import owner_question
+
+        self.pending("run_command", "fp-security")
+        with owner_question("browser_upload_artifact", origin="example.com", summary="report.pdf"):
+            rows = self.client.get("/dashboard/api/attention", headers=AUTH).json()["pending"]
+            self.assertEqual(["browser_upload_artifact", "run_command"], [row["tool"] for row in rows])
+            self.assertEqual(("example.com", "report.pdf"), (rows[0]["origin"], rows[0]["target_summary"]))
+            self.assertEqual(set(rows[1]), set(rows[0]))
+        rows = self.client.get("/dashboard/api/attention", headers=AUTH).json()["pending"]
+        self.assertEqual(["run_command"], [row["tool"] for row in rows])
+
     def test_recently_blocked_calls_are_counted_and_summarised(self) -> None:
         for index in range(7):
             self.telemetry.record_security_event(
