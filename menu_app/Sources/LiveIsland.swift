@@ -968,6 +968,20 @@ final class IslandHostingView: NSHostingView<LiveIslandView> {
 
 // MARK: - Views
 
+extension View {
+    /// A row with somewhere to go opens it. One with nowhere (a question waiting for the owner, whose dialog
+    /// already sits above every window) stays plain text, so it neither looks clickable nor tells VoiceOver
+    /// it opens something (#23).
+    @ViewBuilder
+    func islandActivatable(_ target: LiveTarget?, perform action: @escaping () -> Void) -> some View {
+        if target != nil {
+            activatable("Opens it in Mac MCP", perform: action)
+        } else {
+            self
+        }
+    }
+}
+
 /// The Mac MCP mark in the left wing; dimmed with a pause glyph while observation is paused.
 private struct IslandMark: View {
     let paused: Bool
@@ -1190,7 +1204,7 @@ struct LiveIslandView: View {
         .padding(.horizontal, 18)
         .frame(height: 54)
         .accessibilityElement(children: .combine)
-        .activatable("Opens it in Mac MCP") { controller.open(peek.target) }
+        .islandActivatable(peek.target) { controller.open(peek.target) }
         }
         .id(peek.id)
         .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
@@ -1313,7 +1327,7 @@ private struct IslandPanelContent: View {
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(item.tone == .attention ? 0.09 : 0.06)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(item.tone == .attention ? item.tone.color.opacity(0.4) : .clear))
         .accessibilityElement(children: .combine)
-        .activatable("Opens it in Mac MCP") { controller.open(item.target) }
+        .islandActivatable(item.target) { controller.open(item.target) }
         .animation(IslandMotion.slot, value: item.detail)
         }
     }

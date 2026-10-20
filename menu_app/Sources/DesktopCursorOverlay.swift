@@ -38,6 +38,8 @@ final class DesktopCursorOverlayController {
     private var lastEventID: String?
     private var hideTask: Task<Void, Never>?
     private var restackTask: Task<Void, Never>?
+    /// The press planned for when the arrow arrives; the next pointer event cancels it (#27).
+    private var pressTask: Task<Void, Never>?
     private var activationObserver: NSObjectProtocol?
 
     private let idleHideSeconds: Double = 2.4
@@ -135,10 +137,14 @@ final class DesktopCursorOverlayController {
         last = local
         lastEventID = pointer.eventID
 
+        // A press belongs to the event that asked for it: a newer event (the arrow already heading elsewhere)
+        // cancels it, so no click shows where nothing was clicked (#27).
+        pressTask?.cancel()
+        pressTask = nil
         if pointer.press {
-            Task { @MainActor [weak self] in
+            pressTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
-                guard let self else { return }
+                guard !Task.isCancelled, let self else { return }
                 self.cursor.press(reduceMotion: reduceMotion)
                 self.ripple(at: local, reduceMotion: reduceMotion)
             }
@@ -155,6 +161,8 @@ final class DesktopCursorOverlayController {
     func hideImmediately() {
         hideTask?.cancel()
         hideTask = nil
+        pressTask?.cancel()
+        pressTask = nil
         stopRestacking()
         CATransaction.begin()
         CATransaction.setDisableActions(true)

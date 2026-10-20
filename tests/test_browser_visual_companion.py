@@ -272,6 +272,13 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn("__macMcpVisualCompanionLoaded", claim)
         self.assertIn("action:'Opened'", claim)
 
+    def test_any_new_event_cancels_a_pending_click_effect(self) -> None:
+        # Roadmap #27: a scroll right after a click used to let the old click's ripple play later.
+        for name in ("BrowserVisualCompanion", "ChromeVisualCompanion"):
+            source = (ROOT / "menu_app" / name / "visual.js").read_text(encoding="utf-8")
+            handler = source[source.index("recordHistory(event, ui);"):]
+            self.assertLess(handler.index("clearTimeout(pressTimer);"), handler.index("if (Number.isFinite(x)"), name)
+
     def test_visual_attribute_does_not_advance_browser_dom_revision(self) -> None:
         bootstrap = _browser_state_bootstrap()
         self.assertIn("rec.attributeName==='data-mac-mcp-visual-event'", bootstrap)

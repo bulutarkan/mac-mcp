@@ -58,7 +58,11 @@ for (paused, privateMode) in [(false, false), (true, false), (false, true), (tru
         self.assertIn('.activatable(task.approved ? "Opens the task" : "Reviews the suggestion")', panes)
         self.assertIn('row.activatable("Opens the run report")', panes)
         # The island's rows and peek open through accessibility too (the panel never takes focus).
-        self.assertEqual(2, source("LiveIsland.swift").count('.activatable("Opens it in Mac MCP")'))
+        island = source("LiveIsland.swift")
+        # Roadmap #23: only rows with a target are buttons; a waiting question's row is plain text.
+        self.assertEqual(1, island.count('activatable("Opens it in Mac MCP"'))
+        self.assertIn("if target != nil {\n            activatable(", island)
+        self.assertEqual(2, island.count(".islandActivatable("))
 
     def test_a_failed_first_load_offers_try_again(self) -> None:
         self.assertIn("struct LoadProblem: View", source("RunReportView.swift"))

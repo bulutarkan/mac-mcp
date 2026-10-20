@@ -219,6 +219,16 @@ import AppKit
             self.assertEqual(0, ran.returncode, ran.stderr)
             self.assertIn("PANEL_PASS", ran.stdout)
 
+    def test_a_new_event_cancels_the_press_of_the_one_before(self) -> None:
+        # Roadmap #27: a quick second event used to let the first one's ripple play where nothing was clicked.
+        source = (SOURCES / "DesktopCursorOverlay.swift").read_text(encoding="utf-8")
+        show = source[source.index("func show(_ pointer: DesktopPointer"):source.index("func finish(eventID: String)")]
+        self.assertLess(show.index("pressTask?.cancel()"), show.index("if pointer.press {"))
+        self.assertIn("pressTask = Task { @MainActor [weak self] in", show)
+        self.assertIn("guard !Task.isCancelled, let self else { return }", show)
+        hide = source[source.index("func hideImmediately()"):source.index("private func fadeOut()")]
+        self.assertIn("pressTask?.cancel()", hide)
+
     def test_overlay_is_stacked_with_the_target_and_stays_out_of_captures(self) -> None:
         source = (SOURCES / "DesktopCursorOverlay.swift").read_text(encoding="utf-8")
         self.assertIn("panel.order(.above, relativeTo: Int(targetWindow))", source)

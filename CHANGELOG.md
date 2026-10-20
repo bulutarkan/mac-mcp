@@ -25,6 +25,10 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Agent cursor click effects and Live Island rows (roadmap #27, #23)
+- The desktop agent cursor and the browser Visual Companion (Safari and Chrome) show a click only for the event that clicked. A quick next step (a scroll, a read, another move) cancels a press still waiting for the arrow to arrive; before, its ripple played later at a spot the cursor had already left.
+- A "Waiting for your answer" row in the Live Island is plain text now. The question's own dialog already sits above every window, and the row did nothing when clicked while VoiceOver said it opened something. Rows that lead somewhere (an agent, Settings, the dashboard) still open it.
+
 ### Activity bubble and Live Island (roadmap #24, #29)
 - The tool activity bubble stays when new work starts while it is fading out after the last batch: the fade turns around and the new work shows. Before, the end of the fade hid the bubble and cleared the new work.
 - VoiceOver reads the Live Island mark with every mode its badge shows, in every island state: "Mac MCP, private mode", "Mac MCP, observation paused", or both. Before, it said only "Mac MCP" when Private mode was on.

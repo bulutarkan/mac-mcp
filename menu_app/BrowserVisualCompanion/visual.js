@@ -343,6 +343,9 @@
 
     recordHistory(event, ui);
     clearTimeout(hideTimer);
+    // A click effect belongs to its own event: the next event, click or not, cancels a press still waiting
+    // for the arrow, so no ripple shows where nothing was clicked (#27).
+    clearTimeout(pressTimer);
     frame.classList.toggle('attention', phase === 'attention');
     frame.classList.add('active');
     live.classList.add('active');
