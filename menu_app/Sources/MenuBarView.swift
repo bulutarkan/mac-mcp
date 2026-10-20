@@ -916,13 +916,9 @@ struct MenuBarView: View {
                             .background(.quaternary, in: Capsule())
                     }
                 }
-                if let context = state.resolvedBrowserContext(for: event) {
-                    Text("\(browserActivityLabel(context)) · \(event.durationMS ?? 0) ms")
-                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                } else {
-                    Text("\(event.source.uppercased()) · \(event.durationMS ?? 0) ms · \(relativeTime(event.timestamp))")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
+                // Every row says when it ran; how long it took is written to be read ("4.5s", not "4.498 ms").
+                Text(verbatim: activityDetail(event))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
             if let context = state.resolvedBrowserContext(for: event), context.canShowTab, event.tool != "browser_close_tab" {
@@ -1561,6 +1557,18 @@ struct MenuBarView: View {
     private func persistSettings() { do { try settings.save(); settingsMessage = "Saved" } catch { settingsMessage = error.localizedDescription } }
     private func saveGroqKey() { do { try settings.saveGroqKey(groqKey); groqKey = ""; settingsMessage = "Groq key saved securely in Keychain" } catch { settingsMessage = error.localizedDescription } }
     private func removeGroqKey() { do { try settings.removeGroqKey(); settingsMessage = "Groq key removed" } catch { settingsMessage = error.localizedDescription } }
+    private func activityDetail(_ event: ToolEvent) -> String {
+        let origin = state.resolvedBrowserContext(for: event).map(browserActivityLabel) ?? event.source.uppercased()
+        return [origin, activityDuration(event.durationMS ?? 0), relativeTime(event.timestamp)].joined(separator: " · ")
+    }
+
+    /// Milliseconds under a second, then seconds with one decimal, then minutes.
+    private func activityDuration(_ milliseconds: Int) -> String {
+        if milliseconds < 1000 { return "\(milliseconds) ms" }
+        if milliseconds < 60_000 { return String(format: "%.1fs", Double(milliseconds) / 1000) }
+        return compactDuration(milliseconds)
+    }
+
     private func relativeTime(_ timestamp: Double) -> String {
         let seconds = max(0, Int(Date().timeIntervalSince1970 - timestamp))
         if seconds < 60 { return "\(seconds)s ago" }; if seconds < 3600 { return "\(seconds / 60)m ago" }; return "\(seconds / 3600)h ago"
