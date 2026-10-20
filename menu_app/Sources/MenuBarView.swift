@@ -1709,7 +1709,7 @@ private struct MenuDisclosureStyle: DisclosureGroupStyle {
             .buttonStyle(.plain)
             .accessibilityHint(configuration.isExpanded ? "Collapses this section" : "Expands this section")
             if configuration.isExpanded {
-                configuration.content.padding(.leading, 30)
+                configuration.content
             }
         }
     }
