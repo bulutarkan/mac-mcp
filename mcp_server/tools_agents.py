@@ -57,7 +57,7 @@ from .agent_results import (
     apply_evidence_policy, evidence_policy_for,
 )
 from .agent_admission import (
-    AdmissionError, bind_agent as admission_bind_agent, cancel_queued as admission_cancel_queued,
+    MEMORY_PRESSURE_HOLD_S, AdmissionError, bind_agent as admission_bind_agent, cancel_queued as admission_cancel_queued,
     heartbeat as admission_heartbeat, normalize_claims as normalize_admission_claims, release as admission_release,
     request_admission, snapshot as admission_snapshot,
 )
@@ -1279,6 +1279,28 @@ def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict
     return "\n\n".join(piece for piece in pieces if piece)
 
 
+def _find_spawned_team_agent(team_id: str, task: Dict[str, Any]) -> Optional[str]:
+    """The newest agent started for this team task that the task does not know yet, if any."""
+    known = {str(item) for item in (task.get("agent_ids") or [])}
+    since = float(task.get("spawn_started_at") or 0)
+    found: List[tuple[float, str]] = []
+    for meta_path in AGENTS_DIR.glob("*/meta.json"):
+        agent_id = meta_path.parent.name
+        if agent_id in known:
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if str(meta.get("team_id") or "") != team_id or str(meta.get("team_task_id") or "") != str(task.get("id")):
+            continue
+        created = float(meta.get("created_at") or meta.get("started_at") or 0)
+        if since and created and created < since - 1:
+            continue
+        found.append((created, agent_id))
+    return max(found)[1] if found else None
+
+
 def _team_tick(team_id: str) -> Dict[str, Any]:
     """Advance one persisted DAG team. Safe to call concurrently from worker processes."""
     with _locked_team(team_id):
@@ -1297,6 +1319,19 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             if task.get("state") not in {"spawning", "running"}:
                 continue
             agent_id = str(task.get("active_agent_id") or "").strip()
+            if not agent_id and task.get("state") == "spawning":
+                # The server stopped while this task's agent was being started (the tick holds the team lock
+                # through the spawn, so no other tick is mid-spawn). If the agent got as far as its meta file,
+                # take it over instead of failing a task whose agent may be running.
+                agent_id = _find_spawned_team_agent(team_id, task) or ""
+                if agent_id:
+                    task.setdefault("agent_ids", []).append(agent_id)
+                    task["active_agent_id"] = agent_id
+                    task["latest_agent_id"] = agent_id
+                    task["state"] = "running"
+                    if agent_id not in team.setdefault("agent_ids", []):
+                        team["agent_ids"].append(agent_id)
+                    changed = True
             if not agent_id:
                 _release_task_admission(task)
                 task["state"] = "failed"
@@ -1450,6 +1485,9 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                 changed = True
                 continue
             if not admission.get("admitted"):
+                if admission.get("reason") == "memory_pressure":
+                    # Nothing ends to wake this team when memory pressure holds every start back.
+                    _schedule_team_wake(team_id, MEMORY_PRESSURE_HOLD_S + 1.0)
                 task["state"] = "queued"
                 task["queued_since"] = admission.get("queued_since") or task.get("queued_since") or _now()
                 task["queued_reason"] = admission.get("reason")
@@ -1463,6 +1501,7 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             task["queued_details"] = None
             task["queue_position"] = None
             task["state"] = "spawning"
+            task["spawn_started_at"] = _now()
             team["updated_at"] = _now()
             _write_team_unlocked(team_id, team)
             prompt = _team_task_prompt(team, task, task_map)
@@ -1546,6 +1585,30 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             team["updated_at"] = _now()
             _write_team_unlocked(team_id, team)
         return team
+
+
+_TEAM_WAKE_TIMERS: Dict[str, threading.Timer] = {}
+_TEAM_WAKE_LOCK = threading.Lock()
+
+
+def _schedule_team_wake(team_id: str, delay_s: float) -> None:
+    """Tick the team once after delay_s; at most one pending wake per team in this process."""
+    with _TEAM_WAKE_LOCK:
+        if team_id in _TEAM_WAKE_TIMERS:
+            return
+
+        def fire() -> None:
+            with _TEAM_WAKE_LOCK:
+                _TEAM_WAKE_TIMERS.pop(team_id, None)
+            try:
+                _team_tick(team_id)
+            except Exception:
+                pass
+
+        timer = threading.Timer(max(0.0, float(delay_s)), fire)
+        timer.daemon = True
+        _TEAM_WAKE_TIMERS[team_id] = timer
+        timer.start()
 
 
 def _wake_global_admission_queue(*, exclude_team_id: Optional[str] = None, limit: int = 32) -> None:
@@ -4221,6 +4284,78 @@ def expire_agent_history(*, now: Optional[float] = None) -> Dict[str, Any]:
     return {"status": "ok", "retention_days": days, "removed": removed, "removed_teams": removed_teams}
 
 
+# A finished agent's private provider home keeps caches its CLI fills again on the next start: npm and
+# CLI caches, temp files, Codex's plugin copies. They were 2.8 GB across 50 agents. Sessions, history
+# databases and settings stay (a resumed agent needs them), and the Codex sign-in snapshot is copied again
+# from the owner's on every start, so it goes too: no idle copy of a credential is left behind.
+_PROVIDER_STATE_CACHES = ("home/.npm", "cache", "tmp", "codex/codex-home/cache", "codex/codex-home/plugins",
+                          "codex/tmp", "claude/tmp")
+_PROVIDER_TRIM_AFTER_S = 600
+
+
+def _tree_bytes(path: Path) -> int:
+    if path.is_symlink() or path.is_file():
+        try:
+            return path.lstat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def trim_finished_provider_state(*, now: Optional[float] = None) -> Dict[str, Any]:
+    """Drop the regenerable caches of agents that finished at least _PROVIDER_TRIM_AFTER_S ago.
+
+    Skipped: unfinished agents, and the first agent of a chain a running agent was resumed from (a resumed
+    agent shares that agent's provider home).
+    """
+    now = time.time() if now is None else now
+    metas: Dict[str, Dict[str, Any]] = {}
+    for meta_path in AGENTS_DIR.glob("*/meta.json"):
+        try:
+            metas[meta_path.parent.name] = {"meta": json.loads(meta_path.read_text(encoding="utf-8")), "path": meta_path}
+        except (OSError, ValueError):
+            continue
+    in_use: set[str] = set()
+    for agent_id, entry in metas.items():
+        if entry["meta"].get("status") not in TERMINAL_STATUSES:
+            in_use.add(agent_id)
+            in_use.add(_codex_state_owner_agent_id(agent_id, entry["meta"]))
+    trimmed: List[str] = []
+    freed = 0
+    for agent_id, entry in sorted(metas.items()):
+        meta = entry["meta"]
+        if agent_id in in_use or meta.get("status") not in TERMINAL_STATUSES:
+            continue
+        if now - _agent_finished_at(meta, entry["path"]) < _PROVIDER_TRIM_AFTER_S:
+            continue
+        root = _agent_dir(agent_id)
+        targets = [root / "provider_state" / rel for rel in _PROVIDER_STATE_CACHES] + [root / "provider_secrets"]
+        removed_here = False
+        for target in targets:
+            if not (target.exists() or target.is_symlink()):
+                continue
+            size = _tree_bytes(target)
+            try:
+                if target.is_dir() and not target.is_symlink():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            except OSError:
+                continue
+            freed += size
+            removed_here = True
+        if removed_here:
+            trimmed.append(agent_id)
+    return {"status": "ok", "trimmed": trimmed, "freed_bytes": freed}
+
+
 def _maybe_expire_agent_history() -> None:
     """Run the history expiry at most hourly, off the caller's thread (managed server only)."""
     if os.getenv("MAC_MCP_MANAGED_SERVER") != "1":
@@ -4233,6 +4368,10 @@ def _maybe_expire_agent_history() -> None:
     def sweep() -> None:
         try:
             expire_agent_history()
+        except Exception:
+            pass
+        try:
+            trim_finished_provider_state()
         except Exception:
             pass
         finally:
@@ -4660,6 +4799,13 @@ def _converge_workflow_terminal(agent_id: str, meta: Dict[str, Any]) -> Optional
         return None
 
 
+def _close_pending_contract(meta: Dict[str, Any]) -> None:
+    """An agent that failed before writing a typed result has none: say so instead of leaving it pending."""
+    if meta.get("result_contract_status") in (None, "pending"):
+        meta["result_contract_status"] = "missing"
+        meta["result_outcome"] = "failure"
+
+
 def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     if meta.get("status") in TERMINAL_STATUSES:
         _converge_workflow_terminal(agent_id, meta)
@@ -4687,6 +4833,7 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
                     "while launching it); no provider work ran under this agent."
                 )
                 current["failure_reason"] = "worker_never_started"
+                _close_pending_contract(current)
                 return True
 
             meta = _update_meta(agent_id, mark_never_started)
@@ -4702,14 +4849,32 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     if meta.get("status") in {"starting", "running"}:
         worker_pid = meta.get("worker_pid")
         if worker_pid and not _is_pid_alive(worker_pid):
-            provider_pid = meta.get("provider_pid")
-            if provider_pid and _is_pid_alive(provider_pid):
-                _kill_group(provider_pid, signal_module.SIGTERM)
+            if "provider" in _live_agent_processes(meta):
+                # The worker died but left its provider running. Stop it the way a cancel does (TERM, then
+                # KILL after the grace period) without blocking this read; the agent stays unfinished and
+                # keeps its capacity until the provider is gone.
+                asked = float(meta.get("orphan_stop_requested_at") or 0)
+                if not asked:
+                    _signal_agent_processes(meta, signal_module.SIGTERM, ["provider"])
+
+                    def note_stop(current: Dict[str, Any]) -> Optional[bool]:
+                        if current.get("orphan_stop_requested_at"):
+                            return False
+                        current["orphan_stop_requested_at"] = _now()
+                        return True
+
+                    return _update_meta(agent_id, note_stop)
+                if _now() - asked >= _CANCEL_GRACE_S:
+                    _signal_agent_processes(meta, signal_module.SIGKILL, ["provider"])
+                return meta
+
             def mark_failed(current: Dict[str, Any]) -> Optional[bool]:
                 current_worker_pid = current.get("worker_pid")
                 if current.get("status") not in {"starting", "running"}:
                     return False
                 if not current_worker_pid or _is_pid_alive(current_worker_pid):
+                    return False
+                if "provider" in _live_agent_processes(current):
                     return False
                 current.update({
                     "status": "failed",
@@ -4717,6 +4882,7 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
                     "updated_at": _now(),
                     "note": "Agent worker exited before recording a terminal result.",
                 })
+                _close_pending_contract(current)
                 return True
 
             meta = _update_meta(agent_id, mark_failed)
@@ -7886,6 +8052,7 @@ def _worker(agent_id: str) -> int:
                 return False
             current["exit_code"] = None
             current["note"] = worker_error
+            _close_pending_contract(current)
             return True
 
         meta = _update_meta(agent_id, record_worker_failure)
