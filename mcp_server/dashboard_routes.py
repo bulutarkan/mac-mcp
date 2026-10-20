@@ -1505,6 +1505,27 @@ def create_dashboard_routes(
             "foreground_forced": bool(result.get("foreground_forced")),
         })
 
+    async def browser_tab_frame(request: Request) -> Response:
+        """Where an agent's tab sits in the tab bar, for the menu app's tab pulse (#79). Read-only."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        browser = str(body.get("browser") or "").strip()
+        tab_handle = str(body.get("tab_handle") or "").strip()
+        if not browser or not tab_handle:
+            return JSONResponse({"ok": False, "error": "browser_and_tab_handle_required"}, status_code=400)
+        from .browser_tab_frame import tab_frame
+        try:
+            result = await asyncio.to_thread(tab_frame, browser, tab_handle)
+        except Exception:
+            result = {"ok": False, "error": "tab_frame_failed"}
+        return JSONResponse(result)
+
     async def providers(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -1808,6 +1829,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/transactions", transactions, methods=["GET"]),
         Route("/dashboard/api/transactions/undo", undo_transaction_route, methods=["POST"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
+        Route("/dashboard/api/browser/tab-frame", browser_tab_frame, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),
         Route("/dashboard/api/agent-catalog", agent_catalog_data, methods=["GET"]),
         Route("/dashboard/api/agents/history", agents_history, methods=["GET"]),

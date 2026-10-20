@@ -192,6 +192,9 @@ final class AppState: ObservableObject {
     @Published private(set) var decisionIssue: String?
     @Published var recentEvents: [ToolEvent] = []
     @Published var activeEvents: [ToolEvent] = []
+    /// Tab pulse bookkeeping (#79): the events already pulsed and when each tab was last looked up.
+    private var tabPulseEvents: Set<String> = []
+    private var tabPulseAskedAt: [String: Date] = [:]
     @Published var browserActionStatus = ""
     @Published var securitySemantics: SecuritySemanticsEnvelope?
     @Published var permissionProfileChanging = false
@@ -1145,6 +1148,10 @@ final class AppState: ObservableObject {
             wakePoll()
         }
 
+        if kind == "call_started" || kind == "call_finished" {
+            pulseBrowserTab(for: payload)
+        }
+
         guard let eventID = payload.eventID, !eventID.isEmpty else { return }
         if kind == "call_started" {
             presentToolActivityEvent(payload)
@@ -1155,6 +1162,36 @@ final class AppState: ObservableObject {
             onLiveToolCallFinished?(eventID, !["error", "failed", "denied", "blocked", "timeout"].contains(status))
         }
     }
+
+    /// The tab pulse (#79): one glow over the agent's tab per tool use, when the owner is not on that
+    /// tab. At the call's start, or at its end when only the result names the tab (a new tab).
+    private func pulseBrowserTab(for payload: ToolActivityStreamPayload) {
+        guard settings.showBrowserTabPulse,
+              let context = payload.toolEvent?.browserContext,
+              let browser = context.browser, !browser.isEmpty,
+              let handle = context.tabHandle, !handle.isEmpty,
+              !Self.tabPulseSkippedTools.contains(payload.tool ?? ""),
+              let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        if let eventID = payload.eventID, !eventID.isEmpty {
+            guard tabPulseEvents.insert(eventID).inserted else { return }
+            if tabPulseEvents.count > 200 { tabPulseEvents.removeAll(keepingCapacity: true) }
+        }
+        let now = Date()
+        // One look-up per tab while its pulse plays; a busy agent still pulses about once a second.
+        if let last = tabPulseAskedAt[handle], now.timeIntervalSince(last) < 1.0 { return }
+        tabPulseAskedAt[handle] = now
+        let reduceMotion = self.reduceMotion
+        Task {
+            guard let response: BrowserTabFrameEnvelope = try? await post(
+                base.appendingPathComponent("dashboard/api/browser/tab-frame"),
+                body: ["browser": browser, "tab_handle": handle], timeout: 3.0
+            ), let target = response.target, settings.showBrowserTabPulse else { return }
+            BrowserTabPulseController.shared.pulse(axFrame: target.frame, windowID: target.windowID, reduceMotion: reduceMotion)
+        }
+    }
+
+    /// Calls that end the tab or only list tabs draw nothing.
+    private static let tabPulseSkippedTools: Set<String> = ["browser_close_tab", "browser_list_tabs"]
 
     /// "Chat 2", as the Conversations list numbers it, once there is more than one.
     private func desktopCursorAgentLabel(_ sessionID: String?) -> String? {

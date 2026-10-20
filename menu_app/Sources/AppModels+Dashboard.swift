@@ -365,6 +365,32 @@ struct BrowserShowTabEnvelope: Decodable {
     let ok: Bool
 }
 
+/// Where an agent's tab sits in the tab bar, for the tab pulse (#79); no frame when the tab is on show.
+struct BrowserTabFrameEnvelope: Decodable {
+    struct Frame: Decodable {
+        let x: Double
+        let y: Double
+        let width: Double
+        let height: Double
+    }
+
+    let ok: Bool
+    let active: Bool?
+    let frame: Frame?
+    let windowID: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, active, frame
+        case windowID = "window_id"
+    }
+
+    /// The tab button's AX frame and the browser window to sit above, when there is something to draw.
+    var target: (frame: CGRect, windowID: Int)? {
+        guard ok, active != true, let frame, let windowID, windowID > 0 else { return nil }
+        return (CGRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height), windowID)
+    }
+}
+
 struct DecisionAccelerationEnvelope: Decodable, Equatable {
     let enabled: Bool?
     let scope: String?

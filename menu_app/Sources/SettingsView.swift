@@ -632,6 +632,21 @@ struct SettingsView: View {
 
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
+                                Text("Glow on the agent's browser tab")
+                                    .font(.subheadline.weight(.medium))
+                                Text("When an agent works in a Safari or Chrome tab you are not looking at, that tab glows briefly in the tab bar each time it acts. Nothing shows on the tab you are on.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Toggle("Glow on the agent's browser tab", isOn: browserTabPulseBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
+
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
                                 Text("Require Tool Descriptions")
                                     .font(.subheadline.weight(.medium))
                                 Text("Adds a short required description field to MCP tool schemas. Turn this off to remove the field entirely.")
@@ -3818,6 +3833,17 @@ struct SettingsView: View {
                 settings.showDesktopCursor = enabled
                 if !enabled { DesktopCursorOverlayController.shared.hideImmediately() }
                 persistSettings(success: enabled ? "Agent cursor on." : "Agent cursor off.")
+            }
+        )
+    }
+
+    private var browserTabPulseBinding: Binding<Bool> {
+        Binding(
+            get: { settings.showBrowserTabPulse },
+            set: { enabled in
+                settings.showBrowserTabPulse = enabled
+                if !enabled { BrowserTabPulseController.shared.hideImmediately() }
+                persistSettings(success: enabled ? "Tab glow on." : "Tab glow off.")
             }
         )
     }

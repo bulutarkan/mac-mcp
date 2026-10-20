@@ -61,6 +61,8 @@ struct MenuSettings: Codable {
         var island: Bool?
         /// The desktop agent cursor over background native actions; absent means on.
         var desktop_cursor: Bool?
+        /// The glow over a browser tab an agent uses while you look elsewhere (#79); absent means on.
+        var browser_tab_pulse: Bool?
     }
     struct Notifications: Codable {
         var agent_completion: Bool
@@ -181,6 +183,7 @@ final class SettingsStore: ObservableObject {
     @Published var showToolActivity = false
     @Published var showLiveIsland = false
     @Published var showDesktopCursor = true
+    @Published var showBrowserTabPulse = true
     @Published var requireToolDescriptions = false
     @Published var agentCompletionNotificationsEnabled = false
     @Published var updateAlertsEnabled = true
@@ -294,6 +297,7 @@ final class SettingsStore: ObservableObject {
         requireToolDescriptions = current.tool_activity?.require_descriptions ?? false
         showLiveIsland = current.tool_activity?.island ?? false
         showDesktopCursor = current.tool_activity?.desktop_cursor ?? true
+        showBrowserTabPulse = current.tool_activity?.browser_tab_pulse ?? true
         if !requireToolDescriptions {
             showToolActivity = false
         }
@@ -357,7 +361,8 @@ final class SettingsStore: ObservableObject {
                 require_descriptions: requireToolDescriptions,
                 // Both ways: the save merges into the file, so an omitted key would keep the old value.
                 island: showLiveIsland,
-                desktop_cursor: showDesktopCursor
+                desktop_cursor: showDesktopCursor,
+                browser_tab_pulse: showBrowserTabPulse
             ),
             notifications: .init(agent_completion: agentCompletionNotificationsEnabled, updates: updateAlertsEnabled),
             decision_acceleration: .init(enabled: decisionAccelerationEnabled, scope: decisionAccelerationScope),

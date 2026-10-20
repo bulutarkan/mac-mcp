@@ -84,6 +84,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/SettingsWindowController.swift"
   "${SCRIPT_DIR}/Sources/ToolActivityBubbleController.swift"
   "${SCRIPT_DIR}/Sources/DesktopCursorOverlay.swift"
+  "${SCRIPT_DIR}/Sources/BrowserTabPulse.swift"
   "${SCRIPT_DIR}/Sources/KeychainStore.swift"
   "${SCRIPT_DIR}/Sources/AudioDeviceStore.swift"
   "${SCRIPT_DIR}/Sources/SessionDetailPresentation.swift"
