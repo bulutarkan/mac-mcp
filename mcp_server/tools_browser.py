@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from urllib.parse import urlsplit
 import os
 import subprocess
 import sys
@@ -25,7 +26,8 @@ from .artifact_pipeline import (
 from .context_handoff import (
     HandoffError, mark_handoff_consumed, resolve_browser_upload_handoff,
 )
-from .foreground_guard import require_foreground_authorization
+from .tools_interactive import ask_confirmation
+from .foreground_guard import current_foreground_authorization, foreground_authorization, require_foreground_authorization
 from .tool_cancellation import cancellation_checkpoint
 
 
@@ -2062,6 +2064,22 @@ def _restore_safari_upload_tab(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"attempted": True, "ok": False, "exact": False, "skipped_user_change": False, "message": str(exc)}
 
 
+def _owner_allows_safari_upload(settings: Settings, artifact: Dict[str, Any], target: Any) -> Dict[str, Any]:
+    """Safari picks a file only through its native Open window, which needs Safari in front. An agent cannot grant
+    itself that; the owner can, for this one upload, in a dialog naming the file and the site."""
+    size = int(artifact.get("size") or 0)
+    shown = f"{size / 1_048_576:.1f} MB" if size >= 1_048_576 else f"{max(1, round(size / 1024))} KB"
+    # The full host, so a look-alike subdomain is never hidden behind its registrable domain.
+    site = urlsplit(str(getattr(target, "url", "") or "")).hostname or "the page the agent is using"
+    question = (
+        f"An agent wants to upload “{artifact.get('filename') or 'a file'}” ({shown}) to {site} in Safari.\n\n"
+        "To pick the file, Safari comes to the front for a moment and its Open window appears; then your window "
+        "goes back. The file is only selected, not sent."
+    )
+    return ask_confirmation(settings, question=question, sender="Mac MCP", timeout_s=60,
+                            confirm_label="Allow Upload", deny_label="Don’t Allow")
+
+
 def browser_upload_artifact(
     settings: Settings,
     browser: str,
@@ -2076,8 +2094,6 @@ def browser_upload_artifact(
     handoff_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
-    if b == "Safari":
-        require_foreground_authorization("browser_upload_artifact", browser=b)
     artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
     timeout_s = max(2, min(int(timeout_s), settings.max_wait_s, 60))
     with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
@@ -2115,137 +2131,157 @@ def browser_upload_artifact(
                 **({"handoff_id": handoff_id, "handoff_consumed": True} if handoff_id else {}),
             }
 
-        # Safari permits a file-input click through AppleScript JavaScript, but the actual file
-        # selection is still performed by the native NSOpenPanel using exact artifact identity.
-        focus_context = None
-        if preserve_focus:
-            focus_context, focus_error = native_focus.capture_focus_context()
-            if focus_context is None:
-                raise HTTPException(status.HTTP_409_CONFLICT, {
-                    "ok": False, "error": "focus_snapshot_failed", "message": focus_error,
-                })
-        pid_text = _run_osascript('tell application "System Events" to get unix id of application process "Safari"')
-        try:
-            safari_pid = int(str(pid_text).strip())
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not resolve Safari process identity.") from exc
-        if (
-            preserve_focus and focus_context is not None
-            and int(focus_context.get("pid") or 0) != safari_pid
-            and int(focus_context.get("window_count") or 0) > 1
-            and not focus_context.get("window_handle")
-        ):
-            raise HTTPException(status.HTTP_409_CONFLICT, {
-                "ok": False, "error": "focus_snapshot_ambiguous", "retryable": False,
-                "message": "The current user window has no stable identity, so Safari upload cannot restore focus safely.",
+        if current_foreground_authorization() is not None:
+            return _safari_upload(b, target, artifact, artifact_id, path, css_selector, timeout_s, preserve_focus, handoff_id)
+        answer = _owner_allows_safari_upload(settings, artifact, target)
+        if not answer.get("confirmed"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, {
+                "ok": False, "error": "owner_declined_upload", "reason_code": "OWNER_DECLINED_UPLOAD",
+                "decision": answer.get("decision") or answer.get("error") or "denied", "retryable": False,
+                "message": "The owner did not allow Safari to come forward for this upload, so no file was selected. "
+                           "Carry on with the rest of the task; do not ask again unless the owner wants to.",
             })
-        focus_restore_attempted = False
-        focus_restore_ok: Optional[bool] = None
-        focus_restore_message: Optional[str] = None
-        focus_restore_exact = False
-        focus_user_changed = False
-        safari_tab_state: Optional[Dict[str, Any]] = None
-        safari_tab_restore: Optional[Dict[str, Any]] = None
+        with foreground_authorization("owner_approved_safari_upload"):
+            return _safari_upload(b, target, artifact, artifact_id, path, css_selector, timeout_s, preserve_focus, handoff_id)
+
+
+def _safari_upload(b: str, target: Any, artifact: Dict[str, Any], artifact_id: str, path: str, css_selector: str,
+                   timeout_s: int, preserve_focus: bool, handoff_id: Optional[str]) -> Dict[str, Any]:
+    """Safari's native Open panel, driven with exact artifact identity; runs only under a foreground grant."""
+    require_foreground_authorization("browser_upload_artifact", browser=b)
+    # Safari permits a file-input click through AppleScript JavaScript, but the actual file
+    # selection is still performed by the native NSOpenPanel using exact artifact identity.
+    focus_context = None
+    if preserve_focus:
+        focus_context, focus_error = native_focus.capture_focus_context()
+        if focus_context is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": "focus_snapshot_failed", "message": focus_error,
+            })
+    pid_text = _run_osascript('tell application "System Events" to get unix id of application process "Safari"')
+    try:
+        safari_pid = int(str(pid_text).strip())
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not resolve Safari process identity.") from exc
+    if (
+        preserve_focus and focus_context is not None
+        and int(focus_context.get("pid") or 0) != safari_pid
+        and int(focus_context.get("window_count") or 0) > 1
+        and not focus_context.get("window_handle")
+    ):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "ok": False, "error": "focus_snapshot_ambiguous", "retryable": False,
+            "message": "The current user window has no stable identity, so Safari upload cannot restore focus safely.",
+        })
+    focus_restore_attempted = False
+    focus_restore_ok: Optional[bool] = None
+    focus_restore_message: Optional[str] = None
+    focus_restore_exact = False
+    focus_user_changed = False
+    safari_tab_state: Optional[Dict[str, Any]] = None
+    safari_tab_restore: Optional[Dict[str, Any]] = None
+    try:
+        safari_tab_state = _prepare_safari_upload_tab(target)
+        sel = json.dumps(css_selector)
+        open_js = (
+            "(()=>{const el=document.querySelector(" + sel + ");"
+            "if(!el)return JSON.stringify({ok:false,error:'not_found'});"
+            "if(!(el instanceof HTMLInputElement)||el.type!=='file')return JSON.stringify({ok:false,error:'not_file_input'});"
+            "el.click();return JSON.stringify({ok:true});})()"
+        )
+        opened_raw = _execute_js_for_target(b, open_js, target, timeout_s=min(timeout_s, 20))
         try:
-            safari_tab_state = _prepare_safari_upload_tab(target)
-            sel = json.dumps(css_selector)
-            open_js = (
-                "(()=>{const el=document.querySelector(" + sel + ");"
-                "if(!el)return JSON.stringify({ok:false,error:'not_found'});"
-                "if(!(el instanceof HTMLInputElement)||el.type!=='file')return JSON.stringify({ok:false,error:'not_file_input'});"
-                "el.click();return JSON.stringify({ok:true});})()"
+            opened = json.loads(opened_raw or "{}")
+        except json.JSONDecodeError:
+            opened = {"ok": False, "error": "invalid_trigger_result"}
+        if not opened.get("ok"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+                "ok": False, "error": str(opened.get("error") or "file_input_trigger_failed"),
+            })
+        if not wait_for_file_dialog(safari_pid, "open", timeout_s=min(timeout_s, 8)):
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": "file_dialog_not_opened", "retryable": False,
+            })
+        try:
+            if handoff_id:
+                mark_handoff_consumed(handoff_id, consumer="browser_upload_artifact:safari")
+            dialog = drive_native_file_dialog(
+                pid=safari_pid, mode="open", artifact_id=artifact_id, path=path, timeout_s=timeout_s,
             )
-            opened_raw = _execute_js_for_target(b, open_js, target, timeout_s=min(timeout_s, 20))
-            try:
-                opened = json.loads(opened_raw or "{}")
-            except json.JSONDecodeError:
-                opened = {"ok": False, "error": "invalid_trigger_result"}
-            if not opened.get("ok"):
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, {
-                    "ok": False, "error": str(opened.get("error") or "file_input_trigger_failed"),
-                })
-            if not wait_for_file_dialog(safari_pid, "open", timeout_s=min(timeout_s, 8)):
-                raise HTTPException(status.HTTP_409_CONFLICT, {
-                    "ok": False, "error": "file_dialog_not_opened", "retryable": False,
-                })
-            try:
-                if handoff_id:
-                    mark_handoff_consumed(handoff_id, consumer="browser_upload_artifact:safari")
-                dialog = drive_native_file_dialog(
-                    pid=safari_pid, mode="open", artifact_id=artifact_id, path=path, timeout_s=timeout_s,
+        except HandoffError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
+                "message": str(exc), **exc.extra,
+            }) from exc
+        except ArtifactError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
+                "message": str(exc), **exc.extra,
+            }) from exc
+        verify_raw = _execute_js_for_target(b, _browser_file_metadata_js(css_selector), target, timeout_s=min(timeout_s, 20))
+        try:
+            metadata = json.loads(verify_raw or "{}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Safari file input verification returned invalid JSON.") from exc
+        if not metadata.get("ok") or int(metadata.get("count") or 0) < 1 or metadata.get("name") != artifact.get("filename") or int(metadata.get("size") or -1) != int(artifact.get("size") or -2):
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": "artifact_upload_identity_mismatch",
+                "message": "Safari file input metadata did not match the registered artifact.",
+            })
+        artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
+        result: Dict[str, Any] = {
+            "ok": True, "browser": b, "tab_handle": target.tab_handle,
+            "artifact": artifact, "file_input": metadata, "dialog": dialog,
+            "transport": "safari_native_open_panel",
+            **({"handoff_id": handoff_id, "handoff_consumed": True} if handoff_id else {}),
+        }
+    finally:
+        if safari_tab_state is not None:
+            safari_tab_restore = _restore_safari_upload_tab(safari_tab_state)
+        if preserve_focus and focus_context is not None:
+            decision, _ = native_focus.post_action_focus_decision(
+                focus_context, {"pid": safari_pid, "window_index": target.window_index}
+            )
+            if decision == "restore":
+                focus_restore_attempted = True
+                focus_restore_ok, focus_restore_message, focus_restore_exact = native_focus.restore_focus_context(
+                    focus_context
                 )
-            except HandoffError as exc:
-                raise HTTPException(status.HTTP_409_CONFLICT, {
-                    "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
-                    "message": str(exc), **exc.extra,
-                }) from exc
-            except ArtifactError as exc:
-                raise HTTPException(status.HTTP_409_CONFLICT, {
-                    "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
-                    "message": str(exc), **exc.extra,
-                }) from exc
-            verify_raw = _execute_js_for_target(b, _browser_file_metadata_js(css_selector), target, timeout_s=min(timeout_s, 20))
-            try:
-                metadata = json.loads(verify_raw or "{}")
-            except json.JSONDecodeError as exc:
-                raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Safari file input verification returned invalid JSON.") from exc
-            if not metadata.get("ok") or int(metadata.get("count") or 0) < 1 or metadata.get("name") != artifact.get("filename") or int(metadata.get("size") or -1) != int(artifact.get("size") or -2):
-                raise HTTPException(status.HTTP_409_CONFLICT, {
-                    "ok": False, "error": "artifact_upload_identity_mismatch",
-                    "message": "Safari file input metadata did not match the registered artifact.",
-                })
-            artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
-            result: Dict[str, Any] = {
-                "ok": True, "browser": b, "tab_handle": target.tab_handle,
-                "artifact": artifact, "file_input": metadata, "dialog": dialog,
-                "transport": "safari_native_open_panel",
-                **({"handoff_id": handoff_id, "handoff_consumed": True} if handoff_id else {}),
+            elif decision == "user_changed":
+                focus_user_changed = True
+            else:
+                focus_restore_ok = True
+    if safari_tab_restore is not None:
+        result["tab_restore_attempted"] = bool(safari_tab_restore.get("attempted"))
+        result["tab_restore_ok"] = bool(safari_tab_restore.get("ok"))
+        result["tab_restore_exact"] = bool(safari_tab_restore.get("exact"))
+        if safari_tab_restore.get("skipped_user_change"):
+            result["tab_restore_skipped_user_change"] = True
+        if safari_tab_restore.get("message"):
+            result["tab_restore_message"] = safari_tab_restore.get("message")
+        if safari_tab_restore.get("ok") is False:
+            return {
+                **result, "ok": False, "reason_code": "TAB_RESTORE_FAILED",
+                "error": "artifact upload succeeded but the previous Safari tab could not be restored",
+                "automatic_retry": False,
             }
-        finally:
-            if safari_tab_state is not None:
-                safari_tab_restore = _restore_safari_upload_tab(safari_tab_state)
-            if preserve_focus and focus_context is not None:
-                decision, _ = native_focus.post_action_focus_decision(
-                    focus_context, {"pid": safari_pid, "window_index": target.window_index}
-                )
-                if decision == "restore":
-                    focus_restore_attempted = True
-                    focus_restore_ok, focus_restore_message, focus_restore_exact = native_focus.restore_focus_context(
-                        focus_context
-                    )
-                elif decision == "user_changed":
-                    focus_user_changed = True
-                else:
-                    focus_restore_ok = True
-        if safari_tab_restore is not None:
-            result["tab_restore_attempted"] = bool(safari_tab_restore.get("attempted"))
-            result["tab_restore_ok"] = bool(safari_tab_restore.get("ok"))
-            result["tab_restore_exact"] = bool(safari_tab_restore.get("exact"))
-            if safari_tab_restore.get("skipped_user_change"):
-                result["tab_restore_skipped_user_change"] = True
-            if safari_tab_restore.get("message"):
-                result["tab_restore_message"] = safari_tab_restore.get("message")
-            if safari_tab_restore.get("ok") is False:
-                return {
-                    **result, "ok": False, "reason_code": "TAB_RESTORE_FAILED",
-                    "error": "artifact upload succeeded but the previous Safari tab could not be restored",
-                    "automatic_retry": False,
-                }
-        if preserve_focus:
-            result["focus_restore_attempted"] = focus_restore_attempted
-            result["focus_restore_ok"] = focus_restore_ok
-            result["focus_restore_exact"] = bool(focus_restore_exact)
-            result["focus_user_changed"] = focus_user_changed
-            if focus_restore_message:
-                result["focus_restore_message"] = focus_restore_message
-            result["focus_preserved"] = bool(focus_restore_ok or focus_user_changed)
-            if focus_restore_attempted and focus_restore_ok is False:
-                return {
-                    **result, "ok": False, "reason_code": "FOCUS_RESTORE_FAILED",
-                    "error": "artifact upload succeeded but previous focus could not be restored",
-                    "automatic_retry": False,
-                }
-        return result
+    if preserve_focus:
+        result["focus_restore_attempted"] = focus_restore_attempted
+        result["focus_restore_ok"] = focus_restore_ok
+        result["focus_restore_exact"] = bool(focus_restore_exact)
+        result["focus_user_changed"] = focus_user_changed
+        if focus_restore_message:
+            result["focus_restore_message"] = focus_restore_message
+        result["focus_preserved"] = bool(focus_restore_ok or focus_user_changed)
+        if focus_restore_attempted and focus_restore_ok is False:
+            return {
+                **result, "ok": False, "reason_code": "FOCUS_RESTORE_FAILED",
+                "error": "artifact upload succeeded but previous focus could not be restored",
+                "automatic_retry": False,
+            }
+    return result
+
+
 
 
 # Advanced browser tools

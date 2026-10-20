@@ -25,6 +25,9 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Safari uploads ask you first [SEC-FOCUS-001]
+- When an agent wants to upload a file in Safari, Mac MCP asks you in a dialog that names the file, its size and the site. Allow brings Safari forward for that one upload (its Open window picks the exact registered file) and puts your window back; Don't Allow, or no answer within a minute, tells the agent you declined and it carries on with the rest of its work. Before, Safari uploads were always refused. Chrome uploads still happen in the background without asking.
+
 ### Fixes
 - A Mail draft made by `create_draft` keeps the message id it returns: Mail saved the draft again under a new id when the compose window closed, so `update_message` and `open_message` could no longer find it. A draft whose id Mail had not assigned yet no longer fails as `MAIL_DRAFT_FAILED` after the draft was in fact saved.
 

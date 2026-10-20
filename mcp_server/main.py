@@ -2390,7 +2390,10 @@ def create_app():
         description=(
             "Select an explicitly registered artifact into an HTML input[type=file] and verify browser file metadata. "
             "Requires artifact_id plus the matching path. Chrome uses the background debugger bridge DOM.setFileInputFiles. "
-            "Safari's native Open panel requires foreground capability and normal agent/MCP calls fail closed rather than stealing focus. "
+            "Safari picks files only in its native Open panel, which needs Safari in front: the owner is asked first "
+            "(a dialog naming the file and the site). On Allow, Safari comes forward for that one upload and the owner's "
+            "window goes back; on Don't Allow or no answer the result is owner_declined_upload: nothing was selected, "
+            "carry on with the rest of the task and do not ask again unless the owner wants to. "
             "This selects the file only; it does not submit the surrounding form."
         ),
     )

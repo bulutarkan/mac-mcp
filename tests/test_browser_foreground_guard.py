@@ -133,18 +133,59 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
         self.assert_foreground_denied(raised.exception, "chrome_url_js_bridge")
         osascript.assert_not_called()
 
+    def _safari_upload_with_answer(self, answer):
+        target = type("Target", (), {
+            "browser": "Safari", "window_index": 1, "tab_index": 1,
+            "tab_handle": "btab_fake", "native_id": None, "title": "Upload", "url": "https://upload.example.test/form",
+        })()
+        artifact = {"artifact_id": "artifact_fake", "path": "/tmp/fake.webp", "filename": "fake.webp", "size": 64848}
+        seen = {}
+
+        def upload(*args, **kwargs):
+            from mcp_server.foreground_guard import current_foreground_authorization
+            seen["grant"] = current_foreground_authorization()
+            return {"ok": True, "transport": "safari_native_open_panel"}
+        with patch("mcp_server.tools_browser.resolve_artifact", return_value=artifact), \
+             patch("mcp_server.tools_browser._tab_lease", return_value=nullcontext(target)), \
+             patch("mcp_server.tools_browser.ask_confirmation", return_value=answer) as ask, \
+             patch("mcp_server.tools_browser._safari_upload", side_effect=upload) as safari, \
+             patch("mcp_server.tools_browser._execute_js_for_target") as js, \
+             patch("mcp_server.tools_browser._run_osascript") as osascript:
+            try:
+                result = browser_upload_artifact(
+                    load_settings(), "Safari", "#file", "artifact_fake", "/tmp/fake.webp", tab_handle="btab_fake",
+                )
+            except HTTPException as exc:
+                result = exc
+        return result, ask, safari, js, osascript, seen
+
     # ASSURANCE: SEC-FOCUS-001
     def test_safari_upload_is_denied_before_artifact_or_tab_side_effect(self) -> None:
-        with patch("mcp_server.tools_browser.resolve_artifact") as resolve, \
-             patch("mcp_server.tools_browser._tab_lease") as lease, \
-             patch("mcp_server.tools_browser._run_osascript") as osascript:
-            with self.assertRaises(HTTPException) as raised:
-                browser_upload_artifact(
-                    load_settings(), "Safari", "#file", "artifact_fake", "/tmp/fake.pdf",
-                    tab_handle="btab_fake",
-                )
-        self.assert_foreground_denied(raised.exception, "browser_upload_artifact")
-        resolve.assert_not_called(); lease.assert_not_called(); osascript.assert_not_called()
+        # An agent still cannot bring Safari forward by itself: without the owner's Allow nothing reaches the page.
+        for answer in ({"ok": True, "confirmed": False, "decision": "denied"},
+                       {"ok": True, "confirmed": False, "decision": "timed_out", "timed_out": True},
+                       {"ok": False, "error": "dialog unavailable"}):
+            result, ask, safari, js, osascript, _ = self._safari_upload_with_answer(answer)
+            self.assertIsInstance(result, HTTPException)
+            self.assertEqual(403, result.status_code)
+            self.assertEqual("owner_declined_upload", result.detail["error"])
+            ask.assert_called_once()
+            safari.assert_not_called(); js.assert_not_called(); osascript.assert_not_called()
+
+    def test_the_owner_is_asked_with_the_file_and_the_site(self) -> None:
+        _, ask, _, _, _, _ = self._safari_upload_with_answer({"ok": True, "confirmed": False, "decision": "denied"})
+        question = ask.call_args.kwargs["question"]
+        self.assertIn("fake.webp", question)
+        self.assertIn("upload.example.test", question)
+        self.assertIn("63 KB", question)
+
+    def test_allow_grants_foreground_for_exactly_that_upload(self) -> None:
+        from mcp_server.foreground_guard import current_foreground_authorization
+        result, ask, safari, _, _, seen = self._safari_upload_with_answer({"ok": True, "confirmed": True, "decision": "confirmed"})
+        self.assertTrue(result["ok"])
+        safari.assert_called_once()
+        self.assertEqual("owner_approved_safari_upload", seen["grant"].source)
+        self.assertIsNone(current_foreground_authorization())  # the grant ends with the upload
 
     def test_chrome_background_upload_path_does_not_require_foreground_capability(self) -> None:
         with tempfile.TemporaryDirectory() as td:

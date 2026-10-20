@@ -4270,7 +4270,7 @@
       "post": {
         "operationId": "browser_upload_artifact",
         "summary": "browser_upload_artifact",
-        "description": "Select an explicitly registered artifact into an HTML input[type=file] and verify browser file metadata. Requires artifact_id plus the matching path. Chrome uses the background debugger bridge DOM.setFileInputFiles. Safari's native Open panel requires foreground capability and normal agent/MCP calls",
+        "description": "Select an explicitly registered artifact into an HTML input[type=file] and verify browser file metadata. Requires artifact_id plus the matching path. Chrome uses the background debugger bridge DOM.setFileInputFiles. Safari picks files only in its native Open panel, which needs Safari in front: the o",
         "requestBody": {
           "required": true,
           "content": {
