@@ -159,6 +159,13 @@ async def contract_tools(mcp: Any) -> List[Any]:
     return [ObservedFastMCP._with_idempotency_schema(tool) for tool in tools]
 
 
+def fallback_description(tool_name: str) -> str:
+    """The activity line (menu, Live Island, dashboard) for a call that gave no description: the tool in
+    words, not "REST v2 browser_upload_artifact"."""
+    words = str(tool_name).replace("_", " ").strip()
+    return f"{words[:1].upper()}{words[1:]} via the REST API"[:80]
+
+
 def install_routes(rest_app: Any, mcp: Any, auth_dependency: Callable[..., Any]) -> None:
     """Add POST /v2/<tool> for every v2 tool (mounted under /api)."""
     from mcp.server.fastmcp.exceptions import ToolError
@@ -180,7 +187,7 @@ def install_routes(rest_app: Any, mcp: Any, auth_dependency: Callable[..., Any])
                 return JSONResponse({"detail": contract["message"], "error": contract}, status_code=422)
             arguments = dict(body)
             if "description" not in arguments and tool_activity_setting("require_descriptions", False):
-                arguments["description"] = f"REST v2 {tool_name}"[:80]
+                arguments["description"] = fallback_description(tool_name)
             token = set_policy_context(request.state.policy_context)
             try:
                 result = await mcp.call_tool(tool_name, arguments)

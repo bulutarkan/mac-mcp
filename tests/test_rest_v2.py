@@ -49,6 +49,13 @@ class RestV2SchemaTests(unittest.TestCase):
         self.assertNotIn("idempotency_key", self.published["paths"]["/api/v2/read_file"]["post"]["requestBody"]
                          ["content"]["application/json"]["schema"]["properties"])
 
+    def test_a_call_without_description_gets_a_readable_activity_line(self) -> None:
+        self.assertEqual("Browser upload artifact via the REST API", rest_v2.fallback_description("browser_upload_artifact"))
+        self.assertLessEqual(len(rest_v2.fallback_description("x" * 200)), 80)
+        source = Path(rest_v2.__file__).read_text(encoding="utf-8")
+        self.assertIn('arguments["description"] = fallback_description(tool_name)', source)
+        self.assertNotIn('f"REST v2 {tool_name}"', source)
+
     def test_api_and_product_versions_are_separate(self) -> None:
         self.assertEqual(rest_v2.API_VERSION, self.published["info"]["version"])
         self.assertEqual(__version__, self.published["info"]["x-product-version"])

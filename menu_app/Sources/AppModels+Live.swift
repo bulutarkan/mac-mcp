@@ -25,6 +25,16 @@ struct LiveItem: Identifiable, Equatable {
     var actionTitle: String? = nil
 }
 
+/// Which island peeks stand for something still waiting on the owner.
+enum LivePeekQueue {
+    /// A question (security approval, Safari upload) or a review: shown only while it still waits.
+    static func isWaitingKind(_ id: String) -> Bool { id.hasPrefix("approval-") || id.hasPrefix("review") }
+
+    /// Answered, expired or reviewed meanwhile: leaves the queue and the screen at once (#25). Agent and
+    /// scheduled-task peeks report something that happened and keep their normal time.
+    static func isStale(_ id: String, waiting: Set<String>) -> Bool { isWaitingKind(id) && !waiting.contains(id) }
+}
+
 struct LivePeek: Identifiable, Equatable {
     let id: String
     let symbol: String

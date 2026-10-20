@@ -614,7 +614,14 @@ final class LiveIslandController {
                                      tone: .attention, actionTitle: item.actionTitle, target: item.target))
             }
         }
-        knownAttention = Set(waiting.map(\.id))
+        let waitingIDs = Set(waiting.map(\.id))
+        peekQueue.removeAll { LivePeekQueue.isStale($0.id, waiting: waitingIDs) }
+        if let shown = model.peek, LivePeekQueue.isStale(shown.id, waiting: waitingIDs) {
+            peekTask?.cancel()
+            peekTask = nil
+            showNextPeek()
+        }
+        knownAttention = waitingIDs
         attentionSeeded = true
         if islandContentChanged { rebuild() }
         refreshSlot()

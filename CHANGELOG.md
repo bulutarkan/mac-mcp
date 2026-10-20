@@ -25,6 +25,10 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Answered questions leave the Live Island; readable REST activity (roadmap #25)
+- A question answered (or expired) while the Live Island shows it as a peek leaves at once, and one waiting in the peek queue no longer comes up later. Before, the island kept saying "Waiting for your answer" until the peek's five seconds ran out. Agent and scheduled-task peeks keep their normal time.
+- A REST v2 call that gives no description shows the tool in words in the menu, the island and the dashboard ("Browser upload artifact via the REST API") instead of "REST v2 browser_upload_artifact".
+
 ### Agent cursor click effects and Live Island rows (roadmap #27, #23)
 - The desktop agent cursor and the browser Visual Companion (Safari and Chrome) show a click only for the event that clicked. A quick next step (a scroll, a read, another move) cancels a press still waiting for the arrow to arrive; before, its ripple played later at a spot the cursor had already left.
 - A "Waiting for your answer" row in the Live Island is plain text now. The question's own dialog already sits above every window, and the row did nothing when clicked while VoiceOver said it opened something. Rows that lead somewhere (an agent, Settings, the dashboard) still open it.
