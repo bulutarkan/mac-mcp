@@ -123,11 +123,11 @@ def prepare(agent_id: str, meta: Dict[str, Any], env: Dict[str, str], *, hook_di
         return bridge
 
     ttl = float(meta.get("timeout_s") or 3600) + 600
-    token = store.issue_hook_token(member_id, ttl)
-    folder = _private_dir(hook_dir)
-    headers = _private_file(folder / "team-hook-headers", f"{HOOK_HEADER}: {token}\n")
-    bridge.files.append(headers)
     try:
+        token = store.issue_hook_token(member_id, ttl)
+        folder = _private_dir(hook_dir)
+        headers = _private_file(folder / "team-hook-headers", f"{HOOK_HEADER}: {token}\n")
+        bridge.files.append(headers)
         if provider == "claude":
             settings = {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [
                 {"type": "command", "command": _curl_command(headers, hook_url(meta, "claude")),
@@ -267,10 +267,15 @@ def push_pending(member_id: str) -> None:
             earlier = []
         recent = (list(reversed(messages)) + [m for m in earlier if isinstance(m, dict)])[:PUSH_RECENT]
         temporary = target.with_name(f".{target.name}.{os.getpid()}")
-        _private_file(temporary, json.dumps(recent, ensure_ascii=False))
-        os.replace(temporary, recent_file)
-        _private_file(temporary, tm.note(recent) + "\n")
-        os.replace(temporary, target)
+        try:
+            _private_file(temporary, json.dumps(recent, ensure_ascii=False))
+            os.replace(temporary, recent_file)
+            _private_file(temporary, tm.note(recent) + "\n")
+            os.replace(temporary, target)
+        except OSError as exc:
+            # Not shown after all: the next push or the inbox brings them again.
+            LOG.warning("team message push file for %s not written: %s", member_id, exc)
+            tm.store().unclaim(member_id, [int(message["seq"]) for message in messages], channel="hook")
 
 
 def _opencode_plugin(headers: Path, url: str) -> str:
@@ -308,6 +313,10 @@ def trust_codex_hooks(*, codex_home: Path, hooks_path: Path, cwd: str, env: Dict
     except OSError as exc:
         return f"app_server_unavailable:{type(exc).__name__}"
     deadline = time.monotonic() + CODEX_TRUST_TIMEOUT_S
+    # readline() blocks while the app-server stays silent; ending it at the deadline makes it return.
+    watchdog = threading.Timer(CODEX_TRUST_TIMEOUT_S, proc.kill)
+    watchdog.daemon = True
+    watchdog.start()
 
     def call(request_id: int, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         assert proc.stdin is not None and proc.stdout is not None
@@ -344,11 +353,17 @@ def trust_codex_hooks(*, codex_home: Path, hooks_path: Path, cwd: str, env: Dict
     except Exception as exc:
         return f"{type(exc).__name__}"
     finally:
+        watchdog.cancel()
         proc.terminate()
         try:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
+        for pipe in (proc.stdin, proc.stdout):
+            try:
+                pipe.close()
+            except (OSError, ValueError, AttributeError):
+                pass
 
 
 def apply_args(provider: str, cmd: List[str], args: List[str], drop_flags: Optional[List[str]] = None) -> List[str]:

@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Team messages: fixes from a live team review
+- A message an agent already opened in its inbox is no longer shown to it again as a note after its next tool call.
+- A Codex agent in a team can no longer hang at start when Codex's app-server stays silent: setting up its message hook gives up after 20 seconds and the agent runs with its inbox.
+- A Goose agent no longer loses a message when Mac MCP cannot write its message file: the message comes again with the next one, and the sender is not failed.
+- A message hook whose setup fails half-way no longer leaves a live hook token behind.
+- Delivery records are removed with the old messages they belong to.
+
 ### Agent teams: add a task while the team runs (roadmap #74)
 - `agent_action(team_id, action="add_task", task={...})` adds one task to a team that is running or has finished, so new work found along the way stays in the same team instead of a new one. The task is checked like a `spawn_agents` task (id, prompt, `depends_on`, scope, resources, its own provider or model) and starts once its `depends_on` complete, with their results and, in an isolated Git team, their changes. Finished tasks are not run again.
 - The team's plan has a revision (`plan_revision` in the team summary); pass it as `expected_revision` and a change someone made in the meantime returns a conflict instead of both winning. Only the session that started the team (or its parent) can add tasks; the team-size limit, its deadline and its budgets still apply, and a cancelled team must be resumed first. A reviewer gate (`review_of`) is still set only when the team starts.

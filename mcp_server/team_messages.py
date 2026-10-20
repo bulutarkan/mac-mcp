@@ -342,6 +342,7 @@ class Store:
         conn.execute(
             "DELETE FROM messages WHERE room_id = ? AND seq <= (SELECT seq FROM messages WHERE room_id = ? "
             "ORDER BY seq DESC LIMIT 1 OFFSET ?)", (room_id, room_id, ROOM_HISTORY))
+        conn.execute("DELETE FROM deliveries WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.seq = deliveries.seq)")
 
     def set_lead(self, room_id: str, member_id: str, tasks: Iterable[str] = ()) -> None:
         with closing(self._connect()) as conn:
@@ -363,22 +364,24 @@ class Store:
     # -- receiving -----------------------------------------------------------
     @staticmethod
     def _for_member(conn: sqlite3.Connection, member: sqlite3.Row, *, after: int, limit: int, newest: bool = False,
-                    include_own: bool = False, unread: bool = False) -> List[sqlite3.Row]:
+                    include_own: bool = False, unread: bool = False, unshown: bool = False) -> List[sqlite3.Row]:
         """Messages for one member after a mark: broadcasts since it joined, and anything sent to it or its task.
 
-        unread leaves out messages the member opened one by one past its read mark (the latest view)."""
+        unread leaves out messages the member opened one by one past its read mark (the latest view);
+        unshown also those it was shown on any channel."""
         task = f"task:{member['task_id']}" if member["task_id"] else ""
         me = member["member_id"]
         own = " OR sender_id = ?" if include_own else ""
         opened = (" AND NOT EXISTS (SELECT 1 FROM deliveries WHERE deliveries.seq = messages.seq "
-                  "AND deliveries.member_id = ? AND deliveries.read_at IS NOT NULL)") if unread else ""
+                  "AND deliveries.member_id = ?" + ("" if unshown else " AND deliveries.read_at IS NOT NULL") + ")"
+                  ) if unread or unshown else ""
         return conn.execute(
             "SELECT messages.*, messages.sender_id = (SELECT lead_id FROM rooms WHERE rooms.room_id = messages.room_id) "
             "AS from_lead FROM messages WHERE room_id = ? AND seq > ? AND (sender_id != ?" + own + ") AND ("
             "(recipient_id IS NULL AND seq > ?) OR recipient_id IN (?, ?)" + own + ")" + opened + " ORDER BY seq "
             + ("DESC" if newest else "") + " LIMIT ?",
             (member["room_id"], after, me, *([me] if include_own else []), member["joined_seq"], me, task,
-             *([me] if include_own else []), *([me] if unread else []), limit)).fetchall()
+             *([me] if include_own else []), *([me] if unread or unshown else []), limit)).fetchall()
 
     def claim(self, member_id: str, *, channel: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Messages not yet shown to member_id in any of its rooms; marks them shown on this channel."""
@@ -392,7 +395,8 @@ class Store:
                 members = conn.execute("SELECT * FROM members WHERE member_id = ? AND left_at IS NULL",
                                        (member_id,)).fetchall()
                 for member in members:
-                    rows = self._for_member(conn, member, after=int(member["delivered_seq"]), limit=limit + 1)
+                    rows = self._for_member(conn, member, after=int(member["delivered_seq"]), limit=limit + 1,
+                                            unshown=True)
                     if not rows:
                         continue
                     more = len(rows) > limit
@@ -412,6 +416,20 @@ class Store:
                 conn.execute("ROLLBACK")
                 raise
         return out
+
+    def unclaim(self, member_id: str, seqs: Iterable[int], *, channel: str) -> None:
+        """Give back messages claim() handed out on channel but that never reached the member."""
+        seqs = sorted({int(seq) for seq in seqs})
+        if not seqs:
+            return
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executemany("DELETE FROM deliveries WHERE seq = ? AND member_id = ? AND channel = ? AND read_at IS NULL",
+                             [(seq, member_id, channel) for seq in seqs])
+            # Moving the mark back is safe: claim() skips what the member was shown in the meantime.
+            conn.execute("UPDATE members SET delivered_seq = MIN(delivered_seq, ?) WHERE member_id = ?",
+                         (seqs[0] - 1, member_id))
+            conn.execute("COMMIT")
 
     def inbox(self, member_id: str, *, room_id: Optional[str] = None, limit: int = 20,
               unread_only: bool = False) -> Dict[str, Any]:
