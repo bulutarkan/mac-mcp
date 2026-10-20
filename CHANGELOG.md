@@ -1,4 +1,6 @@
-## Unreleased
+## [2.3.0] - 2026-10-20
+
+**In short:** agents can use your other Macs and your iPhone; what they change in Notes, Reminders, Calendar and Mail can be undone; Safari uploads ask you first and uploads are checked for secrets inside the file; a browser click can wait for the file it downloads, Chrome opens tabs in the window you ask for and saved logins work inside sign-in frames; Claude Desktop keeps its connection and its key; and many reports that said "done" too early now tell the truth. Install with npm, `install.sh` or the package; existing installs get it with `mac-mcp update`.
 
 ### Your other Macs (#147)
 - **Settings › Devices** connects your Macs so an agent on one can use the others: run commands, read and change files, use apps and the browser there. No server in between: each Mac is reached at its own address (Cloudflare, ngrok or a custom HTTPS URL, whichever it uses).
@@ -38,14 +40,14 @@
 - `mac-mcp connect-config --client claude-desktop` no longer says Claude Desktop is unsupported; it points to `mac-mcp connect --client claude-desktop` and shows the entry it adds.
 
 ### Safari Visual Companion shows again
-- The Safari extension is signed sandboxed again: macOS ignored it after the app moved to this Mac's development signature, so agent cursor, click effects and the activity sidebar did not appear in Safari.
+- The Safari extension is signed sandboxed again: macOS ignored it when the app was signed with a development identity, so agent cursor, click effects and the activity sidebar did not appear in Safari.
 
 ### Agent teams and disk space (roadmap #47–#50)
 - A team task left half-started by a server stop takes over the agent that did start, instead of failing.
 - When an agent's worker dies, its CLI is stopped (then forced after a few seconds) before the agent counts as failed and frees its place.
 - An agent that fails before writing a typed result says its result is missing, instead of pending for ever.
 - A team held back by memory pressure starts again by itself once the pressure passes.
-- Finished agents drop the caches in their private provider folders (npm and CLI caches, temp files, Codex plugin copies and the copy of the Codex sign-in); conversations and settings stay. Here that freed 2.4 GB.
+- Finished agents drop the caches in their private provider folders (npm and CLI caches, temp files, Codex plugin copies and the copy of the Codex sign-in); conversations and settings stay. On one Mac that freed 2.4 GB.
 
 ### Live Island: a heads-up before the iPhone takes your pointer
 - The first time a chat or agent drives the iPhone (`iphone` `act`, directly or through `tool_invoke`), the Live Island opens a short note: "iPhone Mirroring · Each step briefly takes your pointer and keyboard." It shows once per session for about five seconds, asks nothing and stops nothing. Looking at or reading the iPhone screen (`see`, `read`, `find`) takes neither, so it shows no note.

@@ -24,29 +24,26 @@ or with Node.js: `npx @bulutarkan/mac-mcp install` (the same installer, [details
 
 **You stay in charge.** Permission profiles decide what may run and optional Server Approval asks before risky actions; you can pause observation, turn on private mode, or keep apps and sites out of reach. Mac MCP is not a sandbox: it acts with your macOS user's permissions, localhost is machine-local transport, not same-user isolation, and what your AI app reads is sent to that app's provider. See [Product and security terminology](docs/safety.md#product-and-security-terminology).
 
-## What's new in 2.2.1
+## What's new in 2.3.0
 
-2.2.1 brings everything since 2.2.0: agents that work together, more of your Mac within reach, and automation you can leave running.
+2.3.0 brings everything since 2.2.1: your other Macs and your iPhone within reach, changes in your apps you can take back, and browser work that reports what really happened.
 
-**Agents**
-- **Agents talk to each other while they work:** the agents of a team and the session that started it message each other with `team_messages`. Messages reach an agent after its next step even when it only uses its own CLI's tools, in all ten supported agents, and each is shown once. The lead can pass on a change of plan instead of restarting agents. On by default (Settings › Subagents › Messages Between Agents).
-- **A desktop of their own:** when you ask, an agent works on its own desktop in Mission Control with your real apps, while nothing appears on yours and your focus stays put.
-- **Seven more agents and AI apps:** Antigravity, pi, Cline, Kilo Code, Goose, Kimi Code and Grok Build, next to Codex, Claude Code and OpenCode. **Team History** in Settings › Agents shows how past teams went.
-- **An agent cursor on the desktop** shows where an agent clicks or types in another app's window, without moving yours.
+**Your devices**
+- **Your other Macs:** pair them once in Settings › Devices (a one-time code and a 6-digit check on both Macs) and an agent on one can work on the others with the `fleet` tool, under each Mac's own permissions. Full access, read only or status only, and a Busy switch.
+- **Your iPhone:** agents use it through iPhone Mirroring, with no app on the phone: see and read the screen, and with full access open apps, tap, type and scroll, a whole job in one call. Read only by default; the agent cursor shows where it touches.
 
-**Your Mac and your services**
-- **Messages:** read and search your conversations, read-only, without opening Messages.
-- **Connect a Service:** GitHub, Notion, Slack and Google Drive in a few clicks (Settings › MCP Servers), with keys in your Keychain. Your own MCP servers are offered to every AI app and agent too.
-- **Ask about your documents:** pick folders and ask about what is in them, with file and page; scanned PDFs and images are read on your Mac.
-- **More done in your Mac's own apps:** reminders, notes, free time, contacts and Shortcuts, plus a "Run Mac MCP Recipe" action for Shortcuts and Siri.
-- **Memory that learns on its own** and refuses secrets.
+**Safer changes**
+- **Undo in your apps:** what an agent changes in Notes, Reminders, Calendar and Mail can be undone like file changes, and never over an edit you made since.
+- **Uploads:** Safari uploads ask you first, naming the file and the site; every upload is checked for keys and passwords inside the file, not only by its name.
 
-**Automation**
-- **Scheduled Tasks:** AI tasks, scripts and recipes that run on a schedule or when a file arrives, with an optional usage limit, checks that the run made what it should, catch-up after sleep, and a report that says what went wrong and can resume or diagnose it.
+**Browser and agents**
+- **Downloads, windows and frames:** a click can wait for the file it downloads; Chrome opens tabs in the window you ask for; saved logins work inside sign-in frames (such as Apple's on icloud.com).
+- **Agent teams** survive a server restart mid-start, stop a crashed agent's CLI before freeing its place, and finished agents give back their cache space.
+- **The Live Island and activity bubble** say where each piece of work comes from, drop questions once answered, and warn once before the iPhone borrows your pointer.
 
-**Install and everyday use**
-- **Install with npm** (`npx @bulutarkan/mac-mcp install`), `install.sh` or the package; every install tells you when an update is ready.
-- **Settings** is easier to find your way in (grouped sidebar, Permissions & Safety in plain words, what agents can do in each app), the browser reads a whole page in one call, the CLI has a look of its own, and frequent paths do less needless work.
+**Claude Desktop and everyday use**
+- Claude Desktop keeps its connection after idle time and always uses the key in Mac MCP's `.env`; `mac-mcp connect --client claude-desktop` sets it up in one step.
+- Fewer false "done" reports (old repeating calendar events, Mail's sent check, iPhone app opening, CLI exit codes), and the Safari Visual Companion shows again.
 
 Earlier releases are in the [CHANGELOG](CHANGELOG.md).
 

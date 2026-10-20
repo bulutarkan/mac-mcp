@@ -84,7 +84,7 @@ class WrapperBehaviourTests(unittest.TestCase):
         return cli
 
     def test_help_and_version(self) -> None:
-        self.assertEqual("2.2.1", self.run_cli("--version").stdout.strip())
+        self.assertEqual("2.3.0", self.run_cli("--version").stdout.strip())
         self.assertIn("npx @bulutarkan/mac-mcp install", self.run_cli().stdout)
         self.assertEqual(2, self.run_cli("frobnicate").returncode)
 

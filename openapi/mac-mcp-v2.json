@@ -3,7 +3,7 @@
   "info": {
     "title": "Mac MCP REST API v2",
     "version": "2.0.0",
-    "x-product-version": "2.2.1",
+    "x-product-version": "2.3.0",
     "description": "Versioned REST surface generated from the Mac MCP tool contract: POST /api/v2/<tool> takes the MCP tool's input schema and runs through the same policy, approvals, telemetry, idempotency_key and error contract as MCP. Failures return {error: {code, stage, outcome, retry}}. The unversioned /api routes remain available unchanged."
   },
   "servers": [
