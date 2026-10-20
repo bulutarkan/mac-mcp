@@ -309,6 +309,14 @@ class HelperSourceTests(unittest.TestCase):
         self.assertLess(closing.index("IPHONE_APP_NOT_OPEN"), closing.index(".leftMouseDown"))
         self.assertIn("kVK_ANSI_1", closing)  # from Home, so ⌘2 opens the switcher rather than closing it
 
+    def test_open_app_that_lands_back_on_home_fails_the_step(self) -> None:
+        # Roadmap #40: Return with no such app closes Spotlight and the Home Screen comes back.
+        self.assertIn("homeBeforeOpen = try spotlight(mirror, &shot, name)", HELPER)
+        check = HELPER[HELPER.index("if let home = homeBeforeOpen {"):]
+        self.assertLess(check.index("nearlySame(differenceHash(after.image), home)"), check.index("IPHONE_APP_NOT_OPENED"))
+        self.assertLess(check.index("IPHONE_APP_NOT_OPENED"), check.index('done["opened"] = true'))
+        self.assertIn("(a ^ b).nonzeroBitCount <= 6", HELPER)
+
     def test_a_second_tap_only_when_the_first_changed_nothing(self) -> None:
         self.assertIn("if let openAt, !changed {", HELPER)
 

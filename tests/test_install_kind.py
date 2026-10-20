@@ -101,11 +101,28 @@ class InstallKindTests(unittest.TestCase):
         args = SimpleNamespace(check=True, json=True, repo=None, runtime=None, branch="main", remote="origin",
                                skip_restart=False, skip_deps=False)
         out = io.StringIO()
-        with patch("mcp_server.cli.check_update") as check, redirect_stdout(out):
+        release = {"tag_name": "v2.2.0-r2", "assets": [{"name": "a.pkg"}]}
+        with patch("mcp_server.cli.check_update") as check, redirect_stdout(out), \
+             patch.object(ik, "_fetch_latest_release", return_value=release):
             rc = cli.update(args)
         check.assert_not_called()
         self.assertEqual(0, rc)
         self.assertEqual("pkg", json.loads(out.getvalue())["install_kind"])
+
+    def test_cli_update_check_that_could_not_run_fails(self) -> None:
+        # Roadmap #63: a failed check is not "no update".
+        (self.state / "install-kind").write_text("pkg\n")
+        from mcp_server import cli
+        args = SimpleNamespace(check=True, json=True, repo=None, runtime=None, branch="main", remote="origin",
+                               skip_restart=False, skip_deps=False)
+        out = io.StringIO()
+        with patch.object(ik, "installed_release_id", return_value="stable-2.2.0-r2"), \
+             patch.object(ik, "_fetch_latest_release", side_effect=OSError("offline")), redirect_stdout(out):
+            rc = cli.update(args)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(1, rc)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["check_failed"])
 
     def test_cli_update_install_for_pkg_install_is_refused_with_guidance(self) -> None:
         (self.state / "install-kind").write_text("pkg\n")

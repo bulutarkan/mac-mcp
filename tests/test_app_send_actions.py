@@ -115,7 +115,7 @@ class MailSendTests(unittest.TestCase):
         return result, run, ask
 
     def test_confirmed_email_is_sent_and_found_in_sent(self) -> None:
-        result, run, ask = self._send(APPROVED, [self.RESOLVED, "SENT", "1"])
+        result, run, ask = self._send(APPROVED, [self.RESOLVED, "0", "SENT", "1"])
         self.assertTrue(result["ok"])
         self.assertTrue(result["sent"])
         self.assertTrue(result["verified"])
@@ -124,7 +124,10 @@ class MailSendTests(unittest.TestCase):
         self.assertEqual({"From": "Ada <ada@example.com>", "To": "bob@example.com", "Cc": "", "Subject": "Report"}, fields)
         self.assertEqual("Numbers attached.", ask.call_args.kwargs["body"])
         self.assertNotIn("send m", run.call_args_list[0].args[0])  # resolving the sender sends nothing
-        self.assertIn("if (send m) then", run.call_args_list[1].args[0])
+        self.assertIn("if (send m) then", run.call_args_list[2].args[0])
+        check = run.call_args_list[3].args[0]
+        self.assertIn('subject is "Report"', check)
+        self.assertIn('{"bob@example.com"}', check)  # the To addresses must match too
 
     def test_cancelled_email_never_reaches_the_send_script(self) -> None:
         result, run, _ = self._send(CANCELLED, [self.RESOLVED])
@@ -142,10 +145,19 @@ class MailSendTests(unittest.TestCase):
         self.assertEqual(1, run.call_count)
 
     def test_mail_that_is_not_yet_in_sent_is_reported_honestly(self) -> None:
-        result, _, _ = self._send(APPROVED, [self.RESOLVED, "SENT"] + ["0"] * 8)
+        result, _, _ = self._send(APPROVED, [self.RESOLVED, "0", "SENT"] + ["0"] * 8)
         self.assertTrue(result["sent"])
         self.assertFalse(result["verified"])
         self.assertEqual("accepted_by_mail", result["verification"])
+
+    def test_an_earlier_email_with_the_same_subject_is_not_proof(self) -> None:
+        # Roadmap #39: Sent already held one matching message before this send.
+        result, _, _ = self._send(APPROVED, [self.RESOLVED, "1", "SENT"] + ["1"] * 8)
+        self.assertTrue(result["sent"])
+        self.assertFalse(result["verified"])
+        self.assertEqual("accepted_by_mail", result["verification"])
+        result, _, _ = self._send(APPROVED, [self.RESOLVED, "1", "SENT", "1", "2"])
+        self.assertTrue(result["verified"])
 
     def test_missing_recipient_or_ambiguous_account_sends_nothing(self) -> None:
         result, run, ask = self._send(APPROVED, [], to="")

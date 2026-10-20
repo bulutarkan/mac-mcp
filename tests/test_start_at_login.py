@@ -91,6 +91,20 @@ class StartAtLoginPlistTests(unittest.TestCase):
         self.assertTrue(json.loads(out.getvalue())["start_at_login"])
         self.assertTrue((self.agents / f"{cli.SUPERVISOR_LABEL}.plist").is_file())
 
+    def test_autostart_on_fails_when_its_login_job_did_not_load(self) -> None:
+        # Roadmap #63: the setting is saved, but a job that did not load is not "on".
+        out = io.StringIO()
+        with patch.dict("os.environ", {"MAC_MCP_SUPERVISOR": "1"}), redirect_stdout(out):
+            code = cli.autostart(argparse.Namespace(state="on", json=False))
+        self.assertEqual(1, code)
+        self.assertIn("could not be loaded", out.getvalue())
+        out = io.StringIO()
+        with patch.dict("os.environ", {"MAC_MCP_SUPERVISOR": "1"}), \
+             patch.object(cli, "_supervisor_loaded", return_value=True), redirect_stdout(out):
+            code = cli.autostart(argparse.Namespace(state="on", json=False))
+        self.assertEqual(0, code)
+        self.assertIn("Start at login: on", out.getvalue())
+
     def test_autostart_status_changes_nothing(self) -> None:
         out = io.StringIO()
         with redirect_stdout(out):

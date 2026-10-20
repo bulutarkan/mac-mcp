@@ -136,6 +136,21 @@ class FreeTimeTests(unittest.TestCase):
         self.assertIsNone(more.expand_recurrence(start, hour, "FREQ=MONTHLY;BYSETPOS=-1;BYDAY=FR", *window))
         self.assertIsNone(more.expand_recurrence(start, hour, "FREQ=HOURLY", *window))
 
+    def test_repeats_that_began_years_ago_still_fill_the_window(self) -> None:
+        # Roadmap #38: the walk used to stop six years after the first occurrence.
+        hour = timedelta(hours=1)
+        window = (datetime(2026, 10, 1), datetime(2026, 10, 31, 23, 59))
+        biweekly = more.expand_recurrence(datetime(2018, 1, 2, 9), hour, "FREQ=WEEKLY;INTERVAL=2;BYDAY=TU", *window)
+        self.assertEqual([13, 27], [moment.day for moment, _ in biweekly])
+        self.assertEqual([10], [m.day for m, _ in more.expand_recurrence(datetime(2015, 3, 10, 9), hour,
+                                                                         "FREQ=MONTHLY", *window)])
+        self.assertEqual([5], [m.day for m, _ in more.expand_recurrence(datetime(2010, 10, 5, 9), hour,
+                                                                        "FREQ=YEARLY", *window)])
+        # COUNT still counts from the first occurrence: 500 weeks reach this October, 10 weeks ended in 2018.
+        self.assertEqual([6, 13, 20, 27], [m.day for m, _ in more.expand_recurrence(
+            datetime(2018, 1, 2, 9), hour, "FREQ=WEEKLY;COUNT=500", *window)])
+        self.assertEqual([], more.expand_recurrence(datetime(2018, 1, 2, 9), hour, "FREQ=WEEKLY;COUNT=10", *window))
+
     def test_bad_arguments(self) -> None:
         for kwargs in ({"hours": "18:00-09:00"}, {"hours": "9-5"}, {"duration_min": 2},
                        {"date_to": "2027-03-01"}):

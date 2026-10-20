@@ -89,7 +89,7 @@ class PlainPhase2(unittest.TestCase):
         with patch.object(cli, "install_kind", return_value="pkg"), \
                 patch("mcp_server.install_kind._fetch_latest_release", side_effect=OSError("offline in tests")):
             code, out, _ = self.capture(cli.update, argparse.Namespace(check=True, json=False))
-        self.assertEqual(0, code)
+        self.assertEqual(1, code)  # offline: the check could not run (roadmap #63)
         self.assertTrue(out.startswith("[mac-mcp update] "), out)
 
     def test_logs_and_list(self) -> None:

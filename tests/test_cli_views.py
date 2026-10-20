@@ -228,6 +228,19 @@ class StartStop(ThemedTestCase):
         plain.assert_called_once()
         themed.assert_not_called()
 
+    def test_uninstall_reports_a_server_that_did_not_stop(self) -> None:
+        # Roadmap #63: moving the files is no proof that Mac MCP stopped.
+        out = FakeTTY()
+        with patch.object(cli, "_stop_plain", return_value=1), \
+             patch("mcp_server.update_helper._stop_menu_app"), redirect_stdout(out):
+            self.assertFalse(cli._stop_for_uninstall(cli.Path("/nonexistent/Mac MCP.app")))
+        with patch.object(cli, "_stop_plain", side_effect=RuntimeError("boom")), \
+             patch("mcp_server.update_helper._stop_menu_app"), redirect_stdout(out):
+            self.assertFalse(cli._stop_for_uninstall(cli.Path("/nonexistent/Mac MCP.app")))
+        with patch.object(cli, "_stop_plain", return_value=0), \
+             patch("mcp_server.update_helper._stop_menu_app"), redirect_stdout(out):
+            self.assertTrue(cli._stop_for_uninstall(cli.Path("/nonexistent/Mac MCP.app")))
+
     def test_stop(self) -> None:
         out = FakeTTY()
         with patch.object(cli, "_record_intent"), \
@@ -693,7 +706,7 @@ class UpdateScreen(ThemedTestCase):
                 patch("mcp_server.install_kind._fetch_latest_release", side_effect=OSError("offline in tests")):
             code = cli.update(argparse.Namespace(check=True, json=False))
         text = " ".join(visible(out.getvalue()).split())
-        self.assertEqual(0, code)
+        self.assertEqual(1, code)  # offline: the check could not run (roadmap #63)
         self.assertIn("Download", text)
         self.assertIn("ℹ", text)
 

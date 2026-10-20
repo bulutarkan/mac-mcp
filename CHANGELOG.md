@@ -25,6 +25,12 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### No more false "done" reports (roadmap #38, #39, #40, #63)
+- Calendar free-time search counts repeating events that began more than six years ago; before, a weekly meeting started in 2018 left its slot looking free.
+- Mail's sent check matches the subject and every To address, and only counts a message that was not already in Sent before this send. An earlier email with the same subject no longer marks a new one as verified.
+- iPhone `open_app` fails with `IPHONE_APP_NOT_OPENED` when Spotlight finds no app by that name and the Home Screen comes back, instead of reporting success and letting the next steps run on the wrong screen.
+- CLI exit codes tell the truth: `mac-mcp uninstall` exits 1 and says so when the server or tunnel did not stop, `mac-mcp update --check` on a package install exits 1 (`"ok": false`) when the check could not reach GitHub, and `mac-mcp autostart on` exits 1 when its login job could not be loaded.
+
 ### Four privacy and security fixes (roadmap #31, #62, #54, #55)
 - Saved logins are no longer filled into sign-up or password-change forms. When a page shows only new-password fields, `browser_sign_in` fills nothing and says `not_a_sign_in_form`; before, the last fallback could pick such a field.
 - A REST key limited to some folders now stays inside them on the older `/api/...` routes too: `search_files` without a path searched the whole home folder, and `spotlight_search` was not filtered. Those routes now see the key's profile and folders, as `/mcp` and `/api/v2` already did.

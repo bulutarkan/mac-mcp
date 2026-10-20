@@ -203,7 +203,11 @@ def expand_recurrence(start: datetime, duration: timedelta, rule_text: str, wind
     month_day = int(rule.get("BYMONTHDAY") or start.day)
     out: List[Tuple[datetime, datetime]] = []
     seen = 0
-    for offset in range(0, 366 * 6):
+    # Whether a day is an occurrence depends only on its distance from the first one, so without COUNT the walk
+    # starts just before the window: a weekly meeting begun years ago still fills this week (roadmap #38).
+    # COUNT needs every earlier occurrence counted; it also ends the walk, as UNTIL and the window do.
+    first = 0 if count is not None else max(0, (window_start.date() - start.date()).days - duration.days - 1)
+    for offset in range(first, (window_end.date() - start.date()).days + 1):
         day = start.date() + timedelta(days=offset)
         moment = datetime.combine(day, start.time())
         if moment > window_end or (until and moment > until):

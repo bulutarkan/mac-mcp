@@ -1675,6 +1675,9 @@ def _mail_send(
         return {**_not_sent(approval), "to": to_list, "cc": cc_list, "subject": title}
     if _send_dry_run():
         return {"ok": True, "sent": False, "dry_run": True, "confirmation": approval, "to": to_list, "subject": title}
+    # Sent already holding this subject for these recipients must not count as proof of this send (roadmap #39).
+    sent_before = _mail_sent_count(title, to_list, _MAIL_SENT_WINDOW_S)
+    sent_at = time.monotonic()
     send = head + [
         "    set m to make new outgoing message with properties "
         f"{{subject:{_apple_string(title)}, content:{_apple_string(text)}, sender:senderText, visible:false}}",
@@ -1697,19 +1700,11 @@ def _mail_send(
                               outcome_unknown=True, automatic_retry=False) from exc
     if status != "SENT":
         raise AppAdapterError("MAIL_SEND_REFUSED", "Mail did not accept the message for sending; nothing was sent.")
-    # Mail sends in the background; look for it in Sent for a short while.
-    check = "\n".join([
-        'tell application "Mail"',
-        "    set cutoff to (current date) - 300",
-        f"    return count of (messages of sent mailbox whose subject is {_apple_string(title)} and date sent > cutoff)",
-        "end tell",
-    ])
+    # Mail sends in the background; look for it in Sent for a short while, over the same span as the count above.
     in_sent = False
     for _ in range(8):
-        try:
-            in_sent = int(_run(check, timeout_s=10, code="MAIL_SENT_CHECK_FAILED") or 0) > 0
-        except (AppAdapterError, ValueError):
-            in_sent = False
+        now = _mail_sent_count(title, to_list, _MAIL_SENT_WINDOW_S + int(time.monotonic() - sent_at) + 1)
+        in_sent = now is not None and now > (sent_before or 0)
         if in_sent:
             break
         time.sleep(1.5)
@@ -1718,6 +1713,36 @@ def _mail_send(
         "confirmation": approval, "account": account_name, "from": sender, "to": to_list, "cc": cc_list, "subject": title,
         "automatic_retry": False,
     }
+
+
+_MAIL_SENT_WINDOW_S = 600
+
+
+def _mail_sent_count(subject: str, to_list: List[str], seconds_back: int) -> Optional[int]:
+    """Sent messages from the last seconds_back with this subject and every one of these To addresses."""
+    wanted = "{" + ", ".join(_apple_string(item) for item in to_list) + "}"
+    script = "\n".join([
+        'tell application "Mail"',
+        f"    set cutoff to (current date) - {int(seconds_back)}",
+        "    set found to 0",
+        f"    repeat with m in (messages of sent mailbox whose subject is {_apple_string(subject)} and date sent > cutoff)",
+        "        set addrs to {}",
+        "        repeat with r in (to recipients of m)",
+        "            set end of addrs to (address of r as text)",
+        "        end repeat",
+        "        set matched to true",
+        f"        repeat with wantedAddress in {wanted}",
+        "            if addrs does not contain (wantedAddress as text) then set matched to false",
+        "        end repeat",
+        "        if matched then set found to found + 1",
+        "    end repeat",
+        "    return found",
+        "end tell",
+    ])
+    try:
+        return int(_run(script, timeout_s=10, code="MAIL_SENT_CHECK_FAILED") or 0)
+    except (AppAdapterError, ValueError):
+        return None
 
 
 def _messages_send(

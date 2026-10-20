@@ -689,7 +689,12 @@ func tap(_ at: CGPoint, times: Int = 1, hold: useconds_t = 0) {
 }
 
 /// Home, then Spotlight with `query` typed and its results shown (Return opens the top one).
-func spotlight(_ mirror: Mirror, _ shot: inout Shot, _ query: String) throws {
+/// Two screens that differ only in a ticking clock or a widget: a few bits of their difference hash.
+func nearlySame(_ a: UInt64, _ b: UInt64) -> Bool { (a ^ b).nonzeroBitCount <= 6 }
+
+/// Opens Spotlight from the Home Screen and types the query; returns the Home Screen's hash.
+@discardableResult
+func spotlight(_ mirror: Mirror, _ shot: inout Shot, _ query: String) throws -> UInt64 {
     press(CGKeyCode(kVK_ANSI_1), modifiers: [command_])
     shot = waitStill(mirror, limit: 0.8)
     let home = differenceHash(shot.image)
@@ -699,6 +704,7 @@ func spotlight(_ mirror: Mirror, _ shot: inout Shot, _ query: String) throws {
     shot = waitStill(mirror, limit: 0.8, minimum: 0.15)
     _ = type(query)
     shot = waitStill(mirror, limit: 1.2, minimum: 0.25)
+    return home
 }
 
 /// One step of a batch. Returns what it did; throws when it could not.
@@ -707,6 +713,7 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
     var done: [String: Any] = ["type": kind]
     var settleFor = 1.2
     var openAt: CGPoint?  // open: true taps here again when the first tap only selected
+    var homeBeforeOpen: UInt64?  // open_app: the Home Screen, to tell an opened app from a search that found none
     let before = differenceHash(shot.image)
     switch kind {
     case "tap", "double_tap", "long_press":
@@ -878,7 +885,7 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
         }
         announce("Opening an app")
         // Each step waits for the screen to answer instead of a fixed time: home, Spotlight open, results shown.
-        try spotlight(mirror, &shot, name)
+        homeBeforeOpen = try spotlight(mirror, &shot, name)
         press(CGKeyCode(kVK_Return))
         settleFor = 2.5
     case "wait":
@@ -931,6 +938,16 @@ func run(_ step: [String: Any], _ mirror: Mirror, _ shot: inout Shot) throws -> 
     }
     shot = after
     done["changed"] = changed
+    if let home = homeBeforeOpen {
+        // With no app of that name, Return closes Spotlight and the Home Screen comes back: the job must not go on
+        // as if the app were open (roadmap #40).
+        if nearlySame(differenceHash(after.image), home) {
+            let name = step["app"] as? String ?? ""
+            throw StepError(code: "IPHONE_APP_NOT_OPENED",
+                            message: "“\(name)” did not open: Spotlight found no app by that name and the iPhone is back on the Home Screen. Use the name shown under its icon.")
+        }
+        done["opened"] = true
+    }
     return done
 }
 

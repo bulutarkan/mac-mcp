@@ -784,17 +784,24 @@ def autostart(args: argparse.Namespace) -> int:
         "job": str(_supervisor_plist_path()),
         "loaded": _supervisor_loaded(),
     }
+    # Turning it on saves the setting and loads the login job; a job that did not load is not "on" (roadmap #63).
+    # MAC_MCP_SUPERVISOR=0 and a non-default install have no job on purpose.
+    not_loaded = (desired == "on" and not report["loaded"] and _supervisor_enabled()
+                  and STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve())
     if style is not None:
         from .cli_views import render_autostart
-        render_autostart(style, report["start_at_login"], supervisor_warnings)
-        return 0
+        render_autostart(style, report["start_at_login"], supervisor_warnings, loaded=not not_loaded)
+        return 1 if not_loaded else 0
     if getattr(args, "json", False):
         print(json.dumps(report, sort_keys=True))
+    elif not_loaded:
+        print("Start at login: saved as on, but its login job could not be loaded, so nothing starts at login yet. "
+              "Try again, or check: mac-mcp doctor")
     elif report["start_at_login"]:
         print("Start at login: on (a server you left running starts again when you log in).")
     else:
         print("Start at login: off (run 'mac-mcp start' or use the menu bar app after you log in).")
-    return 0
+    return 1 if not_loaded else 0
 
 
 def _uninstall_app_path() -> Path:
@@ -810,10 +817,12 @@ def _trash_root() -> Path:
     return Path.home() / ".Trash"
 
 
-def _stop_for_uninstall(app: Path) -> None:
+def _stop_for_uninstall(app: Path) -> bool:
+    """Stop the server, tunnels and menu app; False when the server or a tunnel did not stop."""
+    stopped = False
     try:
         # The plain stop: uninstall prints its own report, without a second header in it.
-        _stop_plain(argparse.Namespace(timeout=10, force=True, keep_intent=False))
+        stopped = _stop_plain(argparse.Namespace(timeout=10, force=True, keep_intent=False)) == 0
     except Exception as exc:  # keep going: the parts are moved to the Trash either way
         print(f"Warning: Mac MCP did not stop cleanly ({type(exc).__name__}).")
     from .update_helper import _stop_menu_app
@@ -821,6 +830,11 @@ def _stop_for_uninstall(app: Path) -> None:
         _stop_menu_app(app)
     except Exception:
         pass
+    return stopped
+
+
+_NOT_STOPPED = ("Mac MCP's server or tunnel did not stop, so it may still be running from the Trash. "
+                "Check with: mac-mcp status")
 
 
 PACKAGE_RECEIPT_ID = "com.bulutarkan.mac-mcp.pkg"
@@ -862,8 +876,9 @@ def uninstall(args: argparse.Namespace) -> int:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     trash_root = _trash_root()
     summary = lifecycle.format_plan(items, trash_folder=trash_root / f"Mac MCP uninstall {stamp}")
+    stopped = True
     if STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve():
-        _stop_for_uninstall(app)
+        stopped = _stop_for_uninstall(app)
         for label in (SUPERVISOR_LABEL, CLOUDFLARE_LAUNCHD_LABEL):
             _launchctl_run("bootout", _launchctl_target(label), capture=True)
     else:
@@ -876,7 +891,9 @@ def uninstall(args: argparse.Namespace) -> int:
     print(summary)
     for row in failed:
         print(f"Could not move {row['path']} ({row.get('error')}); remove it by hand if you want it gone.")
-    return 1 if failed else 0
+    if not stopped:
+        print(_NOT_STOPPED)
+    return 1 if failed or not stopped else 0
 
 
 def _uninstall_command(args: argparse.Namespace) -> str:
@@ -903,11 +920,13 @@ def _uninstall_themed(args: argparse.Namespace, style, items: list, app: Path) -
     folder = trash_root / f"Mac MCP uninstall {stamp}"
     style.header("uninstall")
     steps = Steps(style)
+    stopped = True
     if STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve():
-        with steps.step("Stopped Mac MCP", failed_label="Stop Mac MCP"):
-            _stop_for_uninstall(app)
+        with steps.step("Stopped Mac MCP", failed_label="Stop Mac MCP") as stop_state:
+            stopped = _stop_for_uninstall(app)
             for label in (SUPERVISOR_LABEL, CLOUDFLARE_LAUNCHD_LABEL):
                 _launchctl_run("bootout", _launchctl_target(label), capture=True)
+            stop_state.ok = stopped
     else:
         # launchd labels are shared with the default install; unloading them from here
         # would stop the owner's real server and tunnel.
@@ -941,6 +960,10 @@ def _uninstall_themed(args: argparse.Namespace, style, items: list, app: Path) -
     if failed:
         count = len(failed)
         style.summary("error", f"{_plural(count, 'part')} could not move — remove {'it' if count == 1 else 'them'} by hand")
+        return 1
+    if not stopped:
+        style.summary("error", "Moved to the Trash, but Mac MCP's server or tunnel did not stop",
+                      next_command="mac-mcp status")
         return 1
     style.summary("ok", "Mac MCP is removed", note=home_path(folder))
     return 0
@@ -3082,6 +3105,8 @@ def update(args: argparse.Namespace) -> int:
                 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             else:
                 print(f"[mac-mcp update] {payload['message']} {payload['download_url']}")
+            if args.check and payload.get("check_failed"):
+                return 1
             return 0 if args.check else 3
         validate_update_state()
         if args.check:
@@ -3144,7 +3169,10 @@ def _update_themed(args: argparse.Namespace, style) -> int:
     headed = False  # whether a screen's header is drawn, so an error does not draw a second
     try:
         if install_kind() == "pkg":
-            render_package_update(style, package_update_payload(check_only=bool(args.check)))
+            payload = package_update_payload(check_only=bool(args.check))
+            render_package_update(style, payload)
+            if args.check and payload.get("check_failed"):
+                return 1
             return 0 if args.check else 3
         validate_update_state()
         if args.check:

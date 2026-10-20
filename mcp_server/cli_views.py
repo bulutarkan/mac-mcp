@@ -372,9 +372,11 @@ def render_package_update(style: Style, payload: dict) -> None:
     style.summary("info", str(payload.get("message") or ""))
 
 
-def render_autostart(style: Style, on: bool, warnings: str = "") -> None:
+def render_autostart(style: Style, on: bool, warnings: str = "", loaded: bool = True) -> None:
     style.header("autostart")
-    if on:
+    if on and not loaded:
+        style.rows([("warn", "Start at login", "saved as on", "its login job could not be loaded")])
+    elif on:
         style.rows([("ok", "Start at login", "on", "a server you left running starts again when you log in")])
     else:
         style.rows([("info", "Start at login", "off", "start it with mac-mcp start or the menu bar app")])
@@ -383,7 +385,9 @@ def render_autostart(style: Style, on: bool, warnings: str = "") -> None:
         style.write()
     for line in lines:
         note_lines(style, line, "warn")
-    if on:
+    if on and not loaded:
+        style.summary("error", "Nothing starts at login yet", next_command="mac-mcp doctor")
+    elif on:
         style.summary("ok", "Start at login is on")
     else:
         style.summary("ok", "Start at login is off", next_command="mac-mcp autostart on")

@@ -87,7 +87,8 @@ def package_update_payload(check_only: bool = True) -> Dict[str, Any]:
     try:
         release = _fetch_latest_release()
     except (OSError, ValueError) as exc:
-        payload.update(check_failed=True, message=_FAILED_MESSAGE, error=type(exc).__name__)
+        # Not "ok": a check that could not run must not read as "no update" (roadmap #63).
+        payload.update(ok=False, check_failed=True, message=_FAILED_MESSAGE, error=type(exc).__name__)
         return payload
     tag = str(release.get("tag_name") or "")
     assets = release.get("assets") if isinstance(release.get("assets"), list) else []
