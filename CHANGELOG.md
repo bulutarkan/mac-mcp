@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Agent teams: no skipped messages, and a guide to working together (roadmap #73, #77)
+- An agent reading its team inbox gets the oldest unread messages first, a page at a time: with more unread than the page holds, the rest stay unread and `has_more` says so. Before, the newest ones were shown and the older ones were marked read without ever being shown. A note that arrives on its own says when more are waiting.
+- Mac MCP ships a team coordination guide (the `mac-mcp-team-coordination` skill): when to message a teammate, whom, which kind, how to read the inbox and what not to send. Every agent can load it with `skill_get`, whatever CLI it runs in, and each team task now starts by pointing to it. A skill of yours with the same name wins.
+
 ### The agent's browser tab glows while you look elsewhere (roadmap #79)
 - When an agent works in a Safari or Chrome tab you are not on, that tab glows briefly in the tab bar each time it acts: a pale blue wave sweeps across it twice and fades, about 1.6 s. The tab you are on never glows, and switching to the agent's tab stops it at once.
 - The glow follows its tab while it plays and comes back above the browser after you click in it; when tabs open or close beside it, that pulse stops and the next one finds the tab again. It shows on whichever desktop the browser is on, ignores the mouse, never takes focus and stays out of screenshots. Reduce Motion gets a still tint.

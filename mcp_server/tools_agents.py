@@ -1198,8 +1198,21 @@ def _quality_gate_result(text: str) -> Tuple[Optional[str], str]:
     return decision, truncate(feedback, TEAM_RESULT_LIMIT)[0]
 
 
+TEAM_COORDINATION_SKILL = "mac-mcp-team-coordination"
+
+
+def _team_skill_preamble(team: Dict[str, Any], task: Dict[str, Any]) -> str:
+    """First line of a team task (#77): where the coordination guide is, before the task itself."""
+    if not (team.get("messaging") or {}).get("enabled"):
+        return ""
+    return (f"You are task {task.get('id')} of a Mac MCP team. When you need to tell a teammate something, ask a "
+            f"question, report a blocker or read messages, first load the guide with the Mac MCP tool skill_get "
+            f"(name=\"{TEAM_COORDINATION_SKILL}\"); the short rules at the end of this task apply either way.")
+
+
 def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict[str, Dict[str, Any]]) -> str:
-    pieces = [str(task.get("prompt") or "").strip()]
+    preamble = _team_skill_preamble(team, task)
+    pieces = ([preamble] if preamble else []) + [str(task.get("prompt") or "").strip()]
     dependency_rows: List[Tuple[str, Dict[str, Any]]] = []
     for dep_id in task.get("depends_on") or []:
         dep = task_map.get(str(dep_id))

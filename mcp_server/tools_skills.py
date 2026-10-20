@@ -242,6 +242,19 @@ def _cli_skill_paths() -> List[Path]:
     return [discovered[name] for name in sorted(discovered)]
 
 
+# Skills that ship with Mac MCP (the team coordination guide, #77): read-only, found by every agent through
+# skill_get, and the lowest precedence, so an owner's skill of the same name always wins.
+BUNDLED_SKILLS_DIR = Path(__file__).resolve().with_name("skills")
+
+
+def _bundled_skill_paths() -> List[Path]:
+    if os.getenv("MAC_MCP_SKILLS_DIR") and os.getenv("MAC_MCP_BUNDLED_SKILLS") != "1":
+        return []  # isolated test state sees only its own skills
+    if not BUNDLED_SKILLS_DIR.is_dir():
+        return []
+    return [path.resolve() for path in sorted(BUNDLED_SKILLS_DIR.glob(f"*/{SKILL_FILE}")) if path.is_file()]
+
+
 def _registered_paths(conn: sqlite3.Connection) -> List[Path]:
     paths = []
     for row in conn.execute("SELECT location FROM registrations ORDER BY location"):
@@ -271,9 +284,11 @@ def _unchanged_row(path: Path, managed: bool, by_location: Dict[str, sqlite3.Row
 def _sync_index(root: Path, conn: sqlite3.Connection, *, allow_start: bool = False) -> Dict[str, Any]:
     diagnostics: List[Dict[str, str]] = []
     expected: Dict[str, Tuple[Path, bool]] = {}
-    # Registered skills override CLI defaults; Mac MCP-managed skills win all name collisions.
+    # Registered skills override CLI defaults; Mac MCP-managed skills win all name collisions; skills that ship
+    # with Mac MCP lose them all.
     candidates = (
-        [(p, False) for p in _cli_skill_paths()]
+        [(p, False) for p in _bundled_skill_paths()]
+        + [(p, False) for p in _cli_skill_paths()]
         + [(p, False) for p in _registered_paths(conn)]
         + [(p, True) for p in _managed_paths(root)]
     )
