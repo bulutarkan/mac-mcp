@@ -1,4 +1,6 @@
-## Unreleased
+## 2.3.0 r2 - 2026-10-20
+
+**In short:** a signed checkpoint on the 2.3.0 line; the version stays 2.3.0. A security fix: delegated Codex agents can no longer reach your own ChatGPT connectors (a Mac MCP one among them) past their sandbox. Agent teams can take a new task while they run, give each task its own provider and model, pick up where they stopped and coordinate with a guide that ships with Mac MCP; team messages are no longer repeated or lost; and the agent's browser tab glows while you look elsewhere. Update with `mac-mcp update` or the new package.
 
 ### Browser tabs: the glow stays on the agent's tab, and Chrome tab lists survive a closing tab
 - The tab glow no longer lands on your own tab when the agent's tab closes while it plays and you have another tab with the same title; it stops instead.

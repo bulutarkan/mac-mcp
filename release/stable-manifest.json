@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "68af3977182afbf9a5b8275c43e57325f7060cb5",
+  "base_commit": "51690432c81c957bf5e8cffdc7b6b6c968294662",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -97,8 +97,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "31aa06b5ce315f8965435cb907e45c63aa908d93a143ec0cf6f1310fbd8fb042",
-      "size": 130335
+      "sha256": "9c8c23fc62216648b5a8e6ceb0e5f6d0f91d0e6668493ae468dc72d9e57ece09",
+      "size": 135987
     },
     {
       "mode": "100644",
@@ -295,8 +295,8 @@
     {
       "mode": "100644",
       "path": "docs/agents-and-tasks.md",
-      "sha256": "926a6f36df57957448d280eceb2a07de31063a6dbc3ce8251301b07b141e0111",
-      "size": 44024
+      "sha256": "be1c6b396085aba4cd85aa8ece3f4ee3614de606aa42e678794a2fd4a376d5c5",
+      "size": 45245
     },
     {
       "mode": "100644",
@@ -463,8 +463,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/agent_message_bridge.py",
-      "sha256": "8bf97f2056e2e376bee43fb7c5479cdc5c93a1e2e23ba897a39ff64e8eed7737",
-      "size": 20614
+      "sha256": "c555f5fd8ee568fb7ed39db44ce6c96b6d096af6f0d50c1b0cb38dee25bc19db",
+      "size": 21378
     },
     {
       "mode": "100644",
@@ -642,9 +642,15 @@
     },
     {
       "mode": "100644",
+      "path": "mcp_server/browser_tab_frame.py",
+      "sha256": "eb18639622f23af47be4e96b1d8a31ea559da96e31dde289cf963443368d7ab4",
+      "size": 6606
+    },
+    {
+      "mode": "100644",
       "path": "mcp_server/browser_tabs.py",
-      "sha256": "97602868958e00f4a0a12969c726ba45d7ab5e82057f8743ac7c1bdaa55ad585",
-      "size": 35541
+      "sha256": "5b947d0aece9ac89bb4aacbcea3fd6a5df200cb0ff26bf2544c2433eb104ed67",
+      "size": 35676
     },
     {
       "mode": "100644",
@@ -781,8 +787,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/dashboard_routes.py",
-      "sha256": "4c7ab890eb9e7f1c88ee543cbe4918eedefc43ece7c6f2f0b5f174f22b61a94e",
-      "size": 92522
+      "sha256": "5daac0e21b3dabc4a42418aaa16e3f9f913e67e93ab5dbbdc9185ad6bbf3cc2a",
+      "size": 93691
     },
     {
       "mode": "100644",
@@ -955,8 +961,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/main.py",
-      "sha256": "c708420fcbb36ae33299d3215742da19a9639d58d3c1d730bcea9218c0a8b696",
-      "size": 192956
+      "sha256": "4eaf8099e11683e8c885e6ebedd326808ee18ade671597081a21ce6baa27547e",
+      "size": 193814
     },
     {
       "mode": "100644",
@@ -1117,8 +1123,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/privacy_inventory.py",
-      "sha256": "1c9e9ae3cd7e6fb0be839790868d1d54f6fc000d28db056ac82eacc3a86c1c51",
-      "size": 13953
+      "sha256": "4beb5dc31646ff538327bd3c95786b7c26731965e01f3f8df3864855dccff42b",
+      "size": 14078
     },
     {
       "mode": "100644",
@@ -1320,6 +1326,12 @@
     },
     {
       "mode": "100644",
+      "path": "mcp_server/skills/mac-mcp-team-coordination/SKILL.md",
+      "sha256": "d179c2bb6e488c14f3304a0c4b1ba44ab4ffb1c4620d31cd701e225b513d20a2",
+      "size": 3372
+    },
+    {
+      "mode": "100644",
       "path": "mcp_server/spaces_helper.swift",
       "sha256": "05ffdbf6702e880699d9cd600769abebee5b552a644721952fe379e81740bde1",
       "size": 45154
@@ -1357,8 +1369,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/team_messages.py",
-      "sha256": "565df2e2ce0f92d6e21405b861c984e17af693223ceb11c29c8c913de4059d8f",
-      "size": 30842
+      "sha256": "27b50d88ebb03867ba09e91910cf74c0e2640359401964cf708f28a255992dc3",
+      "size": 34535
     },
     {
       "mode": "100644",
@@ -1393,8 +1405,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_agents.py",
-      "sha256": "9126d545962708e3edff415529053f0060302800aa307e26e4e113d10e9509d7",
-      "size": 377201
+      "sha256": "968121cc6b6fb150a6a3de9001b9e6b6b41d1397c49937be9e70d77206dbafbc",
+      "size": 392856
     },
     {
       "mode": "100644",
@@ -1459,8 +1471,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_skills.py",
-      "sha256": "292dbc506a7b31841f02c0164c547833ecaf2cf9f7463f19cb6ca57de6b56c8f",
-      "size": 21503
+      "sha256": "c39f508fc006f7c50f7a00ed182db611bcbb01fe60245ca25d8a47fd958b4d34",
+      "size": 22239
     },
     {
       "mode": "100644",
@@ -1471,8 +1483,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_team_messages.py",
-      "sha256": "2813c3b25fac6e357b5037829b7f10ab38df8a1e9aeafbc0418e15e589391eea",
-      "size": 5654
+      "sha256": "3f680e1bc4246c365959d254679cf5fd133aa10dd22d14d2b5d9124435369226",
+      "size": 5711
     },
     {
       "mode": "100644",
@@ -1699,7 +1711,7 @@
     {
       "mode": "100644",
       "path": "menu_app/Info.plist",
-      "sha256": "f77f7c0f39a26d1b87ac30fef8eee62316c21af00805c48a3783915b3b0dd479",
+      "sha256": "fd8db0bba66ce825465f697651ba58561da8f29aa2551cc7d62aef0e56b1b895",
       "size": 917
     },
     {
@@ -1807,7 +1819,7 @@
     {
       "mode": "100644",
       "path": "menu_app/SafariExtension/Info.plist",
-      "sha256": "15745d2c575d293b4539e781a263397cbbcd78146f62e6e886559950a9e279bf",
+      "sha256": "fb7fbb80317d4ba6b219fbcf9429c5c5f65e3324e881aefd358b4e4d6a0d0a0f",
       "size": 985
     },
     {
@@ -1861,8 +1873,8 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/AppModels+Dashboard.swift",
-      "sha256": "67834c2400062a94a9baeb54b1143ff338d9fed653c0758b87a00a7b73071d60",
-      "size": 14980
+      "sha256": "7b5e66b755f8366ed44149d37bf9a8c1f1c33785096834653b60dd4089caf581",
+      "size": 16317
     },
     {
       "mode": "100644",
@@ -1891,8 +1903,8 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/AppState.swift",
-      "sha256": "a79d06ad4aeb67665e5bb640888d1f6df0c347a66108abdb72bba1ab55eef955",
-      "size": 130601
+      "sha256": "c8a7ee21832fc73e42cc53ada3a37046b59ce5168d3eb3bf9840def5bc969069",
+      "size": 133497
     },
     {
       "mode": "100644",
@@ -1905,6 +1917,12 @@
       "path": "menu_app/Sources/AutomationPane.swift",
       "sha256": "6ce215faf4905fd48ee4315989bb6609faff520ce1e5750c31bcabcf3b5c6a4b",
       "size": 27022
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/BrowserTabPulse.swift",
+      "sha256": "6ef35266b51a67ad6c9f9971ab1d3da4bb66ea7500273c532e5f54b1d76e98f0",
+      "size": 8638
     },
     {
       "mode": "100644",
@@ -2083,14 +2101,14 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/SettingsStore.swift",
-      "sha256": "ee73def6ca2b8b09266d6fcf1015df6162e35588a052718f359bc8fe136e2715",
-      "size": 24018
+      "sha256": "85590b0a1a9493fd7f339c4fe1968dd63f77da20d537841c95bad48432866f6c",
+      "size": 24339
     },
     {
       "mode": "100644",
       "path": "menu_app/Sources/SettingsView.swift",
-      "sha256": "cccfd706c18b0f1a20c60ef71b5641e1d4e58eb918be809bcd141eb311228a98",
-      "size": 185693
+      "sha256": "db7f41b786c9aca700e45e7f86901a47d26102bbf4c0ec10fec7d32407c78096",
+      "size": 187078
     },
     {
       "mode": "100644",
@@ -2131,8 +2149,8 @@
     {
       "mode": "100755",
       "path": "menu_app/build_app.sh",
-      "sha256": "24eaf3eb5b140cc35c63260386d6eba6ddb62767367e4d2fa930f209dab10b13",
-      "size": 11294
+      "sha256": "bd73c94bbdd9522a32387e4bae20df67681426076817874c5b9871c0b29f69be",
+      "size": 11342
     },
     {
       "mode": "100755",
@@ -2425,8 +2443,8 @@
     {
       "mode": "100644",
       "path": "tests/_menu_sources.py",
-      "sha256": "df0d28f10e1c09402c743833677c4a119f50fc65e3bade48195f1d7f5e2735b4",
-      "size": 1130
+      "sha256": "21d1ea081d479bca6b6e668fda9e03fdb36c235451857aafaeb60d1a4af8f53c",
+      "size": 1163
     },
     {
       "mode": "100644",
@@ -2437,8 +2455,8 @@
     {
       "mode": "100644",
       "path": "tests/_tiers.py",
-      "sha256": "f1adba96489093ab9c7b16054fcce02b653e76180e6e9f5a19c316971e0f8025",
-      "size": 1126
+      "sha256": "2fd44ee91f48b71696353b19e893f8aa90a54f6409d80256a49bc88baae84ffd",
+      "size": 1156
     },
     {
       "mode": "100644",
@@ -2599,8 +2617,8 @@
     {
       "mode": "100644",
       "path": "tests/test_agent_recovery_and_cleanup.py",
-      "sha256": "04bfce104efdb456b7e3a3af92dfff4e414e64fdf056ce918cb2503f12d0f1b5",
-      "size": 14820
+      "sha256": "9700115ed6081d1da600e43ff470c3c40491b0fe4234914f97936c8f202e5267",
+      "size": 14832
     },
     {
       "mode": "100644",
@@ -2659,8 +2677,8 @@
     {
       "mode": "100644",
       "path": "tests/test_agents.py",
-      "sha256": "d4c156212e5122d5f6d5219d6a7f294cbf8bec15c0da7c8c86942a1d6017a54c",
-      "size": 8477
+      "sha256": "f0175b36cfbecd02c8b8805f063d9315cc6bd68db49ff5d6d458a17778accdbc",
+      "size": 9458
     },
     {
       "mode": "100644",
@@ -3006,9 +3024,21 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_browser_tab_frame.py",
+      "sha256": "f4452fc891cafc444dbe316d7dc6e766623028549a71bd61a6850b8a1afb5577",
+      "size": 9455
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_browser_tab_index_shift.py",
-      "sha256": "0dfc7a8f07c9ca3a9adece49816af48b59281ed2d1928edfe23f85b2a7458cd2",
-      "size": 9355
+      "sha256": "634c8aad10940d0a4e4fc9382b2e4b672b9c91449c3e21f2abd79abbe2393a82",
+      "size": 9857
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_tab_pulse.py",
+      "sha256": "9d2bcaa0d5966fb783d5245a46356e0da5dab2c0af2e8b1d036f773ef7a65711",
+      "size": 5880
     },
     {
       "mode": "100644",
@@ -4338,15 +4368,39 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_team_add_task.py",
+      "sha256": "cd96d387fb44805deee2e58590a3f1e5473397ee5e54d7d583af8b544ecf4e28",
+      "size": 7730
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_team_coordination_skill.py",
+      "sha256": "17e854453849a140a44eaf650592e77055937e22018005cc35972f113527e39a",
+      "size": 4273
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_team_history.py",
       "sha256": "d8ef43efcacc31977d1cbc44593b1176834cc0afc4bf6ea95f20c3113ea58063",
       "size": 11414
     },
     {
       "mode": "100644",
+      "path": "tests/test_team_message_fixes.py",
+      "sha256": "fe35568c44520bf599d14ad9f2c1076c7c1479f04d117075e5b164444671eb52",
+      "size": 5035
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_team_messages.py",
-      "sha256": "bfacdadc5327559af1708f745ccc7b8b121de670c2073f24bd2d36b52f48565d",
-      "size": 11860
+      "sha256": "1919148a29ed4a18646b02c660e3a7d7507217a5c0562d157efe35b303ff4667",
+      "size": 14626
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_team_task_providers.py",
+      "sha256": "d3b53b48a1f4a5c8354d76faf22fbbbe2d0f97d92e9c38586e4b46ccd21daa79",
+      "size": 13094
     },
     {
       "mode": "100644",
@@ -4619,10 +4673,10 @@
       "size": 508
     }
   ],
-  "generated_at": "2026-10-20T12:47:14Z",
-  "payload_sha256": "febdd33c9226eda45c84d12c67e1e214fd6eef7988aff2ce43cab6d1e460953e",
+  "generated_at": "2026-10-20T19:56:21Z",
+  "payload_sha256": "fc919d4f43644e76205523ec4612231409b93c847459fdce01c8c69c8d91aef4",
   "product": "mac-mcp",
-  "release_id": "stable-2.3.0-r1",
+  "release_id": "stable-2.3.0-r2",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
