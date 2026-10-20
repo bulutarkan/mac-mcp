@@ -8,6 +8,8 @@ there is no frame, so nothing is drawn on the wrong tab.
 """
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from . import ax_native, browser_tabs
@@ -18,6 +20,11 @@ _APP_NAMES = {"Safari": "Safari", "Google Chrome": "Google Chrome"}
 _TAB_DEPTH = {"Safari": 3, "Google Chrome": 8}
 # Tab buttons sit in the window's top strip; anything lower is page content.
 _TAB_STRIP_DEPTH_PT = 140
+# How many buttons had the tab's title when it was last found by its handle. While the pulse follows the tab
+# (by title, without the handle), one fewer means the agent's tab closed and its twin is the one left.
+_TWINS: "OrderedDict[str, int]" = OrderedDict()
+_TWINS_LOCK = threading.Lock()
+_TWINS_KEEP = 64
 
 
 def _norm_title(text: Any) -> str:
@@ -29,7 +36,8 @@ def _same_title(button: str, tab: str) -> bool:
     a, b = _norm_title(button), _norm_title(tab)
     if not a or not b:
         return False
-    return a == b or (len(a) >= 8 and (b.startswith(a.rstrip("….")) or a.startswith(b)))
+    # Both sides long enough, so a short title ("Mac") never claims a longer, different tab.
+    return a == b or (len(a) >= 8 and b.startswith(a.rstrip("…."))) or (len(b) >= 8 and a.startswith(b))
 
 
 def tab_buttons(nodes: List[Dict[str, Any]], window_top: float) -> List[Dict[str, Any]]:
@@ -50,11 +58,26 @@ def tab_buttons(nodes: List[Dict[str, Any]], window_top: float) -> List[Dict[str
 
 def pick_tab_button(buttons: List[Dict[str, Any]], tab_index: int, title: str) -> Optional[Dict[str, Any]]:
     """The button for this tab: the one at its position when its title agrees, else the only one with its title."""
-    label = lambda node: str(node.get("title") or node.get("description") or "")
-    if 1 <= tab_index <= len(buttons) and _same_title(label(buttons[tab_index - 1]), title):
+    if 1 <= tab_index <= len(buttons) and _same_title(_label(buttons[tab_index - 1]), title):
         return buttons[tab_index - 1]
-    matches = [node for node in buttons if _same_title(label(node), title)]
+    matches = [node for node in buttons if _same_title(_label(node), title)]
     return matches[0] if len(matches) == 1 else None
+
+
+def _label(node: Dict[str, Any]) -> str:
+    return str(node.get("title") or node.get("description") or "")
+
+
+def _is_selected(node: Dict[str, Any]) -> bool:
+    return node.get("selected") is True or str(node.get("value") or "").strip().lower() in {"true", "1"}
+
+
+def _remember_twins(tab_handle: str, count: int) -> None:
+    with _TWINS_LOCK:
+        _TWINS[tab_handle] = count
+        _TWINS.move_to_end(tab_handle)
+        while len(_TWINS) > _TWINS_KEEP:
+            _TWINS.popitem(last=False)
 
 
 def tab_frame(browser: str, tab_handle: str, hint: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -67,7 +90,8 @@ def tab_frame(browser: str, tab_handle: str, hint: Optional[Dict[str, Any]] = No
     if app not in _APP_NAMES:
         return {"ok": False, "error": "unsupported_browser"}
     hint = hint if isinstance(hint, dict) else {}
-    if int(hint.get("window_index") or 0) > 0 and str(hint.get("title") or "").strip():
+    following = int(hint.get("window_index") or 0) > 0 and bool(str(hint.get("title") or "").strip())
+    if following:
         window_index, tab_index = int(hint["window_index"]), int(hint.get("tab_index") or 0)
         row: Dict[str, Any] = {"title": str(hint["title"])}
     else:
@@ -91,10 +115,18 @@ def tab_frame(browser: str, tab_handle: str, hint: Optional[Dict[str, Any]] = No
     top = float((window.get("position") or {}).get("y") or 0)
     buttons = tab_buttons(nodes, top)
     title = str(row.get("title") or "")
+    twins = sum(1 for node in buttons if _same_title(_label(node), title))
+    if following:
+        with _TWINS_LOCK:
+            known = _TWINS.get(str(tab_handle))
+        if known is not None and twins < known:
+            return {"ok": False, "error": "tab_not_found"}
+    else:
+        _remember_twins(str(tab_handle), twins)
     button = pick_tab_button(buttons, tab_index, title)
     if button is None:
         return {"ok": False, "error": "tab_button_not_matched"}
-    if str(button.get("value") or "").strip().lower() == "true":
+    if _is_selected(button):
         # The owner switched to this tab meanwhile.
         return {"ok": True, "active": True}
     pos = button["position"]

@@ -164,6 +164,14 @@ class TabScanRaceTests(unittest.TestCase):
         self.assertEqual(2, osa.call_count)
         self.assertEqual("4005", rows[0]["native_id"])
 
+    def test_scan_rereads_when_a_chrome_tab_closes_before_its_id_is_read(self) -> None:
+        race = RuntimeError("execution error: Can’t make id of tab id 1834712 of window id 1834680 "
+                            "into type Unicode text. (-1700)")
+        with patch.object(browser_tabs, "_osascript", side_effect=[race, self._ROW]) as osa:
+            rows = browser_tabs._scan("Google Chrome")
+        self.assertEqual(2, osa.call_count)
+        self.assertEqual("4005", rows[0]["native_id"])
+
     def test_scan_does_not_retry_unrelated_errors(self) -> None:
         with patch.object(browser_tabs, "_osascript", side_effect=RuntimeError("Not authorized to send Apple events (-1743)")) as osa:
             with self.assertRaises(RuntimeError):

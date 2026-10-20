@@ -101,6 +101,41 @@ class TabFrameTests(unittest.TestCase):
         self.assertEqual({"ok": False, "error": "unsupported_browser"}, frame.tab_frame("firefox", "btab"))
 
 
+class FollowSafetyTests(unittest.TestCase):
+    """Fixes from a review of this module (2026-10-20)."""
+
+    WINDOWS = [{"index": 1, "position": {"y": 33}, "on_shown_desktop": True, "window_id": 4242}]
+
+    def setUp(self) -> None:
+        frame._TWINS.clear()
+
+    def observe(self, buttons, handle, hint=None, row=None):
+        with patch.object(frame.browser_tabs, "resolve_tab", return_value=(1, (row or {}).get("tab_index", 1), row or {})), \
+             patch.object(frame.ax_native, "observe", return_value=(True, "raw", "")), \
+             patch("mcp_server.tools_ui._parse_observation", return_value=({"windows": self.WINDOWS}, buttons)):
+            return frame.tab_frame("safari", handle, hint)
+
+    def test_a_short_title_never_claims_a_longer_different_tab(self) -> None:
+        self.assertFalse(frame._same_title("Mac MCP Dashboard", "Mac"))
+        self.assertTrue(frame._same_title("Mac MCP Dashboard - Settings", "Mac MCP Dashboard"))
+
+    def test_any_selected_cue_means_the_owner_is_on_the_tab(self) -> None:
+        hint = {"window_index": 1, "tab_index": 1, "title": "Meta Business Suite"}
+        for cue in ({"selected": True}, {"value": "1"}, {"value": "true"}):
+            self.assertEqual({"ok": True, "active": True}, self.observe([dict(TABS[0], **cue)], "btab_a", hint), cue)
+
+    def test_when_the_agents_tab_closes_its_twin_gets_no_glow(self) -> None:
+        twins = [TABS[0], TABS[1], button("Meta Business Suite", 590)]
+        first = self.observe(twins, "btab_twin", row={"title": "Meta Business Suite", "active": False, "tab_index": 3})
+        self.assertEqual(590.0, first["frame"]["x"])
+        left = [TABS[0], TABS[1]]  # the agent's tab closed; the owner's own "Meta Business Suite" stays
+        self.assertEqual({"ok": False, "error": "tab_not_found"}, self.observe(left, "btab_twin", first["hint"]))
+        # A tab closing beside it does not stop the follow.
+        # Both twins still there but the agent's slid left: no place and no unique title, so no guess.
+        beside = [TABS[0], button("Meta Business Suite", 299)]
+        self.assertFalse(self.observe(beside, "btab_twin", first["hint"])["ok"])
+
+
 class TabFrameRouteTests(unittest.TestCase):
     def test_route_is_guarded_read_only_and_registered(self) -> None:
         from pathlib import Path

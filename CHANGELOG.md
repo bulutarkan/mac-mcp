@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Browser tabs: the glow stays on the agent's tab, and Chrome tab lists survive a closing tab
+- The tab glow no longer lands on your own tab when the agent's tab closes while it plays and you have another tab with the same title; it stops instead.
+- A short tab title (for example "Mac") no longer matches a longer, different tab, and the glow stops on any sign that you switched to the agent's tab.
+- Listing Chrome tabs no longer fails with "Can't make id of tab id … into type Unicode text" when a tab closes at that moment; the list is read again.
+
 ### Security: Codex agents no longer see your ChatGPT connectors
 - Codex 0.16x turns ChatGPT apps on by default, and a delegated Codex agent signs in with your ChatGPT account, so it also got your own ChatGPT connectors, including a Mac MCP connector. Through it, a read-only agent could run commands outside its sandbox and scope, as you. Delegated Codex agents now start with apps turned off; their only Mac MCP is their own scoped connection. Found in a live test, where an agent ran `sleep 5` this way.
 

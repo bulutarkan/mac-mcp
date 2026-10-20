@@ -98,8 +98,9 @@ class TabTarget:
 
 
 _SCAN_ATTEMPTS = 3
-# AppleScript "Invalid index" and "Can't get" errors from a tab list changing mid-scan.
-_SCAN_RACE_ERRORS = ("(-1719)", "(-1728)")
+# AppleScript "Invalid index" and "Can't get" errors from a tab list changing mid-scan, and Chrome's
+# "Can't make id of tab id … into type Unicode text" when the tab it just took closes before its id is read.
+_SCAN_RACE_ERRORS = ("(-1719)", "(-1728)", "(-1700)")
 
 
 def _osascript(script: str) -> str:
