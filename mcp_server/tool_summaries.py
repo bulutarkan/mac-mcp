@@ -110,8 +110,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "(lazy content too; offset=next_offset). Multi-step: observe -> browser_act instead."
     ),
     "browser_upload_artifact": (
-        "Select a registered artifact (artifact_id + matching path) into an input[type=file] and verify it. Selects only, "
-        "never submits the form; Safari needs foreground capability and fails closed rather than stealing focus."
+        "Select a registered artifact (artifact_id + matching path) into an input[type=file] and verify it; never submits. "
+        "Safari asks the owner first; owner_declined_upload means carry on without it. Chrome needs no question."
     ),
     "browser_checkpoint": (
         "Sign-in/2FA/passkey/captcha step: create (tab_handle) -> awaiting_human + notifies the user; wait (<=300s) or "

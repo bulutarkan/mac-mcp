@@ -150,7 +150,9 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
              patch("mcp_server.tools_browser.ask_confirmation", return_value=answer) as ask, \
              patch("mcp_server.tools_browser._safari_upload", side_effect=upload) as safari, \
              patch("mcp_server.tools_browser._execute_js_for_target") as js, \
-             patch("mcp_server.tools_browser._run_osascript") as osascript:
+             patch("mcp_server.tools_browser._run_osascript") as osascript, \
+             patch("mcp_server.tools_browser.native_focus.capture_focus_context",
+                   return_value=({"pid": 42, "window_handle": "owner-window"}, None)):
             try:
                 result = browser_upload_artifact(
                     load_settings(), "Safari", "#file", "artifact_fake", "/tmp/fake.webp", tab_handle="btab_fake",
@@ -185,6 +187,8 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         safari.assert_called_once()
         self.assertEqual("owner_approved_safari_upload", seen["grant"].source)
+        # the owner's window was noted before the question, not after it (then it would be the dialog)
+        self.assertEqual({"pid": 42, "window_handle": "owner-window"}, safari.call_args.kwargs["focus_context"])
         self.assertIsNone(current_foreground_authorization())  # the grant ends with the upload
 
     def test_chrome_background_upload_path_does_not_require_foreground_capability(self) -> None:

@@ -2133,6 +2133,14 @@ def browser_upload_artifact(
 
         if current_foreground_authorization() is not None:
             return _safari_upload(b, target, artifact, artifact_id, path, css_selector, timeout_s, preserve_focus, handoff_id)
+        # The owner's window is noted before the question: once the dialog closes, the window in front was the dialog.
+        focus_context = None
+        if preserve_focus:
+            focus_context, focus_error = native_focus.capture_focus_context()
+            if focus_context is None:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": "focus_snapshot_failed", "message": focus_error,
+                })
         answer = _owner_allows_safari_upload(settings, artifact, target)
         if not answer.get("confirmed"):
             raise HTTPException(status.HTTP_403_FORBIDDEN, {
@@ -2142,17 +2150,18 @@ def browser_upload_artifact(
                            "Carry on with the rest of the task; do not ask again unless the owner wants to.",
             })
         with foreground_authorization("owner_approved_safari_upload"):
-            return _safari_upload(b, target, artifact, artifact_id, path, css_selector, timeout_s, preserve_focus, handoff_id)
+            return _safari_upload(b, target, artifact, artifact_id, path, css_selector, timeout_s, preserve_focus,
+                                  handoff_id, focus_context=focus_context)
 
 
 def _safari_upload(b: str, target: Any, artifact: Dict[str, Any], artifact_id: str, path: str, css_selector: str,
-                   timeout_s: int, preserve_focus: bool, handoff_id: Optional[str]) -> Dict[str, Any]:
+                   timeout_s: int, preserve_focus: bool, handoff_id: Optional[str],
+                   focus_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Safari's native Open panel, driven with exact artifact identity; runs only under a foreground grant."""
     require_foreground_authorization("browser_upload_artifact", browser=b)
     # Safari permits a file-input click through AppleScript JavaScript, but the actual file
     # selection is still performed by the native NSOpenPanel using exact artifact identity.
-    focus_context = None
-    if preserve_focus:
+    if preserve_focus and focus_context is None:
         focus_context, focus_error = native_focus.capture_focus_context()
         if focus_context is None:
             raise HTTPException(status.HTTP_409_CONFLICT, {
