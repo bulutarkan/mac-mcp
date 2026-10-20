@@ -133,7 +133,7 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
         self.assert_foreground_denied(raised.exception, "chrome_url_js_bridge")
         osascript.assert_not_called()
 
-    def _safari_upload_with_answer(self, answer):
+    def _safari_upload_with_answer(self, answer, probe='{"ok":true,"count":0,"name":null}'):
         target = type("Target", (), {
             "browser": "Safari", "window_index": 1, "tab_index": 1,
             "tab_handle": "btab_fake", "native_id": None, "title": "Upload", "url": "https://upload.example.test/form",
@@ -149,7 +149,7 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
              patch("mcp_server.tools_browser._tab_lease", return_value=nullcontext(target)), \
              patch("mcp_server.tools_browser.ask_confirmation", return_value=answer) as ask, \
              patch("mcp_server.tools_browser._safari_upload", side_effect=upload) as safari, \
-             patch("mcp_server.tools_browser._execute_js_for_target") as js, \
+             patch("mcp_server.tools_browser._execute_js_for_target", return_value=probe) as js, \
              patch("mcp_server.tools_browser._run_osascript") as osascript, \
              patch("mcp_server.tools_browser.native_focus.capture_focus_context",
                    return_value=({"pid": 42, "window_handle": "owner-window"}, None)):
@@ -172,7 +172,22 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
             self.assertEqual(403, result.status_code)
             self.assertEqual("owner_declined_upload", result.detail["error"])
             ask.assert_called_once()
-            safari.assert_not_called(); js.assert_not_called(); osascript.assert_not_called()
+            safari.assert_not_called(); osascript.assert_not_called()
+            # Only the background, read-only selector check reached the page: nothing was clicked (#37).
+            js.assert_called_once()
+            self.assertNotIn("click()", js.call_args.args[1])
+            self.assertIn("querySelector", js.call_args.args[1])
+
+    def test_a_selector_that_is_not_a_file_input_fails_before_the_question(self) -> None:
+        for probe, error in (('{"ok":false,"error":"not_found"}', "not_found"),
+                             ('{"ok":false,"error":"not_file_input"}', "not_file_input")):
+            result, ask, safari, js, osascript, _ = self._safari_upload_with_answer(
+                {"ok": True, "confirmed": True, "decision": "confirmed"}, probe=probe)
+            self.assertIsInstance(result, HTTPException)
+            self.assertEqual(400, result.status_code)
+            self.assertEqual(error, result.detail["error"])
+            self.assertFalse(result.detail["owner_asked"])
+            ask.assert_not_called(); safari.assert_not_called(); osascript.assert_not_called()
 
     def test_the_owner_is_asked_with_the_file_and_the_site(self) -> None:
         _, ask, _, _, _, _ = self._safari_upload_with_answer({"ok": True, "confirmed": False, "decision": "denied"})

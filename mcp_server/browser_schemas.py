@@ -173,7 +173,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "to_role": {"type": "string"},
         "hold_ms": {"type": "integer", "minimum": 0, "maximum": 3000},
         "expect": {"type": "object", "description": "Check after the action, e.g. {text:'Saved'}, {gone:'Upload'}, "
-                   "{selector}, {url_change:true}; timeout_s."},
+                   "{selector}, {url_change:true}, {download:true} (returns the file); timeout_s."},
     },
     "required": ["type"],
     "additionalProperties": True,

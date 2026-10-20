@@ -7,7 +7,8 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
@@ -15,7 +16,7 @@ from mcp_server import browser_tabs
 from mcp_server.chrome_background_bridge import ChromeBackgroundBridge, _resolve_chrome_companion_port, ensure_chrome_companion_config, ensure_chrome_companion_token
 from mcp_server.policy import PolicyContext, reset_policy_context, set_policy_context
 from mcp_server.security import load_settings
-from mcp_server.tools_browser import browser_open_url
+from mcp_server.tools_browser import _open_chrome_background_tab_via_extension, browser_open_url
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,13 +162,75 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
                 load_settings(), "Google Chrome", "https://example.com/",
                 new_tab=True, background=True,
             )
-        transport.assert_called_once_with("https://example.com/")
+        transport.assert_called_once_with("https://example.com/", 1)
         claim.assert_called_once_with("Google Chrome", "btab_chrome_test")
         applescript.assert_not_called()
         self.assertEqual("btab_chrome_test", result["tab_handle"])
         self.assertEqual(7, result["lease_generation"])
         self.assertEqual("chrome_extension", result["background_transport"])
         self.assertFalse(result["foreground_forced"])
+
+    def test_background_open_goes_to_the_requested_window(self) -> None:
+        # #35: window_index reaches the companion as Chrome's own window id.
+        created = {
+            "browser": "Google Chrome", "window_index": 2, "tab_index": 4, "active": False, "native_id": "444",
+            "title": "Example", "url": "https://example.com/", "tab_handle": "btab_chrome_test",
+        }
+        with patch("mcp_server.tools_browser._chrome_is_running", return_value=True), \
+             patch("mcp_server.tools_browser._open_chrome_background_tab_via_extension",
+                   return_value=(created, {"chrome_tab_id": 444})) as transport, \
+             patch("mcp_server.tools_browser.browser_tabs.claim_created_tab", return_value={"generation": 7}), \
+             patch("mcp_server.tools_browser._claim_tab_visual", return_value=True):
+            result = browser_open_url(load_settings(), "Google Chrome", "https://example.com/",
+                                      new_tab=True, background=True, window_index=2)
+        transport.assert_called_once_with("https://example.com/", 2)
+        self.assertEqual(2, result["window_index"])
+
+        rows = [[], [dict(created)]]
+        bridge = SimpleNamespace(supports=lambda feature: feature == "open_tab_window",
+                                 request_open_tab=MagicMock(return_value={"chrome_tab_id": 444, "chrome_window_id": 9002}))
+        with patch("mcp_server.tools_browser.chrome_background_bridge", bridge), \
+             patch("mcp_server.tools_browser._run_osascript", return_value="9002") as applescript, \
+             patch("mcp_server.tools_browser.browser_tabs.list_tabs", side_effect=lambda browser: rows.pop(0) if rows else [dict(created)]):
+            row, _ = _open_chrome_background_tab_via_extension("https://example.com/", 2)
+        self.assertEqual("get id of window 2", applescript.call_args.args[0].split(" to ", 1)[1])
+        bridge.request_open_tab.assert_called_once_with("https://example.com/", window_id=9002, timeout_s=6.0)
+        self.assertEqual("444", row["native_id"])
+
+    def test_a_tab_opened_in_another_window_is_closed_and_reported(self) -> None:
+        # An older companion ignores window_id and uses the last focused window.
+        bridge = SimpleNamespace(supports=lambda feature: False,
+                                 request_open_tab=MagicMock(return_value={"chrome_tab_id": 555, "chrome_window_id": 7001}))
+        scripts: list[str] = []
+        with patch("mcp_server.tools_browser.chrome_background_bridge", bridge), \
+             patch("mcp_server.tools_browser._run_osascript", side_effect=lambda script, **kw: scripts.append(script) or "9002"), \
+             patch("mcp_server.tools_browser.browser_tabs.list_tabs", return_value=[]):
+            with self.assertRaises(HTTPException) as ctx:
+                _open_chrome_background_tab_via_extension("https://example.com/", 2)
+        self.assertEqual("chrome_window_not_honored", ctx.exception.detail["error"])
+        self.assertIn("chrome://extensions", ctx.exception.detail["message"])
+        bridge.request_open_tab.assert_called_once_with("https://example.com/", window_id=None, timeout_s=6.0)
+        self.assertIn("if id of t is 555 then", scripts[-1])
+
+    def test_a_missing_window_opens_nothing(self) -> None:
+        bridge = SimpleNamespace(supports=lambda feature: True, request_open_tab=MagicMock())
+        with patch("mcp_server.tools_browser.chrome_background_bridge", bridge), \
+             patch("mcp_server.tools_browser._run_osascript",
+                   side_effect=HTTPException(500, "Can't get window 5")), \
+             patch("mcp_server.tools_browser.browser_tabs.list_tabs", return_value=[]):
+            with self.assertRaises(HTTPException) as ctx:
+                _open_chrome_background_tab_via_extension("https://example.com/", 5)
+        self.assertEqual(404, ctx.exception.status_code)
+        self.assertEqual("browser_window_not_found", ctx.exception.detail["error"])
+        bridge.request_open_tab.assert_not_called()
+
+    def test_companion_opens_only_in_the_window_it_was_given(self) -> None:
+        worker = (ROOT / "menu_app/ChromeVisualCompanion/background.js").read_text(encoding="utf-8")
+        handler = worker[worker.index("async function handleOpenTab"):]
+        handler = handler[:handler.index("\n}\n")]
+        self.assertIn("chrome.windows.get(wanted)", handler)
+        self.assertIn("'chrome_window_not_found'", handler)
+        self.assertIn("'open_tab_window'", worker)
 
     def test_cold_background_open_launches_first_url_and_claims_stable_handle(self) -> None:
         created = {

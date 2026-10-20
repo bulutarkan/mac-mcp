@@ -98,7 +98,24 @@ def _choose(logins: list, account: Optional[str]) -> Dict[str, Any]:
 
 def browser_sign_in(
     settings: Settings, *, browser: str, tab_handle: Optional[str] = None, account: Optional[str] = None,
-    submit: bool = False, window_index: int = 1, tab_index: Optional[int] = None,
+    submit: bool = False, window_index: int = 1, tab_index: Optional[int] = None, frame: Optional[str] = None,
+) -> Dict[str, Any]:
+    from .tools_browser import frame_scope
+
+    # frame: a login form inside a child frame (part of its URL; Chrome with the companion). Every page
+    # script then runs in that frame, so the site the login is chosen for, and checked against right
+    # before filling, is the frame's own, never the page around it (#36).
+    with frame_scope(frame):
+        result = _sign_in(settings, browser=browser, tab_handle=tab_handle, account=account, submit=submit,
+                          window_index=window_index, tab_index=tab_index)
+    if str(frame or "").strip():
+        result["frame"] = str(frame).strip()
+    return result
+
+
+def _sign_in(
+    settings: Settings, *, browser: str, tab_handle: Optional[str], account: Optional[str],
+    submit: bool, window_index: int, tab_index: Optional[int],
 ) -> Dict[str, Any]:
     from . import browser_tabs
     from .tools_browser_agent import (

@@ -4,7 +4,7 @@ function __mcpB64(obj){return btoa(unescape(encodeURIComponent(JSON.stringify(ob
 var spec=__SPEC__,s=__mcpState();
 if(!s.eventWaiters)s.eventWaiters=Object.create(null);
 var token='bw_'+s.pageToken+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7);
-var w={token:token,done:false,result:null,event_count:0,fallback_ticks:0,started_at:Date.now(),last_signal_at:Date.now(),network_active:0,cleanup:[]};
+var w={token:token,done:false,result:null,event_count:0,fallback_ticks:0,started_at:Date.now(),last_signal_at:Date.now(),network_active:0,network_finished:0,cleanup:[]};
 s.eventWaiters[token]=w;
 function compact(){
   return {ok:true,type:'wait',for:spec.kind,matched:false,pending:true,wait_token:token,
@@ -16,7 +16,10 @@ function stateResult(matched,settledBy,timedOut){
     wait_token:token,wait_strategy:'event_driven',settled_by:settledBy||null,
     duration_ms:Math.max(0,Date.now()-w.started_at),url:location.href,title:document.title,
     dom_revision:s.mutationRevision,event_count:w.event_count,fallback_ticks:w.fallback_ticks,
-    network_active:w.network_active};
+    network_active:w.network_active,
+    // Requests that began before the wait are seen only when they finish: say what was watched.
+    network_scope:spec.kind==='network_idle'?'from_wait_start':undefined,
+    network_finished:spec.kind==='network_idle'?w.network_finished:undefined};
 }
 function cleanup(){
   var rows=w.cleanup.splice(0,w.cleanup.length);
@@ -124,6 +127,17 @@ if(spec.kind==='network_idle'){
           function(err){w.network_active=Math.max(0,w.network_active-1);signal('network');throw err;});
       };
       window.fetch=fetchWrap;w.cleanup.push(function(){try{if(window.fetch===fetchWrap)window.fetch=ofetch;}catch(e){}});
+    }
+  }catch(e){}
+  // A request already running when the wait began is invisible to the wrappers below, but its
+  // resource timing entry arrives when it finishes: count that as network activity too (#33).
+  try{
+    if(typeof PerformanceObserver==='function'){
+      var po=new PerformanceObserver(function(list){
+        var n=list.getEntries().length;if(!n)return;w.network_finished+=n;signal('network_finished');
+      });
+      po.observe({type:'resource',buffered:false});
+      w.cleanup.push(function(){try{po.disconnect();}catch(e){}});
     }
   }catch(e){}
   try{

@@ -25,6 +25,28 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Browser automation: downloads, windows, frames and waits (roadmap #33–#37)
+- A click can now wait for the file it downloads: `expect={download: true}` (or part of the file name) on a `browser_act` click returns the finished file as an artifact. It looks from the moment the click began, so a download that finishes at once is no longer missed; a separate `browser_wait_for_download` that runs out of time now says `timed_out` (#34).
+- Chrome opens a new tab in the window you ask for (`window_index`, or the window an agent already works in) instead of the last focused one. If the Chrome companion is too old to do that and the tab lands elsewhere, it is closed again and you are asked to reload the companion (#35).
+- `browser_sign_in` fills a login form inside a child frame in Chrome (`frame` = part of the frame's URL), such as the Apple sign-in on icloud.com. The login is chosen for, and checked against, the frame's own site, never the page around it (#36).
+- `network_idle` also counts requests that were already running when the wait began, once they finish, and its result says the network was watched from the start of the wait (`network_scope`) (#33).
+- A Safari upload whose selector does not point to a file input now fails at once, before you are asked to bring Safari forward [SEC-FOCUS-001] (#37).
+
+### Claude Desktop: one key, no dropped sessions
+- Mac MCP always takes `MCP_API_KEY` from its `.env`. An older key still exported in a shell used to win when the server was started from that shell, so every app using the `.env` key was refused; the log now says when the two differ, without showing either.
+- MCP sessions forgotten after 30 idle minutes: `mac-mcp stdio` (what Claude Desktop runs) already sets them up again by itself; for clients that do not, such as `mcp-remote`, the limit is now `MAC_MCP_SESSION_IDLE_TIMEOUT_S` in `.env` (60 seconds to 1 day).
+- `mac-mcp connect-config --client claude-desktop` no longer says Claude Desktop is unsupported; it points to `mac-mcp connect --client claude-desktop` and shows the entry it adds.
+
+### Safari Visual Companion shows again
+- The Safari extension is signed sandboxed again: macOS ignored it after the app moved to this Mac's development signature, so agent cursor, click effects and the activity sidebar did not appear in Safari.
+
+### Agent teams and disk space (roadmap #47–#50)
+- A team task left half-started by a server stop takes over the agent that did start, instead of failing.
+- When an agent's worker dies, its CLI is stopped (then forced after a few seconds) before the agent counts as failed and frees its place.
+- An agent that fails before writing a typed result says its result is missing, instead of pending for ever.
+- A team held back by memory pressure starts again by itself once the pressure passes.
+- Finished agents drop the caches in their private provider folders (npm and CLI caches, temp files, Codex plugin copies and the copy of the Codex sign-in); conversations and settings stay. Here that freed 2.4 GB.
+
 ### Live Island: a heads-up before the iPhone takes your pointer
 - The first time a chat or agent drives the iPhone (`iphone` `act`, directly or through `tool_invoke`), the Live Island opens a short note: "iPhone Mirroring · Each step briefly takes your pointer and keyboard." It shows once per session for about five seconds, asks nothing and stops nothing. Looking at or reading the iPhone screen (`see`, `read`, `find`) takes neither, so it shows no note.
 

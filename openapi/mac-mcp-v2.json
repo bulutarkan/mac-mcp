@@ -3637,7 +3637,7 @@
                           "type": "integer"
                         },
                         "expect": {
-                          "description": "Check after the action, e.g. {text:'Saved'}, {gone:'Upload'}, {selector}, {url_change:true}; timeout_s.",
+                          "description": "Check after the action, e.g. {text:'Saved'}, {gone:'Upload'}, {selector}, {url_change:true}, {download:true} (returns the file); timeout_s.",
                           "type": "object"
                         }
                       },
@@ -4196,7 +4196,7 @@
       "post": {
         "operationId": "browser_wait_for_download",
         "summary": "browser_wait_for_download",
-        "description": "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected. If several downloads finished or are running it returns complete",
+        "description": "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. To click and catch the download in one step, add expect={download: true} (or part of the file name) to the browser_act click instead: it also catches downloads that finish before any separate wait c",
         "requestBody": {
           "required": true,
           "content": {

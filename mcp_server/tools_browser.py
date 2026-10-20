@@ -586,8 +586,37 @@ def _open_chrome_cold_background(url: str) -> tuple[Dict[str, Any], Dict[str, An
         )
 
 
-def _open_chrome_background_tab_via_extension(url: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Create an inactive Chrome tab through the MV3 companion without foregrounding Chrome.
+def _chrome_window_id(window_index: int) -> int:
+    """Chrome's own id for the window at this AppleScript index (the companion's chrome.windows id)."""
+    try:
+        return int(str(_run_osascript(
+            f'tell application "Google Chrome" to get id of window {int(window_index)}', timeout_s=10,
+        )).strip())
+    except (HTTPException, ValueError) as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "ok": False, "error": "browser_window_not_found", "window_index": int(window_index),
+            "message": f"Google Chrome has no window {int(window_index)}; nothing was opened.",
+        }) from exc
+
+
+def _close_chrome_tab_by_id(chrome_tab_id: str) -> None:
+    tab_id = int(chrome_tab_id)
+    _run_osascript(f'''tell application "Google Chrome"
+    repeat with w in windows
+        repeat with t in tabs of w
+            if id of t is {tab_id} then
+                close t
+                return
+            end if
+        end repeat
+    end repeat
+end tell''', timeout_s=10)
+
+
+def _open_chrome_background_tab_via_extension(
+    url: str, window_index: int = 1,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Create an inactive Chrome tab in the given window through the MV3 companion without foregrounding Chrome.
 
     New-tab discovery is serialized so two agents opening different tabs concurrently
     cannot confuse each other's newly-created native tab. This lock is deliberately
@@ -597,8 +626,25 @@ def _open_chrome_background_tab_via_extension(url: str) -> tuple[Dict[str, Any],
     with _CHROME_BACKGROUND_OPEN_LOCK:
         before = browser_tabs.list_tabs("Google Chrome")
         before_ids = {str(row.get("native_id") or "") for row in before}
-        bridge_result = chrome_background_bridge.request_open_tab(url, timeout_s=6.0)
+        window_id = _chrome_window_id(window_index)
+        bridge_result = chrome_background_bridge.request_open_tab(
+            url, window_id=window_id if chrome_background_bridge.supports("open_tab_window") else None, timeout_s=6.0,
+        )
         chrome_tab_id = str(bridge_result.get("chrome_tab_id") or "")
+        if str(bridge_result.get("chrome_window_id") or "") != str(window_id):
+            # An older companion ignores window_id and uses the last focused window: take the tab back
+            # out rather than leave it in a window nobody asked for (#35).
+            if chrome_tab_id:
+                try:
+                    _close_chrome_tab_by_id(chrome_tab_id)
+                except (HTTPException, ValueError):
+                    pass
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": "chrome_window_not_honored", "retryable": False,
+                "window_index": int(window_index),
+                "message": "The Chrome companion opened the tab in another window, so it was closed again. "
+                           "Reload Mac MCP Chrome Visual Companion at chrome://extensions to update it.",
+            })
         deadline = time.monotonic() + 4.0
         latest_new: list[Dict[str, Any]] = []
         while time.monotonic() < deadline:
@@ -781,7 +827,7 @@ def browser_open_url(
     activate_line = "" if background else "activate"
     escaped_url = _js_escape(url)
     target_window = int(window_index)
-    if new_tab and b == "Safari":
+    if new_tab:
         target_window = _new_tab_window(b, window_index, tab_handle)
 
     if not new_tab:
@@ -1004,7 +1050,7 @@ def browser_open_url(
                 "companion_connected": bool(transport.get("companion_connected")),
             }
         if background:
-            created, transport = _open_chrome_background_tab_via_extension(url)
+            created, transport = _open_chrome_background_tab_via_extension(url, target_window)
             opened_index = int(created["tab_index"])
             observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
             handle = str(created.get("tab_handle") or "") or None
@@ -1027,7 +1073,7 @@ def browser_open_url(
                 make new window
             end if
             {activate_line}
-            tell window 1
+            tell window {target_window}
                 set previousIndex to active tab index
                 set newTab to make new tab with properties {{URL:"{escaped_url}"}}
                 set newIndex to count of tabs
@@ -1046,7 +1092,7 @@ def browser_open_url(
         opened_index = int(str(raw).strip())
     except Exception:
         opened_index = 1
-    created_window = target_window if b == "Safari" else 1
+    created_window = target_window
     created = browser_tabs.find_created(b, created_window, opened_index)
     observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
     handle = created.get("tab_handle") if created else None
@@ -1908,7 +1954,10 @@ def browser_wait_for_download(
                 stat = p.stat()
                 signature = (int(stat.st_size), int(stat.st_mtime_ns))
                 changed = p.name not in before or signature != before.get(p.name)
-                since_match = started_after is not None and int(stat.st_mtime_ns // 1_000_000) >= started_after
+                # A browser may date the file by the server's Last-Modified; the inode change time is still when
+                # the browser renamed and dated it here.
+                local_ms = max(int(stat.st_mtime_ns // 1_000_000), int(stat.st_ctime_ns // 1_000_000))
+                since_match = started_after is not None and local_ms >= started_after
                 if not changed and not since_match:
                     continue
                 # A browser partial artifact that still names the final file means completion is not verified yet.
@@ -1955,6 +2004,9 @@ def browser_wait_for_download(
             return {
                 "ok": True,
                 "completed": False,
+                "timed_out": True,
+                "error": "download_timeout",
+                "message": f"No finished download appeared within {timeout_s} s.",
                 "path": None,
                 "filename": None,
                 "artifact_id": None,
@@ -2132,6 +2184,9 @@ def browser_upload_artifact(
                 **({"handoff_id": handoff_id, "handoff_consumed": True} if handoff_id else {}),
             }
 
+        # Check the selector in the background first: an upload that is bound to fail must not ask the
+        # owner, or bring Safari forward, for nothing (#37). _safari_upload checks it again afterwards.
+        _require_safari_file_input(b, css_selector, target, timeout_s)
         if current_foreground_authorization() is not None:
             return _safari_upload(b, target, artifact, artifact_id, path, css_selector, timeout_s, preserve_focus, handoff_id)
         # The owner's window is noted before the question: once the dialog closes, the window in front was the dialog.
@@ -2153,6 +2208,19 @@ def browser_upload_artifact(
         with foreground_authorization("owner_approved_safari_upload"):
             return _safari_upload(b, target, artifact, artifact_id, path, css_selector, timeout_s, preserve_focus,
                                   handoff_id, focus_context=focus_context)
+
+
+def _require_safari_file_input(b: str, css_selector: str, target: Any, timeout_s: int) -> None:
+    raw = _execute_js_for_target(b, _browser_file_metadata_js(css_selector), target, timeout_s=min(timeout_s, 20))
+    try:
+        found = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        found = {"ok": False, "error": "invalid_trigger_result"}
+    if not found.get("ok"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "ok": False, "error": str(found.get("error") or "file_input_trigger_failed"), "owner_asked": False,
+            "message": "css_selector does not match a file input on this page; nothing was asked or opened.",
+        })
 
 
 def _safari_upload(b: str, target: Any, artifact: Dict[str, Any], artifact_id: str, path: str, css_selector: str,

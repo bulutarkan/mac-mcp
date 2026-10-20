@@ -9,7 +9,7 @@ const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000),
 // While the server is down, wait longer after each failed attempt, up to the alarm period.
 const MAX_RECONNECT_MS = 30000;
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames', 'open_window'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames', 'open_window', 'open_tab_window'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -79,9 +79,19 @@ async function handleOpenTab(message) {
   }
   try {
     let win = null;
-    try {
-      win = await chrome.windows.getLastFocused({windowTypes: ['normal']});
-    } catch (_) {}
+    const wanted = message.window_id;
+    if (Number.isInteger(wanted)) {
+      // The window Mac MCP asked for (its AppleScript id is this id), never another one in its place.
+      try { win = await chrome.windows.get(wanted); } catch (_) {}
+      if (!win || win.type !== 'normal') {
+        send({type: 'result', request_id: requestId, ok: false, error: 'chrome_window_not_found', message: 'The requested Chrome window is not open.'});
+        return;
+      }
+    } else {
+      try {
+        win = await chrome.windows.getLastFocused({windowTypes: ['normal']});
+      } catch (_) {}
+    }
     if (!win || !Number.isInteger(win.id) || win.id < 0) {
       send({type: 'result', request_id: requestId, ok: false, error: 'no_normal_chrome_window', message: 'Chrome has no normal window available for background work.'});
       return;

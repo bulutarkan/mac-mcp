@@ -38,6 +38,11 @@ class BrowserEventDrivenWaitTests(unittest.TestCase):
         self.assertIn("readystatechange", script)
         self.assertNotIn("Page.bringToFront", script)
         self.assertNotIn("window.focus()", script)
+        # #33: a request already running when the wait began still counts once it finishes, and the
+        # result says the network was watched from the start of the wait only.
+        self.assertIn("observe({type:'resource',buffered:false})", script)
+        self.assertIn("signal('network_finished')", script)
+        self.assertIn("network_scope:spec.kind==='network_idle'?'from_wait_start'", script)
 
     def test_chrome_event_wait_is_one_remote_js_call(self) -> None:
         event_result = {

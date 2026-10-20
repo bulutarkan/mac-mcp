@@ -4080,8 +4080,10 @@ _ACT_TYPE_ALIASES = ("action", "kind", "op")
 
 
 # expect: what must be true after an action for its intended result to count as done.
-_EXPECT_KINDS = {"text": "text", "gone": "text_gone", "selector": "selector", "url_change": "url_change"}
+_EXPECT_KINDS = {"text": "text", "gone": "text_gone", "selector": "selector", "url_change": "url_change",
+                 "download": "download"}
 _EXPECT_DEFAULT_TIMEOUT_S = 5.0
+_EXPECT_DOWNLOAD_TIMEOUT_S = 60.0
 # A page that changed is not the intended result: a menu closing is not a link copied,
 # a network request is not a submission. These need a check (expect) to be confirmed.
 _REACTED_VERIFICATIONS = frozenset({
@@ -4121,23 +4123,59 @@ def _expect_wait(index: int, expect: Any) -> Dict[str, Any]:
     if kind == "url_change":
         if value is not True:
             raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, f"actions[{index}] expect url_change must be true."))
+    elif kind == "download":
+        if value is not True and not (isinstance(value, str) and value.strip()):
+            raise mark_not_executed(HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"actions[{index}] expect download must be true or part of the file name.",
+            ))
     elif not isinstance(value, str) or not value.strip():
         raise mark_not_executed(HTTPException(
             status.HTTP_400_BAD_REQUEST, f"actions[{index}] expect {kind} must be non-empty text.",
         ))
+    default_timeout = _EXPECT_DOWNLOAD_TIMEOUT_S if kind == "download" else _EXPECT_DEFAULT_TIMEOUT_S
     try:
-        timeout_s = float(expect.get("timeout_s", _EXPECT_DEFAULT_TIMEOUT_S))
+        timeout_s = float(expect.get("timeout_s", default_timeout))
     except (TypeError, ValueError):
-        timeout_s = _EXPECT_DEFAULT_TIMEOUT_S
+        timeout_s = default_timeout
     wait: Dict[str, Any] = {
-        "type": "wait", "for": _EXPECT_KINDS[kind], "timeout_s": max(0.2, min(timeout_s, 30.0)),
+        "type": "wait", "for": _EXPECT_KINDS[kind],
+        "timeout_s": max(0.2, min(timeout_s, 120.0 if kind == "download" else 30.0)),
         "required": True, "_expect_for": index, "_expect": {kind: value},
     }
+    if kind == "download" and isinstance(value, str):
+        wait["filename_contains"] = value.strip()
     if kind in {"text", "gone"}:
         wait["text"] = value
     elif kind == "selector":
         wait["selector"] = value
     return wait
+
+
+def _download_wait(settings: Settings, action: Dict[str, Any], since_ms: Optional[int]) -> Dict[str, Any]:
+    """expect download: the file the action started, matched from just before that action ran (#34).
+
+    Waiting from the action's own start catches a download that finished before this check began.
+    """
+    from .tools_browser import browser_wait_for_download
+
+    started = time.perf_counter()
+    outcome = browser_wait_for_download(
+        settings, filename_contains=action.get("filename_contains") or None,
+        timeout_s=max(1, int(round(float(action.get("timeout_s") or _EXPECT_DOWNLOAD_TIMEOUT_S)))),
+        started_after_epoch_ms=since_ms,
+    )
+    result: Dict[str, Any] = {
+        "ok": True, "type": "wait", "for": "download", "matched": bool(outcome.get("completed")),
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+    }
+    if outcome.get("completed"):
+        result["download"] = {key: outcome.get(key) for key in ("path", "filename", "artifact_id")}
+    elif outcome.get("error") == "ambiguous_download":
+        result["ambiguous"] = {key: outcome.get(key) for key in ("error", "candidates", "hint") if outcome.get(key)}
+    else:
+        result["timed_out"] = True
+    return result
 
 
 def _expand_expectations(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -4168,6 +4206,10 @@ def _fold_expectations(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         expect = item.get("_expect") or {}
         met = bool(item.get("matched"))
         check = {**expect, "met": met, "waited_ms": item.get("duration_ms")}
+        if isinstance(item.get("download"), dict):
+            check["download"] = item["download"]
+        if item.get("ambiguous"):
+            check["ambiguous"] = item["ambiguous"]
         if target is None:
             continue
         target["expect"] = check
@@ -4892,10 +4934,13 @@ def _browser_act_locked(
 
     tab_lost: Optional[Dict[str, Any]] = None
     typ = ""
+    # When each action began (epoch ms): expect download matches files from the start of its action.
+    action_started_ms: Optional[int] = None
     try:
         for action in actions:
             if not isinstance(action, dict):
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object.")
+            previous_started_ms, action_started_ms = action_started_ms, int(time.time() * 1000)
             typ = str(action.get("type") or "").lower().replace("-", "_")
             in_flight = []
             resolved_target: Optional[Dict[str, Any]] = None
@@ -5083,15 +5128,18 @@ def _browser_act_locked(
                         break
                     current_observation_id = None
                 elif typ == "wait":
-                    wait_result = _wait_action(
-                        settings,
-                        browser,
-                        action,
-                        window_index,
-                        tab_index,
-                        initial_url,
-                        tab_handle,
-                    )
+                    if action.get("for") == "download":
+                        wait_result = _download_wait(settings, action, previous_started_ms)
+                    else:
+                        wait_result = _wait_action(
+                            settings,
+                            browser,
+                            action,
+                            window_index,
+                            tab_index,
+                            initial_url,
+                            tab_handle,
+                        )
                     wait_result.pop("_compact_state", None)
                     internal_js_calls += int(wait_result.pop("_js_calls", 0))
                     if "_expect_for" in action:

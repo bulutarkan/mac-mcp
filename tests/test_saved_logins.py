@@ -210,10 +210,13 @@ def _b64(obj) -> str:
 
 
 class SignInTests(VaultCase):
-    def run_sign_in(self, probe, fill=None, account=None, submit=False, fill_error=None):
+    def run_sign_in(self, probe, fill=None, account=None, submit=False, fill_error=None, frame=None):
         scripts = []
+        self.frames_seen = []
 
         def run_json(settings, browser, js, *args, **kwargs):
+            from mcp_server.tools_browser import current_frame_scope
+            self.frames_seen.append(current_frame_scope())
             scripts.append(js)
             if len(scripts) == 1:
                 return probe
@@ -235,7 +238,7 @@ class SignInTests(VaultCase):
              patch.object(agent, "_require_stable_handle_for_mutation"), \
              patch.object(agent, "delegated_agent_identity", return_value=None):
             result = sign_in.browser_sign_in(load_settings(), browser="Safari", tab_handle="btab_safari_x",
-                                             account=account, submit=submit)
+                                             account=account, submit=submit, frame=frame)
         return result, scripts
 
     def probe(self, host="github.com", protocol="https:", password=True, username=True):
@@ -252,6 +255,25 @@ class SignInTests(VaultCase):
         self.assertIn(json.dumps(SECRET), scripts[1])  # only the page script carries it
         self.assertIn('if(location.hostname!==expected)', scripts[1])
         self.assertNotIn(SECRET, scripts[0])
+
+    def test_a_login_form_in_a_child_frame_gets_the_frames_own_login(self) -> None:
+        # #36: both page scripts run inside the frame, so the site is the frame's, never the page around it.
+        login_vault.add_login("idmsa.apple.com", "ada@icloud.com", SECRET)
+        login_vault.add_login("www.icloud.com", "page-login", "other-secret-value")
+        result, scripts = self.run_sign_in(self.probe(host="idmsa.apple.com"), frame="idmsa.apple.com")
+        self.assertTrue(result["ok"])
+        self.assertEqual("idmsa.apple.com", result["site"])
+        self.assertEqual("idmsa.apple.com", result["frame"])
+        self.assertEqual(["idmsa.apple.com", "idmsa.apple.com"], self.frames_seen)
+        self.assertIn(json.dumps("idmsa.apple.com"), scripts[1])  # the fill re-checks the frame's host
+        self.assertNotIn("other-secret-value", scripts[1])
+        # No frame: scripts run in the top page as before, and the frame scope does not leak out.
+        login_vault.add_login("github.com", "ada", SECRET)
+        result, _ = self.run_sign_in(self.probe(host="github.com"))
+        self.assertEqual([None, None], self.frames_seen)
+        self.assertNotIn("frame", result)
+        from mcp_server.tools_browser import current_frame_scope
+        self.assertIsNone(current_frame_scope())
 
     def test_lookalike_insecure_and_missing_cases_get_nothing(self) -> None:
         login_vault.add_login("github.com", "ada", SECRET)

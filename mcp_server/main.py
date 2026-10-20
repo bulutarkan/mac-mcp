@@ -224,7 +224,8 @@ BROWSER_ACT_DESCRIPTION = (
     "Each action reports outcome: confirmed (its result was checked), page_reacted (the page changed, but nothing "
     "checked the intended result: a menu closing is not a link copied, a request is not a submission), unconfirmed, "
     "failed or blocked. Give an action expect={text:'Pending review'} / {gone:'Choose an image'} / {selector} / "
-    "{url_change:true} (timeout_s, default 5) to confirm its result; an unmet expect is expectation_not_met with "
+    "{url_change:true} (timeout_s, default 5) to confirm its result, or expect={download:true} on a click that downloads "
+    "a file (it returns the file as an artifact); an unmet expect is expectation_not_met with "
     "outcome_unknown=true, never retried automatically. "
     "Key actions (Enter, Escape, Tab, arrows, characters) run as background DOM keyboard events by default and Enter submits the input's form, "
     "so type then key Enter commits search boxes and date fields in the same batch. After an earlier action changes the page, a missing target is awaited "
@@ -2182,16 +2183,18 @@ def create_app():
             "Sign in on the tab's login form with a login the owner saved in Mac MCP (Settings > Saved Logins). "
             "The password is typed straight into the page and never returned; the result only says which account "
             "was used and what was filled. The login is chosen from the page's own site, so look-alike sites get nothing. "
-            "Pass account when several are saved; submit=true also submits the form. Works on username-first pages too."
+            "Pass account when several are saved; submit=true also submits the form. Works on username-first pages too. "
+            "A login form inside a child frame (Chrome): pass frame=part of that frame's URL; the login is then "
+            "chosen for the frame's own site."
         ),
     )
     async def _browser_sign_in(browser: str, tab_handle: Optional[str] = None, account: Optional[str] = None,
                                submit: bool = False, window_index: int = 1,
-                               tab_index: Optional[int] = None) -> Dict[str, Any]:
+                               tab_index: Optional[int] = None, frame: Optional[str] = None) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_sign_in",
             lambda: browser_sign_in(settings, browser=browser, tab_handle=tab_handle, account=account,
-                                    submit=submit, window_index=window_index, tab_index=tab_index),
+                                    submit=submit, window_index=window_index, tab_index=tab_index, frame=frame),
         )
 
     @mcp.tool(
@@ -2397,7 +2400,9 @@ def create_app():
     @mcp.tool(name="browser_wait_for_download",
               description=(
                   "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. "
-                  "Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected. "
+                  "To click and catch the download in one step, add expect={download: true} (or part of the file name) to the "
+                  "browser_act click instead: it also catches downloads that finish before any separate wait could start. "
+                  "Here, pass started_after_epoch_ms from before the initiating click when you have it. "
                   "If several downloads finished or are running it returns completed=false with error=ambiguous_download and the "
                   "candidates instead of guessing; narrow with filename_contains."
               ))
