@@ -989,7 +989,13 @@ private struct IslandMark: View {
                     .offset(x: 3, y: 3)
             }
         }
-        .accessibilityLabel(paused ? "Mac MCP, observation paused" : "Mac MCP")
+        .accessibilityLabel(Self.spokenLabel(paused: paused, privateMode: privateMode))
+    }
+
+    /// What VoiceOver says for the mark: every mode its badge stands for, in every island state (#29).
+    static func spokenLabel(paused: Bool, privateMode: Bool) -> String {
+        ["Mac MCP", paused ? "observation paused" : nil, privateMode ? "private mode" : nil]
+            .compactMap { $0 }.joined(separator: ", ")
     }
 }
 

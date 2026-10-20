@@ -25,6 +25,10 @@
 - The dashboard lists app changes next to file transactions with the same Undo button, and change summaries now say what changed ("Changed note", "Deleted reminder") instead of "Used app adapter", without the item's text. Finding, listing and opening no longer count as changes.
 - Records are owner-only, last 7 days (at most 200) and drop their copy once undone; `MAC_MCP_APP_UNDO=0` turns them off.
 
+### Activity bubble and Live Island (roadmap #24, #29)
+- The tool activity bubble stays when new work starts while it is fading out after the last batch: the fade turns around and the new work shows. Before, the end of the fade hid the bubble and cleared the new work.
+- VoiceOver reads the Live Island mark with every mode its badge shows, in every island state: "Mac MCP, private mode", "Mac MCP, observation paused", or both. Before, it said only "Mac MCP" when Private mode was on.
+
 ### Sign-in checkpoints, browser_do and Goose messages (roadmap #30, #32, #46)
 - A Safari sign-in checkpoint keeps its tab when the person is sent to another site (an identity provider, then back) and Safari gives the tab a new process. Before, `wait`/`status` could answer `tab_closed` for a tab that was still open. The same guarded rebind as after Mac MCP's own navigation applies (same window and position, same tab count, old process gone), kept open while the checkpoint lives.
 - `browser_do` with `close_after` and no `url` (or `new_tab=false`) is refused before anything runs. Before, the actions ran on the current tab and the call failed afterwards.

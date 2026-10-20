@@ -3,6 +3,9 @@ says so with a way to retry (#181)."""
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +18,26 @@ def source(name: str) -> str:
 
 
 class NativeAccessibilityTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("xcrun"), "needs the Swift toolchain")
+    def test_island_mark_says_private_mode_in_every_state(self) -> None:
+        # Roadmap #29: the badge showed Private mode, but VoiceOver only said "Mac MCP".
+        text = source("LiveIsland.swift")
+        self.assertIn(".accessibilityLabel(Self.spokenLabel(paused: paused, privateMode: privateMode))", text)
+        start = text.index("    static func spokenLabel(")
+        function = text[start:text.index("\n    }\n", start) + 6].replace("    static func", "func")
+        script = function + '''
+for (paused, privateMode) in [(false, false), (true, false), (false, true), (true, true)] {
+    print(spokenLabel(paused: paused, privateMode: privateMode))
+}
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "label.swift"
+            path.write_text(script, encoding="utf-8")
+            out = subprocess.run(["xcrun", "swift", str(path)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, out.returncode, out.stderr)
+        self.assertEqual(["Mac MCP", "Mac MCP, observation paused", "Mac MCP, private mode",
+                          "Mac MCP, observation paused, private mode"], out.stdout.splitlines())
+
     def test_every_switch_has_an_accessible_name(self) -> None:
         for path in SOURCES.glob("*.swift"):
             with self.subTest(file=path.name):

@@ -116,6 +116,46 @@ struct BubbleEpochHarness {
     }
 }
 '''
+        self._run_harness(harness, "BUBBLE_EPOCH_HARNESS_PASS")
+
+    def test_work_that_starts_while_the_bubble_fades_keeps_it(self) -> None:
+        # Roadmap #24: the fade's completion used to hide the panel and reset the new work.
+        harness = r'''
+import AppKit
+import Foundation
+
+@main
+struct BubbleFadeHarness {
+    @MainActor
+    static func main() async {
+        let controller = ToolActivityBubbleController.shared
+        func visiblePanel() -> NSWindow? { NSApplication.shared.windows.first(where: { $0.isVisible }) }
+        func wait(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+
+        controller.begin(eventID: "f1", tool: "run_command", description: "First batch", sessionID: "s1")
+        await wait(0.30)
+        controller.finish(eventID: "f1")
+        // The bubble lingers 2 s, then fades for 0.24 s: start new work inside that fade.
+        var waited = 0.0
+        while (visiblePanel()?.alphaValue ?? 0) > 0.85 && waited < 4.0 {
+            await wait(0.01)
+            waited += 0.01
+        }
+        precondition(visiblePanel() != nil, "panel was gone before the fade could be caught")
+        controller.begin(eventID: "f2", tool: "read_file", description: "Second batch", sessionID: "s2")
+        await wait(0.60)
+        guard let panel = visiblePanel() else { fatalError("new work was hidden by the old fade") }
+        precondition(panel.alphaValue > 0.95, "panel stayed faded: \(panel.alphaValue)")
+        await wait(1.00)
+        precondition(visiblePanel() != nil, "panel hid while work was still running")
+        controller.hideImmediately()
+        print("BUBBLE_FADE_HARNESS_PASS")
+    }
+}
+'''
+        self._run_harness(harness, "BUBBLE_FADE_HARNESS_PASS")
+
+    def _run_harness(self, harness: str, marker: str) -> None:
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / "BubbleEpochHarness.swift"
             binary = Path(td) / "bubble-epoch-harness"
@@ -144,7 +184,7 @@ struct BubbleEpochHarness {
             self.assertEqual(0, compiled.returncode, compiled.stderr)
             ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
             self.assertEqual(0, ran.returncode, ran.stderr)
-            self.assertIn("BUBBLE_EPOCH_HARNESS_PASS", ran.stdout)
+            self.assertIn(marker, ran.stdout)
 
 
 if __name__ == "__main__":

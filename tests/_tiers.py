@@ -18,6 +18,7 @@ SWIFT_ONLY = (
     "test_menu_status_surfaces",
     "test_menu_steering_generation_recovery",
     "test_menu_steering_idempotency",
+    "test_native_accessibility",
     "test_onboarding_bridge",
     "test_onboarding_checklist",
     "test_provider_usage_section",

@@ -268,6 +268,8 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
     private var nextLaneOrdinal = 1
     private var expandedEpoch = false
     private var hideTask: Task<Void, Never>?
+    /// Moves on with every begin(): a fade that started before new work arrived must not hide that work (#24).
+    private var hideGeneration = 0
     private var previewTask: Task<Void, Never>?
     private var settlingTasks: [String: Task<Void, Never>] = [:]
 
@@ -291,6 +293,7 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
 
         hideTask?.cancel()
         hideTask = nil
+        hideGeneration += 1
 
         let laneKey = laneKey(
             eventID: eventID,
@@ -448,8 +451,14 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
                 context.duration = 0.18
                 panel.animator().alphaValue = 1
             }
+        } else if panel.alphaValue < 1 {
+            // Still fading out from the last batch: turn the fade around instead of jumping.
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                panel.animator().alphaValue = 1
+            }
         } else {
-            panel.alphaValue = 1
             panel.orderFrontRegardless()
         }
     }
@@ -523,13 +532,15 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
             guard !Task.isCancelled, let self, self.active.isEmpty, let panel = self.panel else { return }
 
             self.cancelAllSettlingTasks()
+            let generation = self.hideGeneration
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.24
                 panel.animator().alphaValue = 0
             }, completionHandler: {
-                panel.orderOut(nil)
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
+                    // Work that began during the fade keeps the bubble: refreshPresentation brought it back.
+                    guard let self, self.hideGeneration == generation, self.active.isEmpty else { return }
+                    panel.orderOut(nil)
                     self.settling.removeAll()
                     self.resetEpoch()
                     self.preparePanelForNextEpoch(panel)
