@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import subprocess
 import tempfile
 import unittest
@@ -317,6 +318,10 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn('SIGN_IDENTITY="${MAC_MCP_CODESIGN_IDENTITY:--}"', source)
         self.assertIn("--options runtime --timestamp", source)
         self.assertIn('--sign "${SIGN_IDENTITY}" "${EXTENSION}"', source)
+        # PlugInKit drops an unsandboxed extension, so Safari never shows the companion.
+        self.assertIn('--entitlements "${SCRIPT_DIR}/SafariExtension/SafariExtension.entitlements"', source)
+        entitlements = plistlib.loads((ROOT / "menu_app/SafariExtension/SafariExtension.entitlements").read_bytes())
+        self.assertEqual({"com.apple.security.app-sandbox": True}, entitlements)
         self.assertIn('--sign "${SIGN_IDENTITY}" "${APP}"', source)
         self.assertIn('BrowserVisualCompanion/manifest.json', source)
         self.assertIn('BrowserVisualCompanion/visual.js', source)

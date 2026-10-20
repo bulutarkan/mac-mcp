@@ -139,7 +139,11 @@ sed "s/__MAC_MCP_EXTENSION_BUNDLE_ID__/${EXTENSION_BUNDLE_ID}/g" \
 cp "${SCRIPT_DIR}/BrowserVisualCompanion/manifest.json" "${EXTENSION_RESOURCES}/manifest.json"
 cp "${SCRIPT_DIR}/BrowserVisualCompanion/visual.js" "${EXTENSION_RESOURCES}/visual.js"
 /usr/bin/plutil -lint "${EXTENSION_CONTENTS}/Info.plist" >/dev/null
-/usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${EXTENSION}" >/dev/null
+# PlugInKit ignores an extension signed by a real identity unless it is sandboxed ("plug-ins must be
+# sandboxed"), and Safari then never loads the Visual Companion. Its handler only answers Safari, so the
+# sandbox takes nothing away.
+/usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --entitlements "${SCRIPT_DIR}/SafariExtension/SafariExtension.entitlements" \
+  --sign "${SIGN_IDENTITY}" "${EXTENSION}" >/dev/null
 
 # Mac MCP Messages Reader (#261): the one app the owner gives Full Disk Access to so agents can read
 # Messages; it opens only ~/Library/Messages/chat.db, read-only. Signed like the app, so the grant
