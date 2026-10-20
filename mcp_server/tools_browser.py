@@ -599,6 +599,13 @@ def _chrome_window_id(window_index: int) -> int:
         }) from exc
 
 
+def _chrome_window_count() -> int:
+    try:
+        return int(str(_run_osascript('tell application "Google Chrome" to count windows', timeout_s=10)).strip())
+    except (HTTPException, ValueError):
+        return -1
+
+
 def _close_chrome_tab_by_id(chrome_tab_id: str) -> None:
     tab_id = int(chrome_tab_id)
     _run_osascript(f'''tell application "Google Chrome"
@@ -626,10 +633,17 @@ def _open_chrome_background_tab_via_extension(
     with _CHROME_BACKGROUND_OPEN_LOCK:
         before = browser_tabs.list_tabs("Google Chrome")
         before_ids = {str(row.get("native_id") or "") for row in before}
-        window_id = _chrome_window_id(window_index)
-        bridge_result = chrome_background_bridge.request_open_tab(
-            url, window_id=window_id if chrome_background_bridge.supports("open_tab_window") else None, timeout_s=6.0,
-        )
+        if int(window_index) == 1 and not before and _chrome_window_count() == 0 \
+                and chrome_background_bridge.supports("open_window"):
+            # Chrome still runs with every window closed: a window that does not take focus holds the tab.
+            bridge_result = chrome_background_bridge.request_open_window(url, timeout_s=6.0)
+            window_id = bridge_result.get("chrome_window_id")
+        else:
+            window_id = _chrome_window_id(window_index)
+            bridge_result = chrome_background_bridge.request_open_tab(
+                url, window_id=window_id if chrome_background_bridge.supports("open_tab_window") else None,
+                timeout_s=6.0,
+            )
         chrome_tab_id = str(bridge_result.get("chrome_tab_id") or "")
         if str(bridge_result.get("chrome_window_id") or "") != str(window_id):
             # An older companion ignores window_id and uses the last focused window: take the tab back

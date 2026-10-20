@@ -212,6 +212,23 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
         bridge.request_open_tab.assert_called_once_with("https://example.com/", window_id=None, timeout_s=6.0)
         self.assertIn("if id of t is 555 then", scripts[-1])
 
+    def test_chrome_with_every_window_closed_gets_a_background_window(self) -> None:
+        created = {"browser": "Google Chrome", "window_index": 1, "tab_index": 1, "native_id": "777",
+                   "url": "https://example.com/", "tab_handle": "btab_chrome_new"}
+        rows = [[], [dict(created)]]
+        bridge = SimpleNamespace(
+            supports=lambda feature: True, request_open_tab=MagicMock(),
+            request_open_window=MagicMock(return_value={"chrome_tab_id": 777, "chrome_window_id": 4242}),
+        )
+        with patch("mcp_server.tools_browser.chrome_background_bridge", bridge), \
+             patch("mcp_server.tools_browser._run_osascript", return_value="0") as applescript, \
+             patch("mcp_server.tools_browser.browser_tabs.list_tabs", side_effect=lambda browser: rows.pop(0) if rows else [dict(created)]):
+            row, _ = _open_chrome_background_tab_via_extension("https://example.com/", 1)
+        bridge.request_open_window.assert_called_once_with("https://example.com/", timeout_s=6.0)
+        bridge.request_open_tab.assert_not_called()
+        self.assertIn("count windows", applescript.call_args.args[0])
+        self.assertEqual("777", row["native_id"])
+
     def test_a_missing_window_opens_nothing(self) -> None:
         bridge = SimpleNamespace(supports=lambda feature: True, request_open_tab=MagicMock())
         with patch("mcp_server.tools_browser.chrome_background_bridge", bridge), \
