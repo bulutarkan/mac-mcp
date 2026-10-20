@@ -213,3 +213,53 @@ class RoomAndNoteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InboxPagingTests(StoreFixture):
+    """#73: a backlog longer than the page is read page by page; nothing unread is skipped."""
+
+    def send_many(self, count: int, prefix: str = "m", room: str = ROOM) -> None:
+        for index in range(count):
+            self.store.send(room, LEAD, f"{prefix}{index}")
+
+    def test_twelve_unread_read_ten_then_two(self) -> None:
+        self.send_many(12)
+        first = self.store.inbox(A1.member_id, limit=10, unread_only=True)
+        self.assertEqual([f"m{i}" for i in range(10)], [m["body"] for m in first["messages"]])
+        self.assertTrue(first["has_more"])
+        self.assertEqual(2, first["unread_remaining"])
+        second = self.store.inbox(A1.member_id, limit=10, unread_only=True)
+        self.assertEqual(["m10", "m11"], [m["body"] for m in second["messages"]])
+        self.assertFalse(second["has_more"])
+        self.assertEqual([], self.store.inbox(A1.member_id, limit=10, unread_only=True)["messages"])
+
+    def test_the_latest_view_leaves_older_unread_ones_unread(self) -> None:
+        self.send_many(12)
+        latest = self.store.inbox(A1.member_id, limit=5, unread_only=False)
+        self.assertEqual([f"m{i}" for i in range(7, 12)], [m["body"] for m in latest["messages"]])
+        self.assertEqual(7, latest["unread_remaining"])
+        older = self.store.inbox(A1.member_id, limit=20, unread_only=True)
+        self.assertEqual([f"m{i}" for i in range(7)], [m["body"] for m in older["messages"]])
+
+    def test_a_page_over_two_rooms_marks_only_what_it_shows(self) -> None:
+        other = "room:other"
+        self.store.join(other, LEAD.member_id, label=LEAD.label, kind="session")
+        self.store.join(other, A1.member_id, label=A1.label, kind="agent")
+        self.send_many(3, prefix="a")
+        self.send_many(3, prefix="b", room=other)
+        page = self.store.inbox(A1.member_id, limit=4, unread_only=True)
+        self.assertEqual(["a0", "a1", "a2", "b0"], [m["body"] for m in page["messages"]])
+        self.assertEqual(2, page["unread_remaining"])
+        rest = self.store.inbox(A1.member_id, limit=4, unread_only=True)
+        self.assertEqual(["b1", "b2"], [m["body"] for m in rest["messages"]])
+
+    def test_a_passive_note_says_when_more_are_waiting(self) -> None:
+        self.send_many(tm.NOTE_MESSAGES - 2)
+        few = self.store.claim(A1.member_id, channel="hook", limit=2)
+        self.assertEqual(2, len(few))
+        self.assertTrue(few[-1].get("more_waiting"))
+        self.assertIn("More messages are waiting", tm.note(few))
+        rest = self.store.claim(A1.member_id, channel="hook", limit=2)
+        self.assertEqual(1, len(rest))
+        self.assertNotIn("more_waiting", rest[-1])
+        self.assertNotIn("More messages are waiting", tm.note(rest))

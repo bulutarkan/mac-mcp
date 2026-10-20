@@ -355,18 +355,22 @@ class Store:
     # -- receiving -----------------------------------------------------------
     @staticmethod
     def _for_member(conn: sqlite3.Connection, member: sqlite3.Row, *, after: int, limit: int, newest: bool = False,
-                    include_own: bool = False) -> List[sqlite3.Row]:
-        """Messages for one member after a mark: broadcasts since it joined, and anything sent to it or its task."""
+                    include_own: bool = False, unread: bool = False) -> List[sqlite3.Row]:
+        """Messages for one member after a mark: broadcasts since it joined, and anything sent to it or its task.
+
+        unread leaves out messages the member opened one by one past its read mark (the latest view)."""
         task = f"task:{member['task_id']}" if member["task_id"] else ""
         me = member["member_id"]
         own = " OR sender_id = ?" if include_own else ""
+        opened = (" AND NOT EXISTS (SELECT 1 FROM deliveries WHERE deliveries.seq = messages.seq "
+                  "AND deliveries.member_id = ? AND deliveries.read_at IS NOT NULL)") if unread else ""
         return conn.execute(
             "SELECT messages.*, messages.sender_id = (SELECT lead_id FROM rooms WHERE rooms.room_id = messages.room_id) "
             "AS from_lead FROM messages WHERE room_id = ? AND seq > ? AND (sender_id != ?" + own + ") AND ("
-            "(recipient_id IS NULL AND seq > ?) OR recipient_id IN (?, ?)" + own + ") ORDER BY seq "
+            "(recipient_id IS NULL AND seq > ?) OR recipient_id IN (?, ?)" + own + ")" + opened + " ORDER BY seq "
             + ("DESC" if newest else "") + " LIMIT ?",
             (member["room_id"], after, me, *([me] if include_own else []), member["joined_seq"], me, task,
-             *([me] if include_own else []), limit)).fetchall()
+             *([me] if include_own else []), *([me] if unread else []), limit)).fetchall()
 
     def claim(self, member_id: str, *, channel: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Messages not yet shown to member_id in any of its rooms; marks them shown on this channel."""
@@ -380,9 +384,11 @@ class Store:
                 members = conn.execute("SELECT * FROM members WHERE member_id = ? AND left_at IS NULL",
                                        (member_id,)).fetchall()
                 for member in members:
-                    rows = self._for_member(conn, member, after=int(member["delivered_seq"]), limit=limit)
+                    rows = self._for_member(conn, member, after=int(member["delivered_seq"]), limit=limit + 1)
                     if not rows:
                         continue
+                    more = len(rows) > limit
+                    rows = rows[:limit]
                     top = max(int(row["seq"]) for row in rows)
                     conn.execute("UPDATE members SET delivered_seq = ? WHERE room_id = ? AND member_id = ? "
                                  "AND delivered_seq < ?", (top, member["room_id"], member_id, top))
@@ -390,6 +396,9 @@ class Store:
                         "INSERT OR IGNORE INTO deliveries (seq, member_id, channel, shown_at) VALUES (?, ?, ?, ?)",
                         [(int(row["seq"]), member_id, channel, now) for row in rows])
                     out.extend(self._public(row) for row in rows)
+                    if more:
+                        # The rest come with the next tool call; say so, so a long backlog is not taken as all.
+                        out[-1]["more_waiting"] = True
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
@@ -398,9 +407,13 @@ class Store:
 
     def inbox(self, member_id: str, *, room_id: Optional[str] = None, limit: int = 20,
               unread_only: bool = False) -> Dict[str, Any]:
-        """The member's messages, newest last; opening them marks them read (and shown)."""
+        """The member's messages, oldest first; opening them marks them read (and shown).
+
+        unread_only gives the oldest unread ones first, so a backlog longer than limit is read page by page:
+        messages not returned stay unread (#73). Without it, the latest messages including the member's own;
+        older unread ones it leaves out stay unread too. has_more and unread_remaining say what is left.
+        """
         now = time.time()
-        rows_out: List[Dict[str, Any]] = []
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -409,13 +422,29 @@ class Store:
                 if room_id:
                     query += " AND room_id = ?"
                     params.append(room_id)
-                for member in conn.execute(query, params).fetchall():
-                    rows = self._for_member(conn, member, after=int(member["read_seq"]) if unread_only else 0,
-                                            limit=limit, newest=True, include_own=not unread_only)
+                members = conn.execute(query, params).fetchall()
+                # The page first, over every room, then mark only what is on it.
+                candidates = [(member, row) for member in members for row in self._for_member(
+                    conn, member, after=int(member["read_seq"]) if unread_only else 0, limit=limit,
+                    newest=not unread_only, include_own=not unread_only, unread=unread_only)]
+                candidates.sort(key=lambda item: int(item[1]["seq"]))
+                page = candidates[:limit] if unread_only else candidates[-limit:]
+                on_page = {int(row["seq"]) for _, row in page}
+                remaining = 0
+                for member in members:
+                    read_seq = int(member["read_seq"])
+                    unread = [int(row["seq"]) for row in self._for_member(conn, member, after=read_seq,
+                                                                          limit=ROOM_HISTORY, unread=True)]
+                    # Read up to the first unread message not on this page, never past it.
+                    top = read_seq
+                    for seq in unread:
+                        if seq not in on_page:
+                            break
+                        top = seq
+                    remaining += sum(1 for seq in unread if seq not in on_page)
+                    rows = [row for owner, row in page if owner["room_id"] == member["room_id"]]
                     if not rows:
                         continue
-                    top = max(int(row["seq"]) for row in rows if row["sender_id"] != member_id) if any(
-                        row["sender_id"] != member_id for row in rows) else 0
                     conn.execute("UPDATE members SET read_seq = MAX(read_seq, ?), delivered_seq = MAX(delivered_seq, ?) "
                                  "WHERE room_id = ? AND member_id = ?", (top, top, member["room_id"], member_id))
                     conn.executemany(
@@ -423,13 +452,12 @@ class Store:
                         [(int(row["seq"]), member_id, now) for row in rows if row["sender_id"] != member_id])
                     conn.executemany("UPDATE deliveries SET read_at = COALESCE(read_at, ?) WHERE seq = ? AND member_id = ?",
                                      [(now, int(row["seq"]), member_id) for row in rows])
-                    rows_out.extend(self._public(row) for row in reversed(rows))
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
-        rows_out.sort(key=lambda row: row["seq"])
-        return {"messages": rows_out[-limit:], "count": len(rows_out[-limit:])}
+        messages = [self._public(row) for _, row in page]
+        return {"messages": messages, "count": len(messages), "has_more": remaining > 0, "unread_remaining": remaining}
 
     def delivery(self, message_id: str) -> Dict[str, Any]:
         """Who was shown a message, on which channel, and who opened it (shown is not read)."""
@@ -555,6 +583,8 @@ def note(messages: Sequence[Dict[str, Any]]) -> str:
         lines.append(f"- {lead}{message['from']}{target} [{message['kind']}, {message['message_id']}]: {body}")
     if len(messages) > NOTE_MESSAGES:
         lines.append(f"- … and {len(messages) - NOTE_MESSAGES} more (team_messages action=inbox).")
+    elif any(message.get("more_waiting") for message in messages):
+        lines.append("- More messages are waiting (team_messages action=inbox).")
     lines.append("Reply only if it helps, with the Mac MCP tool team_messages: action=send, to = a task id, role or "
                  "'lead'.")
     return "\n".join(lines)
