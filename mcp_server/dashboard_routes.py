@@ -49,7 +49,7 @@ from .runtime_settings import (
     MEMORY_RETENTION_CHOICES, RUN_DETAIL_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, run_detail_privacy, server_setting,
     update_runtime_setting, usage_privacy,
 )
-from .tools_memory import memory_clear, memory_export_all, memory_overview
+from .tools_memory import memory_clear, memory_delete, memory_export_all, memory_overview, memory_search, memory_update
 from .usage_metering import clear_usage
 from . import recipes
 from .request_client import client_address as _client_address, is_direct_local_request, is_loopback as _is_loopback
@@ -1095,6 +1095,127 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": "invalid_request", "message": str(exc.detail)}, status_code=400)
         return JSONResponse(result)
 
+    # Settings › Memory › Review (#60): the owner reads, edits and deletes memories and lessons here instead of
+    # asking an agent. Private mode still refuses what would keep content (an edit, enabling a lesson); deleting works.
+    def _private_refusal() -> Optional[Response]:
+        from . import privacy_policy
+
+        if not privacy_policy.policy(fresh=True)["private_mode"]:
+            return None
+        return JSONResponse({"ok": False, "error": "private_mode",
+                             "message": "Private mode is on, so memories and lessons cannot be changed now. Deleting works."},
+                            status_code=409)
+
+    def _http_error(exc: HTTPException) -> Response:
+        return JSONResponse({"ok": False, "error": "invalid_request", "message": str(exc.detail)},
+                            status_code=exc.status_code if 400 <= exc.status_code < 500 else 400)
+
+    async def memory_items(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        params = request.query_params
+        query = (params.get("query") or "").strip() or None
+        tag = (params.get("tag") or "").strip()
+        try:
+            result = await asyncio.to_thread(
+                memory_search, query=query, tags=[tag] if tag else None,
+                importance=(params.get("importance") or "").strip() or None,
+                sort="relevance" if query else "newest", limit=max(1, min(_int_query(request, "limit", 50), 100)),
+            )
+        except HTTPException as exc:
+            return _http_error(exc)
+        return JSONResponse(result)
+
+    async def memory_item_update(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        refused = _private_refusal()
+        if refused:
+            return refused
+        body = await _json_body(request)
+        tags = body.get("tags")
+        if tags is not None and not (isinstance(tags, list) and all(isinstance(item, str) for item in tags)):
+            return JSONResponse({"ok": False, "error": "tags_must_be_a_list"}, status_code=400)
+        try:
+            result = await asyncio.to_thread(
+                memory_update, memory_id=str(body.get("memory_id") or "").strip() or None,
+                content=body.get("content"), tags=tags, importance=body.get("importance"),
+            )
+        except HTTPException as exc:
+            return _http_error(exc)
+        if result.get("selection_required"):
+            return JSONResponse({"ok": False, "error": "memory_id_required"}, status_code=400)
+        return JSONResponse(result)
+
+    async def memory_item_delete(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        memory_id = str(body.get("memory_id") or "").strip()
+        if not memory_id:
+            return JSONResponse({"ok": False, "error": "memory_id_required"}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(memory_delete, memory_id=memory_id, confirm=True))
+        except HTTPException as exc:
+            return _http_error(exc)
+
+    async def lesson_items(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from .tools_lessons import lesson_search
+
+        params = request.query_params
+        try:
+            result = await asyncio.to_thread(
+                lesson_search, role=(params.get("role") or "").strip() or None,
+                query=(params.get("query") or "").strip() or None, state=(params.get("state") or "").strip() or None,
+                limit=max(1, min(_int_query(request, "limit", 50), 100)),
+            )
+        except HTTPException as exc:
+            return _http_error(exc)
+        return JSONResponse(result)
+
+    async def lesson_item_feedback(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from .tools_lessons import lesson_feedback
+
+        body = await _json_body(request)
+        outcome = str(body.get("outcome") or "").strip().lower()
+        if outcome not in {"approve", "enable", "disable"}:
+            return JSONResponse({"ok": False, "error": "outcome_must_be_approve_enable_or_disable"}, status_code=400)
+        if outcome != "disable":
+            refused = _private_refusal()
+            if refused:
+                return refused
+        try:
+            result = await asyncio.to_thread(lesson_feedback, lesson_id=str(body.get("lesson_id") or ""),
+                                             outcome=outcome, note="from Settings", provenance_class="local")
+        except HTTPException as exc:
+            return _http_error(exc)
+        return JSONResponse(result)
+
+    async def lesson_item_delete(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from .tools_lessons import lesson_delete
+
+        body = await _json_body(request)
+        lesson_id = str(body.get("lesson_id") or "").strip()
+        if not lesson_id:
+            return JSONResponse({"ok": False, "error": "lesson_id_required"}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(lesson_delete, lesson_id=lesson_id, confirm=True,
+                                                        provenance_class="local"))
+        except HTTPException as exc:
+            return _http_error(exc)
+
     async def memory_settings(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -1830,6 +1951,12 @@ def create_dashboard_routes(
         Route("/dashboard/api/memory/export", memory_export, methods=["GET"]),
         Route("/dashboard/api/memory/clear", memory_clear_route, methods=["POST"]),
         Route("/dashboard/api/memory/settings", memory_settings, methods=["POST"]),
+        Route("/dashboard/api/memory/items", memory_items, methods=["GET"]),
+        Route("/dashboard/api/memory/item", memory_item_update, methods=["POST"]),
+        Route("/dashboard/api/memory/item/delete", memory_item_delete, methods=["POST"]),
+        Route("/dashboard/api/lessons", lesson_items, methods=["GET"]),
+        Route("/dashboard/api/lessons/feedback", lesson_item_feedback, methods=["POST"]),
+        Route("/dashboard/api/lessons/delete", lesson_item_delete, methods=["POST"]),
         Route("/dashboard/api/recipes", launcher_recipes, methods=["GET"]),
         Route("/dashboard/api/recipes/run", launcher_run_recipe, methods=["POST"]),
         Route("/dashboard/api/recipes/manage", recipes_manage_list, methods=["GET"]),

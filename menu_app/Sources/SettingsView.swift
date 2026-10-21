@@ -194,6 +194,7 @@ struct SettingsView: View {
     @MacMCPState private var appSupportProblem: String?
     @MacMCPState private var confirmClearUsage = false
     @MacMCPState private var memoryClearPreview: MemoryClearResult?
+    @MacMCPState private var reviewingMemory = false
     @MacMCPState private var groqKey = ""
     @MacMCPState private var decisionsKey = ""
     @MacMCPState private var cloudflareToken = ""
@@ -1229,6 +1230,8 @@ struct SettingsView: View {
                 Spacer(minLength: 8)
             }
             HStack(spacing: 8) {
+                // Read, fix or delete one memory or lesson at a time (#60).
+                Button("Review Memories and Lessons…") { reviewingMemory = true }
                 Button("Export Memories…") { exportMemories() }
                 Button("Delete All Memories…", role: .destructive) {
                     Task { memoryClearPreview = await state.clearMemory(confirm: false) }
@@ -1243,6 +1246,9 @@ struct SettingsView: View {
             if let notice = state.memoryNotice {
                 Text(notice).font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .sheet(isPresented: $reviewingMemory, onDismiss: { Task { await state.refreshMemory() } }) {
+            MemoryReviewView().environmentObject(state)
         }
     }
 
