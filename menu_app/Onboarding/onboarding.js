@@ -4,7 +4,7 @@
 'use strict';
 const {
   SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow,
-  agentsSummary, appGroups, callSentence, stackParts, browserRow,
+  agentsSummary, appGroups, callSentence, stackParts, browserRow, startView,
 } = window.OnboardingSteps;
 
 // ---------- bridge ----------
@@ -154,10 +154,9 @@ function renderLive() {
   const ring = $('.ring');
   ring.classList.toggle('is-on', e.start);
   $('.power').classList.toggle('is-on', e.start);
-  $('[data-live="power-state"]').textContent = e.start ? 'Running on this Mac' : 'Not running yet';
-  $('[data-live="start-text"]').textContent = e.start
-    ? 'Mac MCP is running on this Mac. It starts again when you log in.'
-    : 'AI apps reach your Mac through a small server that runs here. Start it once; it starts again when you log in.';
+  const start = startView(e);
+  $('[data-live="power-state"]').textContent = start.power;
+  $('[data-live="start-text"]').textContent = start.text;
   // Permissions
   // Until Mac MCP Server runs the server, macOS lists the permissions under another name.
   const holder = $('[data-live="holder"]');
@@ -275,6 +274,7 @@ async function runPrimary() {
   const { action } = primaryAction(SCREENS[current].id, evaluation);
   if (action === 'next') return show(current + 1);
   if (action === 'finish') return call('finish', { outcome: 'completed' });
+  if (action === 'refresh') return refresh();
   if (action === 'startServer') {
     primary.disabled = true;
     $('.ring').classList.add('is-starting');

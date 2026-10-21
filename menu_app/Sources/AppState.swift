@@ -457,15 +457,32 @@ final class AppState: ObservableObject {
 
     /// GET /dashboard/api/onboarding plus server_running, as the tour page reads it.
     func onboardingStatusPayload() async -> [String: Any] {
-        guard var payload = try? await dashboardJSON("dashboard/api/onboarding", body: nil) as? [String: Any] else {
-            return ["server_running": false]
+        var payload: [String: Any]
+        do {
+            guard let answer = try await dashboardJSON("dashboard/api/onboarding", body: nil) as? [String: Any] else {
+                return ["server_running": false, "server_state": "unavailable", "start_at_login": settings.startAtLogin]
+            }
+            payload = answer
+        } catch {
+            // Only a refused connection means the server is stopped; an error answer, a timeout or an
+            // unreadable reply means its status could not be read (#18).
+            return ["server_running": false, "server_state": Self.serverDown(error) ? "stopped" : "unavailable",
+                    "start_at_login": settings.startAtLogin]
         }
         setIfChanged(\.serverRunning, true)
         payload["server_running"] = true
+        payload["server_state"] = "running"
+        payload["start_at_login"] = settings.startAtLogin
         await refreshChromeCompanion()
         refreshSafariExtensionState(quiet: true)
         payload["browsers"] = browserCompanionStates
         return payload
+    }
+
+    /// Nothing listens on the port: the server is not running.
+    nonisolated static func serverDown(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        return [.cannotConnectToHost, .cannotFindHost, .networkConnectionLost].contains(urlError.code)
     }
 
     func dashboardJSON(_ path: String, body: [String: Any]?) async throws -> Any {

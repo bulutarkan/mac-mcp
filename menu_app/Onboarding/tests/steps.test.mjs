@@ -5,7 +5,7 @@ import steps from '../steps.js';
 
 const {
   SCREENS, CLIENTS, AGENTS, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients,
-  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT,
+  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT, startView,
 } = steps;
 
 test('the tour comes first, then the setup in order', () => {
@@ -205,4 +205,28 @@ test('browser companions are read from the status and never block setup', () => 
   assert.deepEqual([browserRow('chrome', 'not_installed').state, browserRow('chrome', 'not_installed').button],
     ['Not installed', null]);
   assert.deepEqual([browserRow('chrome', 'unknown').state, browserRow('chrome', 'unknown').button], ['Checking…', null]);
+});
+
+test('a status that could not be read is not a stopped server (#18)', () => {
+  const unreadable = evaluate({ server_running: false, server_state: 'unavailable' });
+  assert.equal(unreadable.start, false);
+  assert.equal(unreadable.unavailable, true);
+  assert.deepEqual(primaryAction('start', unreadable), { label: 'Try again', action: 'refresh' });
+  assert.equal(startView(unreadable).power, 'Status unavailable');
+  assert.match(startView(unreadable).text, /may still be running/);
+  const stopped = evaluate({ server_running: false, server_state: 'stopped' });
+  assert.deepEqual(primaryAction('start', stopped), { label: 'Start Mac MCP', action: 'startServer' });
+  assert.equal(startView(stopped).power, 'Not running yet');
+  // A page told nothing about the state (an older app) still offers to start it.
+  assert.deepEqual(primaryAction('start', evaluate({ server_running: false })), { label: 'Start Mac MCP', action: 'startServer' });
+});
+
+test('the Start screen says what the start-at-login setting does (#22)', () => {
+  const on = startView(evaluate({ server_running: true, start_at_login: true }));
+  assert.equal(on.text, 'Mac MCP is running on this Mac. It starts again when you log in.');
+  const off = startView(evaluate({ server_running: true, start_at_login: false }));
+  assert.match(off.text, /does not start at login; you can turn that on in Settings › General/);
+  const unknown = startView(evaluate({ server_running: false }));
+  assert.doesNotMatch(unknown.text, /starts again when you log in/);
+  assert.match(unknown.text, /Settings › General/);
 });

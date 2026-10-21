@@ -64,10 +64,15 @@ function indexOf(id) {
 function evaluate(status) {
   const s = status || {};
   const running = s.server_running === true;
+  // The status could not be read (an error, a timeout): not the same as a stopped server (#18).
+  const unavailable = !running && s.server_state === 'unavailable';
   const accessibility = running ? s.accessibility || 'unknown' : 'unknown';
   const screen = running ? s.screen_recording || 'unknown' : 'unknown';
   return {
     start: running,
+    unavailable,
+    // The owner's "Start Mac MCP when you log in" setting; null when the page was not told (#22).
+    startsAtLogin: typeof s.start_at_login === 'boolean' ? s.start_at_login : null,
     connect: running && Boolean(s.first_call),
     request: running && Boolean(s.first_success),
     firstTool: (s.first_call && s.first_call.tool) || null,
@@ -115,6 +120,25 @@ function browserRow(name, state) {
   }
 }
 
+/** What the Start screen says: the state under the power button and the sentence below it. */
+function startView(evaluation) {
+  const e = evaluation || evaluate(null);
+  const login = e.startsAtLogin === true ? 'It starts again when you log in.'
+    : e.startsAtLogin === false ? 'It does not start at login; you can turn that on in Settings › General.'
+      : 'You can have it start at login in Settings › General.';
+  if (e.start) return { power: 'Running on this Mac', text: `Mac MCP is running on this Mac. ${login}` };
+  if (e.unavailable) {
+    return {
+      power: 'Status unavailable',
+      text: 'Mac MCP did not answer the status check. It may still be running: try again in a moment.',
+    };
+  }
+  return {
+    power: 'Not running yet',
+    text: `AI apps reach your Mac through a small server that runs here. Start it once. ${login}`,
+  };
+}
+
 /** The primary button for a screen: its label and what it does. */
 function primaryAction(id, evaluation) {
   const e = evaluation || evaluate(null);
@@ -124,7 +148,8 @@ function primaryAction(id, evaluation) {
     case 'safety':
       return { label: 'Set up Mac MCP', action: 'next' };
     case 'start':
-      return e.start ? { label: 'Continue', action: 'next' } : { label: 'Start Mac MCP', action: 'startServer' };
+      if (e.start) return { label: 'Continue', action: 'next' };
+      return e.unavailable ? { label: 'Try again', action: 'refresh' } : { label: 'Start Mac MCP', action: 'startServer' };
     case 'permissions':
       return { label: e.permissions.done ? 'Continue' : 'Skip for now', action: 'next' };
     case 'browsers':
@@ -239,7 +264,7 @@ function orderedClients(apps) {
 
 const api = {
   SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, agentRow, orderedClients,
-  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT, browserRow,
+  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT, browserRow, startView,
 };
 if (typeof module === 'object' && module.exports) module.exports = api;
 else root.OnboardingSteps = api;
