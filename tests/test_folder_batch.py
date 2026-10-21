@@ -180,3 +180,29 @@ class BatchUITests(StoreCase):
         self.assertIn("ForEach(shown.triggerFiles, id: \\.self)", report)
         model = (sources / "AppModels+ScheduledTasks.swift").read_text(encoding="utf-8")
         self.assertIn('raw["trigger_files"] as? [String]', model)
+
+
+class RealBatchWatcherTests(StoreCase):
+    def test_the_watcher_thread_hands_a_dropped_stack_to_one_run(self) -> None:
+        inbox = self.dir / "stack"
+        inbox.mkdir()
+        launched = []
+        scheduler = runner.Scheduler(None, launch=lambda task_id, run_id, definition: launched.append(definition))
+        store.create_task(self.ai(schedule={"type": "folder", "folder": str(inbox), "batch": True}))
+        store.on_change(scheduler.folders.poke)
+        with patch.object(folder_triggers, "SETTLE_S", 0.3), patch.object(folder_triggers, "PENDING_POLL_S", 0.1), \
+                patch.object(folder_triggers, "BATCH_QUIET_S", 1.0):
+            scheduler.folders.begin()
+            self.addCleanup(scheduler.folders.end)
+            deadline = time.time() + 5
+            while scheduler.folders.scans == 0 and time.time() < deadline:
+                time.sleep(0.05)
+            for index in range(10):
+                (inbox / f"scan-{index}.pdf").write_bytes(b"%PDF" + bytes(index))
+                time.sleep(0.1)  # a scanner dropping pages one by one
+            deadline = time.time() + 15
+            while not launched and time.time() < deadline:
+                time.sleep(0.05)
+            time.sleep(2.0)  # nothing more may start
+        self.assertEqual(1, len(launched))
+        self.assertEqual(10, len(launched[0]["trigger_files"]))
