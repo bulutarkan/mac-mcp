@@ -41,7 +41,7 @@ from .browser_schemas import (
 )
 from mcp.server.fastmcp.exceptions import ToolError
 from .policy import (
-    PROFILES, current_policy_context, declared_risk, environment_policy_context, reset_policy_context,
+    PROFILES, Capability, current_policy_context, declared_risk, environment_policy_context, reset_policy_context,
     set_policy_context,
 )
 from .policy_scope import ScopeRequest, evaluate_scope
@@ -583,6 +583,13 @@ def session_idle_timeout_s() -> float:
     except ValueError:
         value = DEFAULT_SESSION_IDLE_TIMEOUT_S
     return max(60.0, min(value, 86400.0))
+
+
+def _caller_may_write() -> bool:
+    """Whether this call's profile allows writing on this Mac at all (a read-only caller writes nothing)."""
+    profile = PROFILES.get(current_policy_context().profile)
+    return profile is not None and (profile.allowed_capabilities is None
+                                    or Capability.LOCAL_WRITE in profile.allowed_capabilities)
 
 
 def create_app():
@@ -1788,6 +1795,11 @@ def create_app():
             # that must be reviewed and activated before it can run.
             if not result.get("ok"):
                 result["recipe_draft"] = {"saved": False, "reason": "The plan did not finish successfully."}
+            elif not _caller_may_write():
+                # A caller that may only read (a read-only profile, another Mac with read-only access) writes
+                # nothing here, a draft included (#79).
+                result["recipe_draft"] = {"saved": False, "reason_code": "read_only_caller",
+                                          "reason": "This caller may only read here, so no recipe draft is saved."}
             else:
                 try:
                     result["recipe_draft"] = recipes.capture_draft(

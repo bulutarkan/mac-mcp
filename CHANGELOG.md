@@ -1,3 +1,10 @@
+## Unreleased
+
+### Your other Macs: read-only access writes nothing, by any path (roadmap #79)
+- A Mac you gave read-only access can no longer run the tools of your own MCP servers (Notion, GitHub, …) here. Those tools say themselves that they only read, and this Mac cannot check that; with full access, and for your own apps on this Mac, they work as before.
+- A read-only Mac's plan no longer saves a recipe draft on this Mac: it writes nothing here at all.
+- Shown by behaviour: a read-only Mac's attempts to run commands, write files, send mail, make a POST request, start an agent or pass a call on to another Mac are refused before anything happens, also as a step of a plan; full access never goes past this Mac's own Permissions & Safety setting; and a Mac you remove is refused from its next request.
+
 ## 2.3.0 r2 - 2026-10-20
 
 **In short:** a signed checkpoint on the 2.3.0 line; the version stays 2.3.0. A security fix: delegated Codex agents can no longer reach your own ChatGPT connectors (a Mac MCP one among them) past their sandbox. Agent teams can take a new task while they run, give each task its own provider and model, pick up where they stopped and coordinate with a guide that ships with Mac MCP; team messages are no longer repeated or lost; and the agent's browser tab glows while you look elsewhere. Update with `mac-mcp update` or the new package.

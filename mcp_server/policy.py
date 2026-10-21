@@ -922,6 +922,20 @@ def evaluate_profile(profile_name: str, risk: RiskAssessment) -> PolicyDecision:
     return PolicyDecision(True, profile.name, "profile_allowed", "allowed")
 
 
+# Tools of the owner's own MCP servers say themselves whether they only read (readOnlyHint); nothing
+# here can check that. Another Mac that may only read this one is not trusted with that word (#79).
+_SELF_DECLARED_FAMILIES = frozenset({"external_mcp"})
+
+
+def evaluate_call(context: "PolicyContext", risk: RiskAssessment) -> PolicyDecision:
+    """The profile decision for one call, with the rules that depend on who calls."""
+    decision = evaluate_profile(context.profile, risk)
+    if (decision.allowed and str(context.actor or "").startswith("fleet:") and context.profile == "read_only"
+            and risk.family in _SELF_DECLARED_FAMILIES):
+        return PolicyDecision(False, context.profile, "profile_denied", "fleet_read_only_external_tool")
+    return decision
+
+
 def tool_availability(profile_name: str, tool: str) -> dict[str, Any]:
     """Describe whether a tool is statically available under a permission profile.
 

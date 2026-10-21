@@ -66,7 +66,7 @@ from .policy import (
     annotations_for_tool,
     current_policy_context,
     declared_risk,
-    evaluate_profile,
+    evaluate_call,
     evaluate_tool_scope,
     filter_scoped_result,
     policy_metadata,
@@ -1627,7 +1627,7 @@ class ObservedFastMCP(FastMCP):
             and risk_has_side_effect(receipt_capabilities, effective.destructive)
             and name != "tool_invoke"
         )
-        decision = evaluate_profile(policy_context.profile, effective)
+        decision = evaluate_call(policy_context, effective)
 
         parent_event = _STEERING_PARENT_EVENT.get()
         top_level = parent_event is None

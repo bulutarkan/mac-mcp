@@ -17,7 +17,7 @@ from .security_context import SecurityContextManager
 from .scoped_auth import resolve_request_identity
 from .policy import (
     RISK_REGISTRY,
-    evaluate_profile,
+    evaluate_call,
     evaluate_tool_scope,
     filter_scoped_result,
     policy_metadata,
@@ -262,7 +262,7 @@ def _authorize_rest_tool(request: Request, tool: str, arguments: Dict[str, Any])
         _, context = resolve_request_identity(get_settings(), request.headers.get("authorization"))
         request.state.policy_context = context
     declared, effective = resolve_risk(tool, arguments)
-    decision = evaluate_profile(context.profile, effective)
+    decision = evaluate_call(context, effective)
     request.state.policy_tool = tool
     request.state.policy_metadata = policy_metadata(context, declared, effective, decision)
     if not decision.allowed:

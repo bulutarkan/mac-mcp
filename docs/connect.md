@@ -100,7 +100,7 @@ For the simplest Cloudflare setup, create the tunnel and hostname in Cloudflare,
 | Level | What A may do on B |
 |---|---|
 | Full access | Use B's tools: run commands, change files, use its apps and browser, run its recipes. |
-| Read only | Use B's reading tools: read files, search, look at its screen and pages, list its recipes. Tools that change something are not shown to A and are refused. |
+| Read only | Use B's reading tools: read files, search, look at its screen and pages, list its recipes. Tools that change something are not shown to A and are refused, also as a step of a plan or recipe, and nothing is written on B (not even a recipe draft). Tools of B's own MCP servers (Notion, GitHub, …) are refused too: they say themselves that they only read, and B cannot check that. |
 | Status only | See that B is on, its model, Mac MCP version and uptime. No tools. |
 
 **B's own setting comes first.** A connection never gets more than B's own profile in **Permissions & Safety**: full access on a Mac set to Read Only reads only. Both Macs show such a connection as limited, and the (i) next to the title says why. B's approvals still apply to what A runs there.
@@ -109,7 +109,7 @@ For the simplest Cloudflare setup, create the tunnel and hostname in Cloudflare,
 
 **Agents** on A use the `fleet` tool: `list` shows the Macs and what each allows; `tools` lists a Mac's tools, or with `query` searches them (its own `tool_discover`); `call` runs one of them there (`mac`, `tool`, `arguments`); `recipes` and `run_recipe` list and run its saved recipes. A call runs in B's Mac MCP, as `fleet:<A's name>`, under B's permission profile and approvals. Pairing, allowing and removing Macs are the owner's, in Settings.
 
-**Limits.** Wrong codes are limited per sender (5) and per invitation (200), pairing requests to 8 a minute per sender, and failed credentials to 20 a minute. Removing B on A also asks B to forget A; **Stop** on B ends A's access at once, and A then shows that B no longer lets it in. Each Mac grants its own macOS permissions; pairing does not carry them over.
+**Limits.** Wrong codes are limited per sender (5) and per invitation (200), pairing requests to 8 a minute per sender, and failed credentials to 20 a minute. Removing B on A also asks B to forget A; **Stop** on B ends A's access at once (B checks A's access on every request, so A's next call is refused; a call already running is not stopped half-way), and A then shows that B no longer lets it in. Each Mac grants its own macOS permissions; pairing does not carry them over.
 
 ## Your iPhone
 
