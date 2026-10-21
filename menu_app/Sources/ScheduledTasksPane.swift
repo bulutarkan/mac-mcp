@@ -151,13 +151,25 @@ struct ScheduledTasksPane: View {
                         }
                     }
                     Spacer()
-                    Button {
-                        editor = TaskEditorModel()
+                    // A click starts a blank task; the arrow offers the templates, also once tasks exist (#59).
+                    Menu {
+                        Button("Blank task") { editor = TaskEditorModel() }
+                        Divider()
+                        Section("Start from a template") {
+                            ForEach(TaskTemplate.all) { template in
+                                Button { open(template) } label: { Label(template.title, systemImage: template.symbol) }
+                            }
+                        }
                     } label: {
                         Label("New Task", systemImage: "plus")
+                    } primaryAction: {
+                        editor = TaskEditorModel()
                     }
+                    .menuStyle(.button)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    .fixedSize()
+                    .help("New task. The arrow starts from a template.")
                     .disabled(!loaded)
                 }
 
@@ -218,24 +230,7 @@ struct ScheduledTasksPane: View {
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             HStack(spacing: 8) {
-                templateButton("Weekly report", ai: true) { model in
-                    model.name = "Weekly report"
-                    model.prompt = "Summarize last week's results and compare them with the week before. Point out anything unusual."
-                    model.when = .weekly
-                    model.weekdays = [0]
-                }
-                templateButton("Morning digest", ai: true) { model in
-                    model.name = "Morning digest"
-                    model.prompt = "Give me a short digest of what changed in my projects since yesterday."
-                    model.when = .weekly
-                    model.weekdays = [0, 1, 2, 3, 4]
-                    model.time = TaskEditorModel.clock(8, 30)
-                }
-                templateButton("Evening script", ai: false) { model in
-                    model.name = "Evening script"
-                    model.when = .daily
-                    model.time = TaskEditorModel.clock(18, 0)
-                }
+                ForEach(TaskTemplate.all) { template in templateButton(template) }
             }
         }
         .frame(maxWidth: .infinity)
@@ -243,19 +238,22 @@ struct ScheduledTasksPane: View {
         .taskCard()
     }
 
-    private func templateButton(_ title: String, ai: Bool, configure: @escaping (TaskEditorModel) -> Void) -> some View {
-        Button {
-            let model = TaskEditorModel()
-            model.isAI = ai
-            configure(model)
-            editor = model
-        } label: {
+    private func templateButton(_ template: TaskTemplate) -> some View {
+        Button { open(template) } label: {
             HStack(spacing: 6) {
-                Image(systemName: ai ? "sparkles" : "chevron.left.forwardslash.chevron.right")
-                Text(title)
+                Image(systemName: template.symbol)
+                Text(template.title)
             }
         }
         .buttonStyle(.bordered)
+    }
+
+    /// A template only fills the form: everything stays editable and nothing is saved until Save.
+    private func open(_ template: TaskTemplate) {
+        let model = TaskEditorModel()
+        model.isAI = template.ai
+        template.configure(model)
+        editor = model
     }
 
     @ViewBuilder
@@ -664,6 +662,43 @@ private extension String {
 
 // MARK: - New / Edit
 
+/// Starting points for a new task (#59), offered in the empty list and under New Task alike.
+struct TaskTemplate: Identifiable {
+    let id: String
+    let title: String
+    let ai: Bool
+    let configure: (TaskEditorModel) -> Void
+    var symbol: String { id == "files" ? "folder.badge.plus" : ai ? "sparkles" : "chevron.left.forwardslash.chevron.right" }
+
+    static let all: [TaskTemplate] = [
+        TaskTemplate(id: "weekly", title: "Weekly report", ai: true) { model in
+            model.name = "Weekly report"
+            model.prompt = "Summarize last week's results and compare them with the week before. Point out anything unusual."
+            model.when = .weekly
+            model.weekdays = [0]
+        },
+        TaskTemplate(id: "morning", title: "Morning digest", ai: true) { model in
+            model.name = "Morning digest"
+            model.prompt = "Give me a short digest of what changed in my projects since yesterday."
+            model.when = .weekly
+            model.weekdays = [0, 1, 2, 3, 4]
+            model.time = TaskEditorModel.clock(8, 30)
+        },
+        TaskTemplate(id: "evening", title: "Evening script", ai: false) { model in
+            model.name = "Evening script"
+            model.when = .daily
+            model.time = TaskEditorModel.clock(18, 0)
+        },
+        // The folder is left empty on purpose: the person picks it before the task can be saved.
+        TaskTemplate(id: "files", title: "New files in a folder", ai: true) { model in
+            model.name = "New files"
+            model.prompt = "A new file arrived in the watched folder. Say what it is in one line and list anything I need to act on."
+            model.when = .file
+            model.watchMatch = "pdf"
+        },
+    ]
+}
+
 enum TaskWhen: String, CaseIterable, Identifiable {
     case once, daily, weekly, monthly, hours, file
     var id: String { rawValue }
@@ -994,6 +1029,11 @@ private struct TaskEditorSheet: View {
 
             Divider()
             HStack {
+                // What still blocks saving, in words: a template can leave a field for the person to fill (#59).
+                if !saving, let missing = stillNeeded {
+                    Label(missing, systemImage: "arrow.turn.down.right")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Cancel") { done(nil) }.keyboardShortcut(.cancelAction)
                 Button(model.taskID == nil ? "Create Task" : "Save") { save() }
@@ -1022,6 +1062,19 @@ private struct TaskEditorSheet: View {
         default:
             return "After a run that finishes, Mac MCP checks the file is there, is not empty and was written by that run (it never opens the file). A page (https://…) or a read-only MCP tool (server__tool) works too."
         }
+    }
+
+    private var stillNeeded: String? {
+        if model.name.trimmingCharacters(in: .whitespaces).isEmpty { return "Give the task a name" }
+        if model.when == .file && model.cron.isEmpty && model.watchFolder.isEmpty { return "Choose the folder to watch" }
+        if model.isRecipe { return nil }
+        if model.isAI {
+            return model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Say what the AI should do" : nil
+        }
+        if model.script.isEmpty && model.command.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "Choose a script or type a command"
+        }
+        return nil
     }
 
     private var canSave: Bool {
