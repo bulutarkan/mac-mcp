@@ -537,6 +537,8 @@
       update_note: "Changed note",
       append_to_note: "Added to note",
       create_reminder: "Created reminder",
+      create_contact: "Created contact",
+      update_contact: "Changed contact",
       update_reminder: "Changed reminder",
       complete_reminder: "Completed reminder",
       delete_reminder: "Deleted reminder",

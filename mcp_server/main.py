@@ -1603,14 +1603,17 @@ def create_app():
             "list_name, start as the due date or datetime, notes)|update_reminder (item_id; title, start = new due "
             "date to defer it, notes)|complete_reminder (item_id)|delete_reminder (item_id). "
             "Contacts: find_contacts (query matches name or organization, or an email address or phone number; "
-            "returns emails and phones). "
+            "returns emails and phones)|create_contact (title = the person's name, optional email, phone, "
+            "organization, notes; the last word is the family name)|update_contact (item_id from find_contacts, or a "
+            "query matching one person; title, email, phone, organization and/or notes: email or phone replaces the "
+            "person's only one or adds the first, and with several it changes nothing and says so). "
             "Shortcuts: list_shortcuts (optional query)|run_shortcut (item_id from list_shortcuts or title = exact name, "
             "optional body as its text input; returns its text output). A shortcut can do anything its actions do, so "
             "run one only when asked; it needs running commands to be allowed (or the shortcut on the owner's list in "
             "Settings > Apps), and a failed run says outcome_unknown. "
             "Data actions return the item's stable id and a read-back verification; a replayed create returns the "
             "existing item instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
-            "Undo (Notes, Reminders, Calendar, Mail): a change returns undo={undo_id} when it can be undone; "
+            "Undo (Notes, Reminders, Calendar, Mail, Contacts): a change returns undo={undo_id} when it can be undone; "
             "action=undo, item_id=undo_id (same app) puts the old state back, removes an item Mac MCP made or makes a "
             "deleted reminder again (new id). UNDO_CONFLICT means the item changed since: nothing was overwritten "
             "(force=true only when the owner asks). Sends and shortcut runs say undoable=false. "
@@ -1675,6 +1678,9 @@ def create_app():
         cursor: Optional[str] = None,
         force: bool = False,
         search_in: Optional[str] = None,
+        email: Optional[str] = None,
+        phone: Optional[str] = None,
+        organization: Optional[str] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1721,6 +1727,9 @@ def create_app():
                 cursor=cursor,
                 force=force,
                 search_in=search_in,
+                email=email,
+                phone=phone,
+                organization=organization,
             ),
         )
 

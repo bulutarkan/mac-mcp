@@ -69,7 +69,7 @@ _ACTIONS = {
     "System Settings": ("list_panes", "open_pane"),
     "Messages": ("find_chats", "read_messages", "search_messages", "send_message"),
     "Xcode": ("list_workspaces",),
-    "Contacts": ("find_contacts",),
+    "Contacts": ("find_contacts", "create_contact", "update_contact", "undo"),
     "Shortcuts": ("list_shortcuts", "run_shortcut"),
     "Mission Control": ("list_desktops", "create_desktop", "remove_desktop", "open_on_desktop", "move_to_desktop"),
 }
@@ -98,7 +98,7 @@ _READ_ACTIONS = {
 # so a person using the app's window does not block them.
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                        "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
-                       "update_message", "undo"}
+                       "update_message", "create_contact", "update_contact", "undo"}
 # A shortcut can do anything its actions do, so running one is gated like run_command: the shell
 # switch and the permission profile decide, as for any other command (no new approval prompt).
 _RUN_ACTIONS = {"run_shortcut"}
@@ -2352,6 +2352,9 @@ def mac_app(
     cursor: Optional[str] = None,
     force: bool = False,
     search_in: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    organization: Optional[str] = None,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -2480,6 +2483,9 @@ def mac_app(
             # Calendar can take 20+ seconds to list a week across many calendars; these only read, so they wait.
             timeout = 30.0
         undo_plan: Optional[app_undo.Plan] = None
+        if canonical == "Contacts" and normalized_action == "update_contact" and not str(item_id or "").strip():
+            # A query must name exactly one person before anything is read or changed (#43).
+            item_id = more.contacts_resolve(query, timeout_s=timeout)
         if normalized_action != "undo":
             undo_plan = _undo_prepare(canonical, normalized_action, item_id=item_id, query=query, exact=exact,
                                       mailbox=mailbox, timeout_s=timeout)
@@ -2556,7 +2562,14 @@ def mac_app(
             else:
                 payload = _reminders_complete(item_id, timeout_s=timeout)
         elif canonical == "Contacts":
-            payload = more.contacts_find(query, limit=bounded, timeout_s=timeout)
+            if normalized_action == "create_contact":
+                payload = more.contacts_create(title, email=email, phone=phone, organization=organization, notes=notes,
+                                               timeout_s=timeout)
+            elif normalized_action == "update_contact":
+                payload = more.contacts_update(item_id, title=title, email=email, phone=phone,
+                                               organization=organization, notes=notes, timeout_s=timeout)
+            else:
+                payload = more.contacts_find(query, limit=bounded, timeout_s=timeout)
         elif canonical == "Shortcuts":
             payload = (
                 more.shortcuts_list(query, limit=bounded, timeout_s=timeout)

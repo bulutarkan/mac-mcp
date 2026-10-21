@@ -1,4 +1,4 @@
-"""An undo trail for what mac_app changes in Notes, Reminders, Calendar and Mail (#259).
+"""An undo trail for what mac_app changes in Notes, Reminders, Calendar, Mail and Contacts (#259, #43).
 
 Before a supported change, the item's whole state is read through the app's scripting model and kept
 in an owner-only record; right after it, the new state is read and fingerprinted. Undo puts the old
@@ -44,6 +44,7 @@ _PLANS = {
     ("Reminders", "create_reminder"): "delete_created", ("Reminders", "delete_reminder"): "recreate",
     ("Calendar", "update_event"): "restore", ("Calendar", "create_event"): "delete_created",
     ("Mail", "update_message"): "restore", ("Mail", "create_draft"): "delete_created",
+    ("Contacts", "update_contact"): "restore", ("Contacts", "create_contact"): "delete_created",
 }
 _IRREVERSIBLE = {
     "send_mail": "A sent email cannot be called back.",
@@ -141,7 +142,7 @@ def public(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-_NOUNS = {"Notes": "note", "Reminders": "reminder", "Calendar": "event", "Mail": "email"}
+_NOUNS = {"Notes": "note", "Reminders": "reminder", "Calendar": "event", "Mail": "email", "Contacts": "contact"}
 
 
 def history_item(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
@@ -350,6 +351,57 @@ def read_message(message_id: str, *, mailbox_expr: Optional[str] = None, account
     return {**row, "read": _bool(row["read"]), "flagged": _bool(row["flagged"])}
 
 
+_PERSON = ("id", "name", "first_name", "last_name", "organization", "note", "emails", "phones")
+_FS, _GS = chr(28), chr(29)
+
+# A person's fields, each label and address kept with its value; "" where Contacts says missing value.
+_PERSON_READ = [
+    "    set fs to ASCII character 28",
+    "    set gs to ASCII character 29",
+    '    set fn to ""',
+    "    if first name of p is not missing value then set fn to first name of p",
+    '    set ln to ""',
+    "    if last name of p is not missing value then set ln to last name of p",
+    '    set org to ""',
+    "    if organization of p is not missing value then set org to organization of p",
+    '    set noteText to ""',
+    "    if note of p is not missing value then set noteText to note of p",
+    '    set mailText to ""',
+    "    repeat with e in emails of p",
+    '        set lab to ""',
+    "        if label of e is not missing value then set lab to label of e",
+    "        set mailText to mailText & lab & fs & (value of e as text) & gs",
+    "    end repeat",
+    '    set phoneText to ""',
+    "    repeat with e in phones of p",
+    '        set lab to ""',
+    "        if label of e is not missing value then set lab to label of e",
+    "        set phoneText to phoneText & lab & fs & (value of e as text) & gs",
+    "    end repeat",
+    '    return "OK" & us & (id of p as text) & us & (name of p as text) & us & fn & us & ln & us & org & us & '
+    'noteText & us & mailText & us & phoneText & us & "#"',
+]
+
+
+def _labelled(text: str) -> List[List[str]]:
+    return [item.split(_FS, 1) for item in text.split(_GS) if _FS in item]
+
+
+def read_person(person_id: str, timeout_s: float = 10.0) -> Optional[Dict[str, Any]]:
+    raw = _run(_script(
+        'tell application "Contacts"',
+        f"    set matches to every person whose id is {_apple_string(person_id)}",
+        '    if (count of matches) is not 1 then return "GONE"',
+        "    set p to item 1 of matches",
+        *_PERSON_READ,
+        "end tell",
+    ), timeout_s=timeout_s, code="UNDO_READ_FAILED")
+    row = _fields(raw, _PERSON)
+    if row is None:
+        return None
+    return {**row, "emails": _labelled(row["emails"]), "phones": _labelled(row["phones"])}
+
+
 # ── Before and after a change ────────────────────────────────────────────────
 
 @dataclass
@@ -401,6 +453,8 @@ def prepare(app: str, action: str, *, item_id: Optional[str] = None, query: Opti
             plan.before = read_reminder(str(item_id or ""), timeout_s)
         elif app == "Calendar":
             plan.before = read_event(str(item_id or ""), max(timeout_s, 20.0))
+        elif app == "Contacts":
+            plan.before = read_person(str(item_id or ""), timeout_s)
         elif app == "Mail":
             plan.context["mailbox_expr"] = _mailbox_expr(mailbox)[1]
             plan.before = read_message(str(item_id or ""), mailbox_expr=plan.context["mailbox_expr"], timeout_s=timeout_s)
@@ -413,7 +467,8 @@ def prepare(app: str, action: str, *, item_id: Optional[str] = None, query: Opti
 
 
 def _created_id(app: str, payload: Dict[str, Any]) -> str:
-    item = payload.get({"Notes": "note", "Reminders": "reminder", "Calendar": "event", "Mail": "draft"}[app]) or {}
+    item = payload.get({"Notes": "note", "Reminders": "reminder", "Calendar": "event", "Mail": "draft",
+                        "Contacts": "contact"}[app]) or {}
     return str(item.get("uid") or item.get("message_id") or item.get("id") or "")
 
 
@@ -429,6 +484,8 @@ def _read_after(plan: Plan, payload: Dict[str, Any], timeout_s: float) -> Option
         return read_reminder(item_id, timeout_s)
     if app == "Calendar":
         return read_event(item_id, max(timeout_s, 20.0))
+    if app == "Contacts":
+        return read_person(item_id, timeout_s)
     if plan.kind == "delete_created":
         return read_message(item_id, mailbox_expr="drafts mailbox", timeout_s=timeout_s)
     moved_to = str(payload.get("moved_to") or "")
@@ -442,11 +499,11 @@ def _label(app: str, state: Optional[Dict[str, Any]], payload: Dict[str, Any]) -
     state = state or {}
     title = state.get("name") or state.get("summary") or ""
     if not title:
-        item = payload.get({"Notes": "note", "Reminders": "reminder", "Calendar": "event", "Mail": "draft"}.get(app, ""),
-                           {}) or {}
+        item = payload.get({"Notes": "note", "Reminders": "reminder", "Calendar": "event", "Mail": "draft",
+                            "Contacts": "contact"}.get(app, ""), {}) or {}
         title = item.get("title") or item.get("name") or item.get("summary") or item.get("subject") or ""
     item_id = state.get("id") or state.get("uid") or state.get("message_id") or _created_id(app, payload) \
-        if app in {"Notes", "Reminders", "Calendar", "Mail"} else ""
+        if app in {"Notes", "Reminders", "Calendar", "Mail", "Contacts"} else ""
     return {"id": str(item_id or "")[:300], "title": str(title)[:120]}
 
 
@@ -601,6 +658,35 @@ def _restore_message(entry: Dict[str, Any], timeout_s: float) -> None:
         raise UndoError("UNDO_ITEM_GONE", "The message is no longer where Mac MCP left it; nothing was put back.")
 
 
+def _person_lines(kind: str, items: List[List[str]]) -> List[str]:
+    """Contacts' own lists (emails, phones) set again in their old order with their old labels."""
+    lines = [f"    delete every {kind} of p"]
+    for label, value in items:
+        lines.append(f"    make new {kind} at end of {kind}s of p with properties "
+                     f"{{label:{_apple_string(label or 'other')}, value:{_apple_string(value)}}}")
+    return lines
+
+
+def _restore_person(before: Dict[str, Any], timeout_s: float) -> None:
+    raw = _run("\n".join([
+        'tell application "Contacts"',
+        f"    set matches to every person whose id is {_apple_string(before['id'])}",
+        '    if (count of matches) is not 1 then return "GONE"',
+        "    set p to item 1 of matches",
+        f"    set first name of p to {_apple_string(before['first_name'])}",
+        f"    set last name of p to {_apple_string(before['last_name'])}",
+        f"    set organization of p to {_apple_string(before['organization'])}",
+        f"    set note of p to {_apple_string(before['note'])}",
+        *_person_lines("email", before.get("emails") or []),
+        *_person_lines("phone", before.get("phones") or []),
+        "    save",
+        '    return "OK"',
+        "end tell",
+    ]), timeout_s=timeout_s, code="UNDO_FAILED")
+    if raw != "OK":
+        raise UndoError("UNDO_ITEM_GONE", "The contact is no longer there; nothing was put back.")
+
+
 def _delete_created(entry: Dict[str, Any], timeout_s: float) -> None:
     app, after = entry["app"], entry["after"]
     if app == "Notes":
@@ -613,6 +699,9 @@ def _delete_created(entry: Dict[str, Any], timeout_s: float) -> None:
     elif app == "Calendar":
         script = ['tell application "Calendar"', *_event_lookup(after["uid"]),
                   '    if (count of foundEvents) is not 1 then return "GONE"', "    delete item 1 of foundEvents"]
+    elif app == "Contacts":
+        script = ['tell application "Contacts"', f"    set matches to every person whose id is {_apple_string(after['id'])}",
+                  '    if (count of matches) is not 1 then return "GONE"', "    delete item 1 of matches", "    save"]
     else:
         script = ['tell application "Mail"',
                   f"    set matches to (every message of drafts mailbox whose message id is {_apple_string(after['message_id'])})",
@@ -631,6 +720,8 @@ def _current(entry: Dict[str, Any], timeout_s: float) -> Optional[Dict[str, Any]
         return read_reminder(after["id"], timeout_s)
     if app == "Calendar":
         return read_event(after["uid"], max(timeout_s, 20.0))
+    if app == "Contacts":
+        return read_person(after["id"], timeout_s)
     return read_message(after["message_id"], account=after.get("account"), mailbox_name=after.get("mailbox"),
                         timeout_s=timeout_s)
 
@@ -697,7 +788,8 @@ def undo(undo_id: str, *, app: str, force: bool = False, timeout_s: float = 15.0
                    note="The reminder was made again with a new id; its old id no longer exists.")
     else:
         restore: Callable[..., None] = {"Notes": _restore_note, "Reminders": _restore_reminder,
-                                        "Calendar": _restore_event}.get(entry["app"]) or (lambda *_: None)
+                                        "Calendar": _restore_event,
+                                        "Contacts": _restore_person}.get(entry["app"]) or (lambda *_: None)
         if entry["app"] == "Mail":
             _restore_message(entry, timeout_s)
             back = read_message(entry["before"]["message_id"], account=entry["before"]["account"],

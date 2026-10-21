@@ -170,6 +170,7 @@ _MAC_APP_VERBS = {
     "create_reminder": "Created reminder", "update_reminder": "Changed reminder",
     "complete_reminder": "Completed reminder", "delete_reminder": "Deleted reminder",
     "create_event": "Created event", "update_event": "Changed event",
+    "create_contact": "Created contact", "update_contact": "Changed contact",
     "create_draft": "Saved email draft", "update_message": "Changed email", "send_mail": "Sent email",
     "send_message": "Sent message", "run_shortcut": "Ran shortcut", "undo": "Undid a change",
     "create_desktop": "Added desktop", "remove_desktop": "Removed desktop", "open_on_desktop": "Opened on desktop",

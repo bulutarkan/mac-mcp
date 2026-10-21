@@ -383,11 +383,12 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
             destructive=False,
             sensitive=True,
         )
-    # Calendar, Reminders, Notes and Mail-draft data changes go through the app's
+    # Calendar, Reminders, Notes, Contacts and Mail-draft data changes go through the app's
     # scripting model, not its UI: a local data write rather than a UI action.
     # Mail drafts are saved, never sent.
     if action in {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
-                  "create_reminder", "append_to_note", "update_reminder", "update_message"}:
+                  "create_reminder", "append_to_note", "update_reminder", "update_message",
+                  "create_contact", "update_contact"}:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
             destructive=False,

@@ -692,6 +692,203 @@ return outText'''
     return {"ok": True, "count": len(rows), "contacts": rows, "truncated": len(rows) >= limit}
 
 
+# ── Contacts: create_contact, update_contact (#43) ───────────────────────────
+
+def _person_view(person: Dict[str, Any]) -> Dict[str, Any]:
+    return {"id": person["id"], "name": person["name"], "organization": person["organization"] or None,
+            "emails": [value for _label, value in person["emails"]],
+            "phones": [value for _label, value in person["phones"]]}
+
+
+def _split_name(name: str) -> Tuple[str, str]:
+    """The last word is the family name ("Ahmet Can Yılmaz" → "Ahmet Can", "Yılmaz"); one word is a first name."""
+    parts = name.split()
+    return (" ".join(parts[:-1]), parts[-1]) if len(parts) > 1 else (name, "")
+
+
+def _same_phone(a: str, b: str) -> bool:
+    da, db = _digits(a), _digits(b)
+    return bool(da) and bool(db) and da[-9:] == db[-9:]
+
+
+def _contact_inputs(email: Optional[str], phone: Optional[str]) -> Tuple[str, str]:
+    mail = _single_line(email, "email", 320)
+    if mail and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", mail):
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "email is not an email address.")
+    number = _single_line(phone, "phone", 64)
+    if number and len(_digits(number)) < 3:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "phone is not a phone number.")
+    return mail, number
+
+
+def contacts_create(title: Optional[str], *, email: Optional[str], phone: Optional[str], organization: Optional[str],
+                    notes: Optional[str], timeout_s: float) -> Dict[str, Any]:
+    from . import app_undo
+
+    name = " ".join(_single_line(title, "title", 200).split())
+    if not name:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Contacts create_contact requires title (the person's name).")
+    mail, number = _contact_inputs(email, phone)
+    org = _single_line(organization, "organization", 200)
+    note = _plain_text(notes, "notes", 5000)
+    # A replayed request finds the person it already made: same name, and the same address, number and company.
+    for person in _people_named(name, timeout_s):
+        values = [value for _label, value in person["emails"]]
+        if ((not mail or mail.lower() in (v.lower() for v in values))
+                and (not number or any(_same_phone(number, v) for _l, v in person["phones"]))
+                and (not org or org == person["organization"])):
+            return {"ok": True, "created": False, "duplicate": True, "verified": True,
+                    "verification": "existing_contact_matched", "contact": _person_view(person),
+                    "message": "A contact with this name and these details is already there; nothing was created."}
+    first, last = _split_name(name)
+    props = [f"first name:{_apple_string(first)}"] + ([f"last name:{_apple_string(last)}"] if last else []) \
+        + ([f"organization:{_apple_string(org)}"] if org else []) + ([f"note:{_apple_string(note)}"] if note else [])
+    script = "\n".join([
+        'tell application "Contacts"',
+        f"    set p to make new person with properties {{{', '.join(props)}}}",
+        *([f"    make new email at end of emails of p with properties {{label:\"work\", value:{_apple_string(mail)}}}"]
+          if mail else []),
+        *([f"    make new phone at end of phones of p with properties {{label:\"mobile\", value:{_apple_string(number)}}}"]
+          if number else []),
+        "    save",
+        "    return id of p as text",
+        "end tell",
+    ])
+    try:
+        new_id = _run(script, timeout_s=timeout_s, code="CONTACTS_CREATE_FAILED").strip()
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} The contact may or may not exist; check with find_contacts before "
+                              "trying again.", outcome_unknown=True, automatic_retry=False) from exc
+    person = app_undo.read_person(new_id, timeout_s) if new_id else None
+    if person is None:
+        raise AppAdapterError("CONTACTS_CREATE_NOT_VERIFIED", "Contacts did not confirm the new contact.",
+                              outcome_unknown=True, automatic_retry=False)
+    checks = [person["name"] == name or (person["first_name"], person["last_name"]) == (first, last),
+              not mail or mail in [v for _l, v in person["emails"]],
+              not number or any(_same_phone(number, v) for _l, v in person["phones"]),
+              not org or person["organization"] == org]
+    return {"ok": True, "created": True, "verified": all(checks), "verification": "read_back",
+            "contact": _person_view(person)}
+
+
+def _people_named(name: str, timeout_s: float) -> List[Dict[str, Any]]:
+    from . import app_undo
+
+    raw = _run("\n".join([
+        "set rs to ASCII character 30",
+        'tell application "Contacts"',
+        f"    set matches to every person whose name is {_apple_string(name)}",
+        '    set outText to ""',
+        "    repeat with p in matches",
+        "        if outText is not \"\" then set outText to outText & rs",
+        "        set outText to outText & (id of p as text)",
+        "    end repeat",
+        "    return outText",
+        "end tell",
+    ]), timeout_s=timeout_s, code="CONTACTS_FIND_FAILED")
+    people = [app_undo.read_person(pid, timeout_s) for pid in raw.split(chr(30)) if pid.strip()][:20]
+    return [person for person in people if person]
+
+
+def contacts_resolve(query: Optional[str], *, timeout_s: float) -> str:
+    """The id of the one person a query names; several or none change nothing and say so."""
+    if not str(query or "").strip():
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Contacts update_contact requires item_id or a query "
+                              "that matches one contact.")
+    found = contacts_find(query, limit=20, timeout_s=timeout_s)
+    people = found["contacts"]
+    if not people:
+        raise AppAdapterError("CONTACTS_PERSON_NOT_FOUND", "No contact matches; nothing was changed. Use find_contacts.")
+    if len(people) > 1:
+        raise AppAdapterError("CONTACTS_PERSON_NOT_UNIQUE",
+                              "Several contacts match; pass item_id from find_contacts. Nothing was changed.",
+                              candidates=[{"id": p["id"], "name": p["name"], "organization": p["organization"] or None,
+                                           "emails": p["emails"]} for p in people[:10]])
+    return people[0]["id"]
+
+
+def contacts_update(item_id: Optional[str], *, title: Optional[str], email: Optional[str], phone: Optional[str],
+                    organization: Optional[str], notes: Optional[str], timeout_s: float) -> Dict[str, Any]:
+    from . import app_undo
+
+    person_id = str(item_id or "").strip()
+    if not person_id:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Contacts update_contact requires item_id or a query "
+                              "that matches one contact.")
+    mail, number = _contact_inputs(email, phone)
+    name = " ".join(_single_line(title, "title", 200).split()) if title is not None else None
+    org = _single_line(organization, "organization", 200) if organization is not None else None
+    note = _plain_text(notes, "notes", 5000) if notes is not None else None
+    if not any([name, mail, number, org is not None, note is not None]):
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                              "update_contact needs a field to change: title, email, phone, organization or notes.")
+    person = app_undo.read_person(person_id, timeout_s)
+    if person is None:
+        raise AppAdapterError("CONTACTS_PERSON_NOT_FOUND", "No contact has that id; nothing was changed.")
+    lines: List[str] = []
+    changed: List[str] = []
+    if name:
+        first, last = _split_name(name)
+        lines += [f"    set first name of p to {_apple_string(first)}", f"    set last name of p to {_apple_string(last)}"]
+        changed.append("name")
+    if org is not None:
+        lines.append(f"    set organization of p to {_apple_string(org)}")
+        changed.append("organization")
+    if note is not None:
+        lines.append(f"    set note of p to {_apple_string(note)}")
+        changed.append("note")
+    for kind, value, label in (("email", mail, "work"), ("phone", number, "mobile")):
+        if not value:
+            continue
+        present = person[f"{kind}s"]
+        # Which of several addresses to replace is not guessed: nothing changes and the person is told.
+        if len(present) > 1:
+            raise AppAdapterError("CONTACTS_FIELD_AMBIGUOUS",
+                                  f"This contact has {len(present)} {kind}s, so which one to replace is unclear; "
+                                  "nothing was changed.", **{f"{kind}s": [v for _l, v in present]})
+        lines.append(f"    set value of item 1 of {kind}s of p to {_apple_string(value)}" if present else
+                     f"    make new {kind} at end of {kind}s of p with properties "
+                     f"{{label:{_apple_string(label)}, value:{_apple_string(value)}}}")
+        changed.append(kind)
+    script = "\n".join([
+        'tell application "Contacts"',
+        f"    set matches to every person whose id is {_apple_string(person_id)}",
+        '    if (count of matches) is not 1 then return "GONE"',
+        "    set p to item 1 of matches",
+        *lines,
+        "    save",
+        '    return "OK"',
+        "end tell",
+    ])
+    try:
+        status = _run(script, timeout_s=timeout_s, code="CONTACTS_UPDATE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} Some fields may have changed; read the contact with find_contacts "
+                              "before trying again.", outcome_unknown=True, automatic_retry=False) from exc
+    if status != "OK":
+        raise AppAdapterError("CONTACTS_PERSON_NOT_FOUND", "The contact is no longer there; nothing was changed.")
+    after = app_undo.read_person(person_id, timeout_s)
+    if after is None:
+        raise AppAdapterError("CONTACTS_UPDATE_NOT_VERIFIED", "The contact could not be read back after the change.",
+                              outcome_unknown=True, automatic_retry=False)
+    mismatched = [field for field, ok in (
+        ("name", not name or (after["first_name"], after["last_name"]) == _split_name(name)),
+        ("organization", org is None or after["organization"] == org),
+        ("note", note is None or after["note"] == note),
+        ("email", not mail or mail in [v for _l, v in after["emails"]]),
+        ("phone", not number or any(_same_phone(number, v) for _l, v in after["phones"])),
+    ) if not ok]
+    out = {"ok": True, "changed": True, "changed_fields": changed, "verified": not mismatched,
+           "verification": "read_back", "contact": _person_view(after)}
+    if mismatched:
+        out["not_verified_fields"] = mismatched
+    return out
+
+
 # ── Shortcuts: list_shortcuts, run_shortcut ──────────────────────────────────
 
 SHORTCUTS = "/usr/bin/shortcuts"
