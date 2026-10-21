@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -1127,18 +1128,40 @@ def _restart_service(runtime: Path, label: str) -> str:
     return f"http://{host}:{port}/health"
 
 
-def _health_ok(url: str, attempts: int = 30, delay: float = 0.4) -> bool:
-    for _ in range(attempts):
+# How long a restarted server gets to come up and finish its post-update health gate. The gate answers
+# 503 "running" while it checks (the public endpoint included, which may take a while to come back), so the
+# wait is by time, not by a count of fast 503 answers; a gate that says "failed" ends it at once.
+HEALTH_WAIT_S = 120.0
+
+
+def _health_reply(url: str) -> dict | None:
+    """The health answer as JSON (a 503 included), or None when the server does not answer."""
+    try:
+        with urllib.request.urlopen(url, timeout=1.5) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
         try:
-            with urllib.request.urlopen(url, timeout=1.5) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode("utf-8", errors="replace"))
-                    if data.get("ok") is True:
-                        return True
+            return json.loads(exc.read().decode("utf-8", errors="replace"))
         except Exception:
-            pass
+            return {}
+        finally:
+            exc.close()
+    except Exception:
+        return None
+
+
+def _health_ok(url: str, timeout_s: float = HEALTH_WAIT_S, delay: float = 0.4) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        data = _health_reply(url)
+        if isinstance(data, dict):
+            if data.get("ok") is True:
+                return True
+            if data.get("update_gate") == "failed":
+                return False
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(delay)
-    return False
 
 
 def _health_gate_report_path() -> Path:

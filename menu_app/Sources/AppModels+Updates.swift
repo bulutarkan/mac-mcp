@@ -257,6 +257,48 @@ struct UpdateStateSnapshot: Decodable, Equatable {
         }
     }
 
+    /// The updater has stopped on this transaction: it finished, went back, or needs attention.
+    var isFinal: Bool {
+        ["completed", "failed", "recovered", "recovery_failed", "blocked"].contains(normalizedStatus)
+    }
+
+    /// "2.3.0 r2" from stable-2.3.0-r2, else the version alone.
+    var releaseLabel: String? {
+        if let id = releaseID, id.hasPrefix("stable-") {
+            let parts = id.dropFirst("stable-".count).split(separator: "-")
+            if parts.count == 2, parts[1].hasPrefix("r") { return "\(parts[0]) \(parts[1])" }
+        }
+        return releaseVersion
+    }
+
+    /// What the relaunched app says once about how the update ended (#78): the old app quit during it.
+    var resultAnnouncement: (title: String, body: String, success: Bool)? {
+        switch normalizedStatus {
+        case "completed":
+            let label = releaseLabel.map { " to \($0)" } ?? ""
+            return healthSkipped == true
+                ? ("Mac MCP updated\(label)", "Its health was not checked; open Settings › General if something looks wrong.", true)
+                : ("Mac MCP updated\(label)", "The update is installed and Mac MCP checked that it works.", true)
+        case "failed":
+            if runtimeRollback?.status == "restored", rollbackHealth?.status == "passed" {
+                return ("Update didn’t finish", "Mac MCP went back to the version you had and works as before. "
+                        + "You can try again from the menu. Details: ~/.mac-mcp/update/logs", false)
+            }
+            return ("Update needs attention", statusDetail + " Details: ~/.mac-mcp/update/logs", false)
+        case "recovered", "recovery_failed", "blocked":
+            return (statusTitle, statusDetail, normalizedStatus == "recovered")
+        default:
+            return nil
+        }
+    }
+
+    /// Which of the steps is under way, for "Step 3 of 7".
+    var stepPosition: (current: Int, total: Int)? {
+        let all = steps
+        guard !all.isEmpty, let index = all.firstIndex(where: { $0.state == .active }) else { return nil }
+        return (index + 1, all.count)
+    }
+
     var steps: [UpdateProgressStep] {
         let titles = [
             ("prepare", "Prepare"),

@@ -285,12 +285,21 @@ async def _auth_smoke(settings: Settings, local_base: str) -> tuple[bool, int | 
         return False, None, type(exc).__name__
 
 
-async def _public_endpoint_smoke(public_url: str) -> tuple[bool, int | None, str | None]:
+# The tunnel and the network may need a while to answer again after a restart (a 530 from the tunnel, a
+# connect timeout while DNS settles). Waiting this long, with growing pauses, keeps a passing moment from
+# rolling back a good update; a public endpoint that stays down still fails the gate.
+PUBLIC_SMOKE_BUDGET_S = 45.0
+
+
+async def _public_endpoint_smoke(public_url: str,
+                                 budget_s: float = PUBLIC_SMOKE_BUDGET_S) -> tuple[bool, int | None, str | None]:
     last_status: int | None = None
     last_error: str | None = None
-    for attempt in range(4):
+    deadline = time.monotonic() + budget_s
+    pause = 0.5
+    while True:
         try:
-            async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), follow_redirects=True) as client:
                 response = await client.get(
                     public_url,
                     headers={"User-Agent": f"Mac-MCP-Update-Gate/{__version__}"},
@@ -302,9 +311,10 @@ async def _public_endpoint_smoke(public_url: str) -> tuple[bool, int | None, str
             last_error = "unexpected_response"
         except Exception as exc:
             last_error = type(exc).__name__
-        if attempt < 3:
-            await asyncio.sleep(0.4)
-    return False, last_status, last_error
+        if time.monotonic() + pause >= deadline:
+            return False, last_status, last_error
+        await asyncio.sleep(pause)
+        pause = min(pause * 2, 8.0)
 
 
 def expected_core_tools(profile: str) -> set[str]:

@@ -326,6 +326,8 @@ final class AppState: ObservableObject {
             )
             startTasks()
             startUpdateWatch()
+            // This app may have been reopened by an update that is still finishing, or just finished (#78).
+            if updateTransactionActive { startUpdateStatePolling() } else { announceUpdateResultIfNew() }
             observeReduceMotion()
             Task { [weak self] in
                 await self?.refreshAgentNotificationAuthorization(reconcilePreference: true)
@@ -1960,7 +1962,10 @@ final class AppState: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 self.refreshPersistedUpdateState()
-                if self.busyAction != "Updating" && !self.updateTransactionActive { return }
+                if self.busyAction != "Updating" && !self.updateTransactionActive {
+                    self.announceUpdateResultIfNew()
+                    return
+                }
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
@@ -2055,6 +2060,21 @@ final class AppState: ObservableObject {
     static let updateWatchFirstDelaySeconds: Double = 120
     static let updateWatchIntervalSeconds: Double = 6 * 60 * 60
     private static let announcedUpdateKey = "MacMCP.announcedUpdate"
+    private static let announcedUpdateResultKey = "MacMCP.announcedUpdateResult"
+    /// An update that ended longer ago than this is old news at launch.
+    static let updateResultFreshSeconds: Double = 30 * 60
+
+    /// Says once how the last update ended: the app that started it quit during it, so this one tells (#78).
+    func announceUpdateResultIfNew() {
+        guard let snapshot = updateProgress, snapshot.isFinal, let result = snapshot.resultAnnouncement,
+              let endedAt = snapshot.updatedAt,
+              Date().timeIntervalSince1970 - endedAt < Self.updateResultFreshSeconds else { return }
+        let key = snapshot.transactionID ?? "\(snapshot.toCommit ?? "")@\(Int(endedAt))"
+        guard UserDefaults.standard.string(forKey: Self.announcedUpdateResultKey) != key else { return }
+        UserDefaults.standard.set(key, forKey: Self.announcedUpdateResultKey)
+        showNotice(ActionNotice(kind: result.success ? .success : .error, message: result.title + ". " + result.body))
+        Task { await AgentNotificationController.shared.scheduleUpdateResult(id: key, title: result.title, body: result.body) }
+    }
 
     /// Looks for a new release in the background (#232): shortly after launch, then every few hours.
     /// It only looks; installing stays one click on Update.
@@ -2122,8 +2142,9 @@ final class AppState: ObservableObject {
             return
         }
         busyAction = "Updating"
-        actionNotice = nil
-        noticeTask?.cancel()
+        // Said before it happens, so the app closing is not taken for a crash (#78).
+        showNotice(ActionNotice(kind: .update, message: "Updating. Mac MCP closes and opens again by itself; "
+                                + "it says when the update is done."))
         let cliPath = settings.cliPath
         let settingsPath = settings.path.path
         startUpdateStatePolling()
@@ -2148,7 +2169,9 @@ final class AppState: ObservableObject {
             applyUpdateCheckOutput(check.output, code: check.code, shouldShowNotice: false)
             refreshPersistedUpdateState()
 
-            if let snapshot = updateProgress {
+            if let snapshot = updateProgress, snapshot.isFinal, snapshot.resultAnnouncement != nil {
+                announceUpdateResultIfNew()
+            } else if let snapshot = updateProgress {
                 switch snapshot.statusKind {
                 case .success:
                     showNotice(ActionNotice(kind: .success, message: "Update completed and runtime health was verified."))

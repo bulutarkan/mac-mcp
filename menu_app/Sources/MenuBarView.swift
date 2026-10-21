@@ -1192,17 +1192,28 @@ struct MenuBarView: View {
                     }
                     if let progress = state.updateProgress,
                        progress.isInProgress || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
-                        HStack(spacing: 6) {
-                            Image(systemName: progress.statusKind == .error ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
-                                .foregroundStyle(progress.statusKind == .error ? Color.red : Color.secondary)
-                            Text(progress.statusTitle)
-                                .lineLimit(1)
-                            Spacer()
-                            if state.updateTransactionActive {
-                                Text("Running").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                if progress.isInProgress && state.updateTransactionActive {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: progress.statusKind == .error ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
+                                        .foregroundStyle(progress.statusKind == .error ? Color.red : Color.secondary)
+                                }
+                                Text(progress.statusTitle)
+                                    .lineLimit(1)
+                                Spacer()
+                                if let position = progress.stepPosition {
+                                    Text("Step \(position.current) of \(position.total)").foregroundStyle(.secondary)
+                                }
+                            }
+                            if progress.isInProgress {
+                                Text("Mac MCP closes and opens again by itself during the update.")
+                                    .foregroundStyle(.secondary)
                             }
                         }
                         .font(.caption2)
+                        .accessibilityElement(children: .combine)
                     }
                     HStack { Text("CLI"); TextField("Auto-detect", text: $settings.cliPath).onSubmit { persistSettings() } }.font(.caption)
                 }.padding(.top, 8)

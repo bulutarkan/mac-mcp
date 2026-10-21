@@ -317,6 +317,17 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         }
     }
 
+    /// How an update ended (#78), said once by the relaunched app.
+    func scheduleUpdateResult(id: String, title: String, body: String) async {
+        guard await authorizationState() == .authorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = ["kind": "update"]
+        removeUpdateReady()
+        try? await center.add(UNNotificationRequest(identifier: "mac-mcp.update.result." + id, content: content, trigger: nil))
+    }
+
     /// Another Mac asks to connect (#147): who, what it asks for and the check both Macs show.
     func scheduleFleetRequest(id: String, name: String, permission: String, checkCode: String) async {
         guard await authorizationState() == .authorized else { return }

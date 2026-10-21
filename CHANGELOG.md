@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Updating from the menu: you see it start, run and end (roadmap #78)
+- Before it starts, the menu says Mac MCP will close and open again by itself, so the app going away is not taken for a crash. While the update runs the menu shows a spinner, the step it is on (for example "Step 4 of 7") and the same note.
+- The app that opens again keeps following an update still under way, and when it ends says once how it went, in the menu and as a notification: "Mac MCP updated to 2.3.0 r2", or that the update did not finish and Mac MCP went back to the version you had, with where the logs are.
+- A passing network hiccup no longer rolls a good update back: the updater now waits for the restarted server's health check by time (up to two minutes) instead of giving up after thirty quick "still checking" answers, and stops at once when the check fails; the check of your public address keeps trying for up to 45 seconds, with growing pauses, before it counts as down.
+
 ### Browser: a draft shown again is not taken as saved (roadmap #81)
 - When an agent checks for its text with `expect={text: ...}` and the page also keeps that text in the browser's own storage (as many sites do with drafts), the check now says so: `evidence: page_and_browser_storage`, `saved_on_site: unverified` and a hint that seeing a draft again, even after a reload, does not show the site saved it, so check the site's own list, another device or a private window, and do not submit again. Only where the text is kept is reported, never what is stored.
 
