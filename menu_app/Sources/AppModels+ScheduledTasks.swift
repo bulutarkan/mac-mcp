@@ -60,7 +60,14 @@ struct TaskRun: Identifiable {
     var trigger: String { raw["trigger"] as? String ?? "schedule" }
     /// The file whose arrival started the run (#193).
     var triggerFile: String? { (raw["trigger_file"] as? String).flatMap { $0.isEmpty ? nil : $0 } }
-    var triggerFileName: String? { triggerFile.map { URL(fileURLWithPath: $0).lastPathComponent } }
+    /// The files a batch run handled together (#58); empty for a run started by one file.
+    var triggerFiles: [String] { raw["trigger_files"] as? [String] ?? [] }
+    var triggerFileName: String? {
+        if triggerFiles.count > 1 {
+            return "\(triggerFiles.count) files"
+        }
+        return triggerFile.map { URL(fileURLWithPath: $0).lastPathComponent }
+    }
     /// The usage limit and what the run used (#211); "stopped" names the limit it reached.
     var usageLimit: [String: Any]? { detail?["usage_limit"] as? [String: Any] }
     /// A run that did not finish (#226): its steps are partial and what it changed elsewhere is unknown.

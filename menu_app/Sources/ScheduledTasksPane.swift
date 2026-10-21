@@ -748,6 +748,8 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     /// .file (#193): the folder to watch and, optionally, which files count ("pdf, Invoice*").
     @Published var watchFolder = ""
     @Published var watchMatch = ""
+    /// #58: files that arrive together are handled in one run.
+    @Published var watchTogether = false
     /// The usage limit (#211): "none", "tokens" or "cost", and its amount as typed.
     @Published var usageKind = "none"
     @Published var usageAmount = ""
@@ -822,6 +824,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
             when = .file
             watchFolder = schedule["folder"] as? String ?? ""
             watchMatch = schedule["match"] as? String ?? ""
+            watchTogether = schedule["batch"] as? Bool ?? false
         default: when = .weekly; weekdays = Set(schedule["weekdays"] as? [Int] ?? [0])
         }
         if let limit = task.usageLimit {
@@ -865,7 +868,10 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         case .weekly: return ["type": "weekly", "time": hhmm(time), "weekdays": weekdays.sorted()]
         case .monthly: return ["type": "monthly", "time": hhmm(time), "day": monthDay]
         case .hours: return ["type": "hours", "every": everyHours, "start": hhmm(time)]
-        case .file: return ["type": "folder", "folder": watchFolder, "match": watchMatch]
+        case .file:
+            var schedule: [String: Any] = ["type": "folder", "folder": watchFolder, "match": watchMatch]
+            if watchTogether { schedule["batch"] = true }
+            return schedule
         }
     }
 
@@ -1549,13 +1555,24 @@ private struct TaskEditorSheet: View {
             .disabled(!model.cron.trimmingCharacters(in: .whitespaces).isEmpty)
             .opacity(model.cron.trimmingCharacters(in: .whitespaces).isEmpty ? 1 : 0.4)
 
+            if model.when == .file && model.cron.trimmingCharacters(in: .whitespaces).isEmpty {
+                Toggle("Handle files that arrive together in one run", isOn: $model.watchTogether)
+                    .toggleStyle(.checkbox)
+                    .help("Good for a stack of invoices or scans: one run gets all of them once they have finished copying.")
+            }
+
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: scheduleProblem.isEmpty ? "clock" : "exclamationmark.triangle")
                     .foregroundStyle(scheduleProblem.isEmpty ? Color.accentColor : Color.orange)
                 if scheduleProblem.isEmpty && model.when == .file && model.cron.trimmingCharacters(in: .whitespaces).isEmpty {
                     (Text("Runs ") + Text(sentence.isEmpty ? "when a file arrives" : sentence.lowercasedFirst).fontWeight(.semibold)
-                     + Text(", once for each file, after it has finished copying. Files already there don’t start it. ")
-                     + Text(model.isRecipe ? "Put {file} in one of the recipe's values to hand it the file."
+                     + Text(model.watchTogether
+                            ? ", once for the files that arrive together, after they have all finished copying and none came for a few seconds. Files already there don’t start it. "
+                            : ", once for each file, after it has finished copying. Files already there don’t start it. ")
+                     + Text(model.watchTogether
+                            ? (model.isAI ? "The agent gets the list of files."
+                               : "It gets a list of the files (a JSON file) as {file} and as $MAC_MCP_TRIGGER_FILES.")
+                            : model.isRecipe ? "Put {file} in one of the recipe's values to hand it the file."
                             : model.isAI ? "The agent is told which file it was; put {file} in the prompt to say where."
                                        : "The script gets it as {file} in its arguments and as $MAC_MCP_TRIGGER_FILE."))
                         .fixedSize(horizontal: false, vertical: true)

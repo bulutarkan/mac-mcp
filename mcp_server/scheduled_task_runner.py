@@ -54,12 +54,12 @@ REASON_CAUGHT_UP = "; one catch-up run covers them"
 REASON_SCRIPT_STOPPED = REASON_RESTARTED + "; its script was still running and was stopped"
 REASON_SCRIPT_LEFT = REASON_RESTARTED + "; its script could not be stopped and may still be running"
 # Keys a run adds to its task's definition: the file that started it, the data a resume reuses.
-RUNTIME_KEYS = ("trigger_file", "reuse_data")
+RUNTIME_KEYS = ("trigger_file", "reuse_data", "trigger_files", "trigger_list")
 
 
 # ── One run ──────────────────────────────────────────────────────────────────
 
-def _clean_env(trigger_file: Optional[str] = None) -> Dict[str, str]:
+def _clean_env(trigger_file: Optional[str] = None, trigger_list: Optional[str] = None) -> Dict[str, str]:
     """What a script sees: the usual login basics, none of the server's keys or settings."""
     home = Path.home()
     user = os.getenv("USER") or home.name
@@ -70,6 +70,8 @@ def _clean_env(trigger_file: Optional[str] = None) -> Dict[str, str]:
            "MAC_MCP_SCHEDULED_TASK": "1"}
     if trigger_file:
         env["MAC_MCP_TRIGGER_FILE"] = trigger_file  # the file that started this run (#193)
+    if trigger_list:
+        env["MAC_MCP_TRIGGER_FILES"] = trigger_list  # a JSON list of the files a batch run handles (#58)
     return env
 
 
@@ -126,14 +128,15 @@ def _head(path: Path, limit: int) -> Tuple[str, int]:
 
 
 def _run_logged(argv: List[str], cwd: str, limit_s: int, log_path: Path,
-                read: Callable[[Path], Any], trigger_file: Optional[str] = None) -> Dict[str, Any]:
+                read: Callable[[Path], Any], trigger_file: Optional[str] = None,
+                trigger_list: Optional[str] = None) -> Dict[str, Any]:
     """Run argv with the clean environment, its output in an owner-only log that is read, then removed."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with log_path.open("wb") as out:
             os.chmod(log_path, 0o600)
             try:
-                proc = subprocess.Popen(argv, cwd=cwd, env=_clean_env(trigger_file), stdin=subprocess.DEVNULL, stdout=out,
+                proc = subprocess.Popen(argv, cwd=cwd, env=_clean_env(trigger_file, trigger_list), stdin=subprocess.DEVNULL, stdout=out,
                                         stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as exc:
                 return {"error": str(exc.strerror or exc)}
@@ -260,7 +263,7 @@ def run_script(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
     except store.TaskError as exc:
         return {"status": "failed", "reason": str(exc)}
     ran = _run_logged(argv, cwd, _limit_s(definition), _logs_dir() / f"{run_id}.log", _tail,
-                      definition.get("trigger_file"))
+                      definition.get("trigger_file"), definition.get("trigger_list"))
     if "error" in ran:
         return {"status": "failed", "reason": f"It could not start: {ran['error']}"}
     code, output = ran["code"], ran["read"]
@@ -287,7 +290,8 @@ def run_data_step(definition: Dict[str, Any], run_id: str, at: Optional[float] =
     except store.TaskError as exc:
         return {"ok": False, "reason": f"The data step could not run: {exc}", "label": label, "shown": shown}
     ran = _run_logged(argv, cwd, store.DATA_TIMEOUT_MIN * 60, _logs_dir() / f"{run_id}.data.log",
-                      lambda path: _head(path, store.DATA_LIMIT), definition.get("trigger_file"))
+                      lambda path: _head(path, store.DATA_LIMIT), definition.get("trigger_file"),
+                      definition.get("trigger_list"))
     info: Dict[str, Any] = {"label": label, "shown": shown, "duration_s": round(time.time() - started, 1)}
     if "error" in ran:
         return {**info, "ok": False, "reason": f"The data step could not start: {ran['error']}"}
@@ -608,8 +612,47 @@ def _verification(run_id: str, definition: Dict[str, Any], status: str, private:
     return {"state": verification["state"]} if private else verification
 
 
+def _with_file_list(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    """A batch run's files (#58) as a JSON list in an owner-only file: scripts and recipes get its path as {file}
+    and $MAC_MCP_TRIGGER_FILES, so a file name never becomes part of a command line."""
+    files = definition.get("trigger_files")
+    if not files:
+        return definition
+    folder = _logs_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    listing = folder / f"{run_id}.files.json"
+    listing.write_text(json.dumps(list(files), ensure_ascii=False), encoding="utf-8")
+    os.chmod(listing, 0o600)
+    out = json.loads(json.dumps(definition))
+    quoted = shlex.quote(str(listing))
+    for holder in (out, out.get("data_step") or {}):
+        for key in ("args", "command"):
+            if holder.get(key):
+                holder[key] = str(holder[key]).replace(store.FILE_TOKEN, quoted)
+    if isinstance(out.get("values"), dict):
+        out["values"] = {key: value.replace(store.FILE_TOKEN, str(listing)) if isinstance(value, str) else value
+                         for key, value in out["values"].items()}
+    out["trigger_list"] = str(listing)
+    return out
+
+
 def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any) -> Dict[str, Any]:
     """Run one task and record the result, honoring Settings › Privacy."""
+    listed = definition
+    try:
+        listed = _with_file_list(definition, run_id)
+        # The fingerprint is of the definition as a resume rebuilds it, before the list file's path is put in.
+        return _execute(task_id, run_id, listed, settings, fingerprinted=definition)
+    finally:
+        if listed.get("trigger_list"):
+            try:
+                os.unlink(listed["trigger_list"])
+            except OSError:
+                pass
+
+
+def _execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any, *,
+             fingerprinted: Dict[str, Any]) -> Dict[str, Any]:
     privacy = privacy_policy.policy(fresh=True)
     changed = store.script_drift(task_id)
     try:
@@ -635,7 +678,7 @@ def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any
         result = {"status": "failed", "reason": f"Mac MCP hit an error running it: {exc}"}
     if definition.get("data_step") and isinstance(result.get("detail"), dict):
         # Which definition this run used, so a resume can tell that the task has not changed since (#226).
-        result["detail"]["definition_fp"] = definition_fp(definition)
+        result["detail"]["definition_fp"] = definition_fp(fingerprinted)
     # Read again at the end too: Private mode switched on while the task ran covers this run (roadmap #54).
     private = privacy["private_mode"] or privacy_policy.policy(fresh=True)["private_mode"]
     if private:
@@ -649,6 +692,15 @@ def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any
 
 
 # ── Resume and check again (#226) ────────────────────────────────────────────
+
+def _with_trigger(definition: Dict[str, Any], run: Dict[str, Any]) -> Dict[str, Any]:
+    """The definition a run used: with the files of a batch run (#58) or the one file that started it."""
+    if run.get("trigger_files"):
+        return folder_triggers.with_files(definition, run["trigger_files"])
+    if run.get("trigger_file"):
+        return folder_triggers.with_file(definition, run["trigger_file"])
+    return definition
+
 
 def definition_fp(definition: Dict[str, Any]) -> str:
     return run_records.fingerprint({key: value for key, value in definition.items() if key not in RUNTIME_KEYS})
@@ -672,7 +724,7 @@ def resume_plan(run: Dict[str, Any], definition: Optional[Dict[str, Any]]) -> Di
         return no("This run's data is no longer kept, so run the task again from the start.")
     if data is None or data.get("status") != "done" or not data.get("data_fp"):
         return no("The data step didn't finish in this run, so there is nothing to resume from.")
-    used = folder_triggers.with_file(definition, run["trigger_file"]) if run.get("trigger_file") else definition
+    used = _with_trigger(definition, run)
     if detail.get("definition_fp") != definition_fp(used):
         return no("The task changed since this run, so its data may not fit any more. Run it from the start.")
     if run_records.fingerprint(data.get("output") or "") != data["data_fp"]:
@@ -735,7 +787,8 @@ class Scheduler:
         self._thread: Optional[threading.Thread] = None
         self.wakeups = 0
         self.last_wake_at: Optional[float] = None
-        self.folders = folder_triggers.FolderTriggers(self._start_for_file, clock=clock)
+        self.folders = folder_triggers.FolderTriggers(self._start_for_file, clock=clock,
+                                                      start_batch=self._start_for_files)
 
     # Decisions (pure enough to test with a fake clock and launcher)
 
@@ -773,10 +826,12 @@ class Scheduler:
               scheduled_for: Optional[float] = None, now: Optional[float] = None,
               resumed_from: Optional[str] = None, takes_queued: bool = False) -> Dict[str, Any]:
         trigger_file = definition.get("trigger_file")
-        if trigger_file and privacy_policy.policy(fresh=True)["private_mode"]:
-            trigger_file = None  # Private mode keeps that it ran, not which file started it
+        trigger_files = definition.get("trigger_files")
+        if (trigger_file or trigger_files) and privacy_policy.policy(fresh=True)["private_mode"]:
+            trigger_file = trigger_files = None  # Private mode keeps that it ran, not which files started it
         run_id = store.start_run(task_id, trigger=trigger, scheduled_for=scheduled_for, now=now,
-                                 trigger_file=trigger_file, resumed_from=resumed_from, takes_queued=takes_queued)
+                                 trigger_file=trigger_file, resumed_from=resumed_from, takes_queued=takes_queued,
+                                 trigger_files=trigger_files)
         if run_id is None:
             if trigger in ("schedule", "catch_up"):
                 when = scheduled_for or (now or self.clock())
@@ -790,6 +845,9 @@ class Scheduler:
 
     def _start_for_file(self, task_id: str, definition: Dict[str, Any], path: str) -> str:
         return self.start(task_id, folder_triggers.with_file(definition, path), trigger="file")["action"]
+
+    def _start_for_files(self, task_id: str, definition: Dict[str, Any], paths: List[str]) -> str:
+        return self.start(task_id, folder_triggers.with_files(definition, paths), trigger="file")["action"]
 
     def run_now(self, task_id: str) -> Dict[str, Any]:
         definition = store.definition_of(task_id)
@@ -818,8 +876,7 @@ class Scheduler:
                  "label": data.get("label") or "the data step",
                  "at": plan["data_at"], "reused_from": run_id, "masked": bool(data.get("masked"))}
         definition = {**definition, "reuse_data": reuse}
-        if run.get("trigger_file"):
-            definition = folder_triggers.with_file(definition, run["trigger_file"])
+        definition = _with_trigger(definition, run)
         result = self.start(run["task_id"], definition, trigger="resume", resumed_from=run_id)
         if result["action"] == "busy":
             raise store.TaskError("already_running", "This task is already running.", 409)

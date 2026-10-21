@@ -57,6 +57,9 @@ struct RunReportSheet: View {
                     if diagnosis != nil || diagnoseProblem != nil {
                         diagnosisBox
                     }
+                    if shown.triggerFiles.count > 1 {
+                        batchFiles
+                    }
                     if tab == "steps" && isAgent {
                         StepsTimeline(steps: steps)
                     } else {
@@ -238,6 +241,23 @@ struct RunReportSheet: View {
                 }
             }
             Spacer()
+        }
+    }
+
+    /// Which files a batch run handled (#58), one per line, the full path on hover.
+    private var batchFiles: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(shown.triggerFiles, id: \.self) { path in
+                    Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "doc")
+                        .font(.callout)
+                        .lineLimit(1).truncationMode(.middle)
+                        .help(path)
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            Text("Files in this run (\(shown.triggerFiles.count))").font(.callout.weight(.semibold))
         }
     }
 

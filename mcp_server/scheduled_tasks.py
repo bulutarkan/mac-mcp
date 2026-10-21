@@ -191,7 +191,7 @@ def _db() -> Iterator[sqlite3.Connection]:
                             if "duplicate column" not in str(exc).lower():
                                 raise
                 for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL"), ("trigger_file", "TEXT"),
-                                     ("resumed_from", "TEXT")):
+                                     ("resumed_from", "TEXT"), ("trigger_files", "TEXT")):
                     if column not in columns:
                         try:
                             conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {kind}")
@@ -614,6 +614,13 @@ def _run_public(row: sqlite3.Row, *, brief: bool = False) -> Dict[str, Any]:
         run["duration_s"] = round(row["finished_at"] - row["started_at"], 1)
     run["verification"] = _load(row["verification"])
     run["details_expired_at"] = row["details_expired_at"]
+    # The files a run handled together (#58); a run for one file has only trigger_file.
+    try:
+        files = json.loads(row["trigger_files"]) if "trigger_files" in row.keys() and row["trigger_files"] else None
+    except json.JSONDecodeError:
+        files = None
+    if isinstance(files, list) and files:
+        run["trigger_files"] = [str(item) for item in files]
     if not brief:
         run["output"] = row["output"]
         run["detail"] = _load(row["detail"])
@@ -1031,7 +1038,8 @@ def waiting_after_busy() -> List[Dict[str, Any]]:
 
 def start_run(task_id: str, *, trigger: str, scheduled_for: Optional[float] = None,
               now: Optional[float] = None, trigger_file: Optional[str] = None,
-              resumed_from: Optional[str] = None, takes_queued: bool = False) -> Optional[str]:
+              resumed_from: Optional[str] = None, takes_queued: bool = False,
+              trigger_files: Optional[List[str]] = None) -> Optional[str]:
     """Record a run as started; None when this task already has one in progress.
 
     takes_queued: this run is the one that waited (#57); the wait is cleared in the same transaction,
@@ -1046,8 +1054,9 @@ def start_run(task_id: str, *, trigger: str, scheduled_for: Optional[float] = No
         if resumed_from and conn.execute("SELECT 1 FROM runs WHERE resumed_from=?", (resumed_from,)).fetchone():
             raise TaskError("already_resumed", "This run was already resumed; resume the newer run instead.", 409)
         conn.execute("INSERT INTO runs (id, task_id, trigger, scheduled_for, started_at, status, trigger_file,"
-                     " resumed_from) VALUES (?,?,?,?,?,?,?,?)",
-                     (run_id, task_id, trigger, scheduled_for, now, "running", trigger_file, resumed_from))
+                     " resumed_from, trigger_files) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (run_id, task_id, trigger, scheduled_for, now, "running", trigger_file, resumed_from,
+                      json.dumps(trigger_files) if trigger_files else None))
         if takes_queued:
             conn.execute("UPDATE tasks SET queued_after=NULL WHERE id=?", (task_id,))
     _changed()

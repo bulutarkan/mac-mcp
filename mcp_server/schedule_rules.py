@@ -145,6 +145,8 @@ def _folder_schedule(schedule: Dict[str, Any], check_folder: bool) -> Dict[str, 
     out: Dict[str, Any] = {"type": "folder", "folder": os.path.normpath(str(folder))}
     if match:
         out["match"] = match
+    if schedule.get("batch") is True:
+        out["batch"] = True  # files that arrive together are handled in one run (#58)
     return out
 
 
@@ -257,6 +259,8 @@ def describe(schedule: Dict[str, Any]) -> str:
         folder = schedule["folder"]
         shown = "~" + folder[len(home):] if folder == home or folder.startswith(home + "/") else folder
         tail = f" matching {schedule['match']}" if schedule.get("match") else ""
+        if schedule.get("batch"):
+            return f"When files{tail} arrive in {shown}, together in one run"
         return f"When a file{tail} arrives in {shown}"
     if kind == "once":
         at = datetime.fromisoformat(schedule["at"])
