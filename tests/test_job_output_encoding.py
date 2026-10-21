@@ -52,6 +52,20 @@ class JobOutputEncodingTests(unittest.TestCase):
         self.assertEqual("completed", status["status"])
         self.assertTrue(output["stdout"].rstrip().endswith("line 3999"))
 
+    def test_a_job_is_finished_only_once_its_output_is_written(self) -> None:
+        # Under load the reader can lag behind the process exit; the job used to be completed (and read)
+        # before the last lines reached the log.
+        real = tools_jobs._drain_stream
+
+        def slow(*args, **kwargs):
+            time.sleep(1.0)
+            return real(*args, **kwargs)
+
+        with patch.object(tools_jobs, "_drain_stream", side_effect=slow):
+            status, output = self.run_job("printf 'one\\ntwo\\nlast line\\n'")
+        self.assertEqual("completed", status["status"])
+        self.assertEqual("one\ntwo\nlast line\n", output["stdout"])
+
     def test_a_reader_that_fails_says_so(self) -> None:
         job_id = "reader0001"
         (tools_jobs.JOBS_DIR / job_id).mkdir(parents=True)

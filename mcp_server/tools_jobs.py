@@ -30,6 +30,9 @@ DEFAULT_JOB_ENV = {
 _PROCS: Dict[str, subprocess.Popen[str]] = {}
 # Exact last-output time per running job; meta.json only gets a throttled copy.
 _LAST_OUTPUT: Dict[str, float] = {}
+# The threads draining each running job's stdout and stderr; a job ends once they are done (#83).
+_READERS: Dict[str, List[threading.Thread]] = {}
+_READER_DRAIN_S = 5.0
 _LOCK = threading.RLock()
 _DEFAULT_WAIT_TIMEOUT_S = 60
 _MAX_WAIT_TIMEOUT_S = 600
@@ -363,6 +366,12 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
             _terminate_process(proc)
             break
         time.sleep(0.5)
+    # Let the readers write what the pipes still hold before the job is called finished; bounded, since a
+    # detached descendant can keep a pipe open (outside _LOCK: readers take it to note their output).
+    drain_until = time.monotonic() + _READER_DRAIN_S
+    for reader in _READERS.get(job_id, []):
+        reader.join(max(0.0, drain_until - time.monotonic()))
+    _READERS.pop(job_id, None)
     with _LOCK:
         try:
             meta = _read_meta(job_id)
@@ -414,8 +423,11 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     # A stopped job is "killed" before its processes are gone; finalize it once they are.
     if status_value in {"running", "stalled", "stopping"} or (status_value == "killed" and not meta.get("ended_at")):
         proc = _PROCS.get(job_id)
-        if proc is not None and proc.poll() is not None and _surviving_group(proc.pid):
-            # The leader exited but its descendants still run; the watcher finalizes.
+        if proc is not None and proc.poll() is not None and (
+            _surviving_group(proc.pid) or any(reader.is_alive() for reader in _READERS.get(job_id, []))
+        ):
+            # The leader exited but its descendants still run, or its output is still being written;
+            # the watcher finalizes.
             return meta
         if proc is not None and proc.poll() is not None:
             exit_code = proc.returncode
@@ -561,8 +573,13 @@ def start_background_job(
         meta.update({"pid": proc.pid, "status": "running", "updated_at": _now()})
         _write_meta(job_id, meta)
 
-    threading.Thread(target=_append_stream, args=(job_id, proc.stdout, "stdout.log"), daemon=True).start()
-    threading.Thread(target=_append_stream, args=(job_id, proc.stderr, "stderr.log"), daemon=True).start()
+    readers = [
+        threading.Thread(target=_append_stream, args=(job_id, proc.stdout, "stdout.log"), daemon=True),
+        threading.Thread(target=_append_stream, args=(job_id, proc.stderr, "stderr.log"), daemon=True),
+    ]
+    _READERS[job_id] = readers
+    for reader in readers:
+        reader.start()
     threading.Thread(target=_watch_process, args=(job_id, timeout_s, no_output_timeout_s), daemon=True).start()
 
     result = {
