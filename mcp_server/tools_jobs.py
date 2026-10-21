@@ -130,6 +130,35 @@ def _is_pid_alive(pid: Optional[int]) -> bool:
         return True
 
 
+def _process_started_at(pid: int) -> Optional[float]:
+    """When a process started (epoch seconds, whole seconds), or None when ps cannot tell."""
+    try:
+        raw = subprocess.run(
+            ["/bin/ps", "-p", str(int(pid)), "-o", "lstart="], capture_output=True, text=True, timeout=3,
+            # lstart is printed in the locale; the format below needs the C locale.
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+        ).stdout.strip()
+        return time.mktime(time.strptime(" ".join(raw.split()), "%a %b %d %H:%M:%S %Y")) if raw else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _job_leader_alive(meta: Dict[str, Any]) -> bool:
+    """The job's own leader still runs, not a later process the pid was given to (#98).
+
+    The leader starts right after started_at is recorded; a process that began later than that got
+    the pid after the job's leader was gone, while the server was down.
+    """
+    pid = meta.get("pid")
+    if not _is_pid_alive(pid):
+        return False
+    began = _process_started_at(int(pid)) if pid else None
+    started_at = meta.get("started_at")
+    if began is None or not started_at:
+        return True
+    return began <= float(started_at) + 5.0
+
+
 def _surviving_group(pgid: Optional[int]) -> bool:
     """Whether a job's process group still has members after its leader is gone.
 
@@ -390,7 +419,7 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             _finalize_job_capture(meta)
             _write_meta(job_id, meta)
             _PROCS.pop(job_id, None)
-        elif proc is None and not _is_pid_alive(meta.get("pid")) and not _surviving_group(meta.get("pid")):
+        elif proc is None and not _job_leader_alive(meta) and not _surviving_group(meta.get("pid")):
             if meta.get("ended_at"):
                 return meta
             if status_value == "stopping":
@@ -723,7 +752,8 @@ def stop_job(settings: Settings, job_id: str, signal_name: str = "TERM") -> Dict
         proc = _PROCS.get(job_id)
         if proc is not None:
             _terminate_process(proc, allowed[sig_name], grace_s=1.5)
-        else:
+        elif _job_leader_alive(meta) or not _is_pid_alive(pid):
+            # Its own leader, or (leader gone) the group it left behind; never a process that got the pid later.
             _terminate_pid_group(int(pid), allowed[sig_name], grace_s=1.5)
     return {"ok": True, "job_id": job_id, "status": "killed", "signal": sig_name}
 

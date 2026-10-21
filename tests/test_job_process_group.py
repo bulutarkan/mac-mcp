@@ -196,6 +196,26 @@ class JobProcessGroupTests(unittest.TestCase):
         self.assertTrue(self._wait_for(lambda: self._status(job_id).get("ended_at"), timeout=5))
         self.assertEqual("killed", self._status(job_id)["status"])
 
+    def test_a_pid_reused_after_restart_is_never_signalled(self) -> None:
+        # #98: the job ended while the server was down and its pid went to an unrelated process (here a
+        # session leader of its own). stop_job signalled that process's whole group.
+        stranger = __import__("subprocess").Popen(["/bin/sleep", "30"], start_new_session=True)
+        self.child_pids.append(stranger.pid)
+        job_id = "reused0001"
+        tools_jobs._write_meta(job_id, {"status": "running", "pid": stranger.pid, "started_at": time.time() - 3600})
+        self.assertNotEqual("running", self._status(job_id)["status"])
+        tools_jobs.stop_job(self.settings, job_id, "KILL")
+        time.sleep(0.3)
+        self.assertIsNone(stranger.poll(), "an unrelated process holding the old pid was killed")
+        self.assertTrue(self._status(job_id).get("ended_at"))
+        # Its own leader, started when the job did, is still the job's.
+        own = __import__("subprocess").Popen(["/bin/sleep", "30"], start_new_session=True)
+        self.child_pids.append(own.pid)
+        tools_jobs._write_meta("own0000001", {"status": "running", "pid": own.pid, "started_at": time.time()})
+        self.assertEqual("running", self._status("own0000001")["status"])
+        tools_jobs.stop_job(self.settings, "own0000001", "KILL")
+        self.assertTrue(self._wait_for(lambda: own.poll() is not None, timeout=5))
+
 
 if __name__ == "__main__":
     unittest.main()
