@@ -190,6 +190,8 @@ struct SettingsView: View {
     @MacMCPState private var permissionDetailsShown = false
     /// What agents can do in each app, from the server's adapter support matrix (#262).
     @MacMCPState private var appSupport: [[String: Any]]?
+    /// #19: why the app list could not be read, kept apart from an empty list.
+    @MacMCPState private var appSupportProblem: String?
     @MacMCPState private var confirmClearUsage = false
     @MacMCPState private var memoryClearPreview: MemoryClearResult?
     @MacMCPState private var groqKey = ""
@@ -512,7 +514,15 @@ struct SettingsView: View {
                 GroupBox("Issues") {
                     VStack(alignment: .leading, spacing: 10) {
                         let issues = generalIssues
-                        if issues.isEmpty {
+                        if issues.isEmpty && state.connectionState == .connecting {
+                            // #19: not checked yet is not "nothing to do".
+                            HStack(spacing: 10) {
+                                ProgressView().controlSize(.small).frame(width: 22)
+                                Text("Checking…").font(.subheadline.weight(.semibold))
+                                Spacer()
+                            }
+                            .accessibilityElement(children: .combine)
+                        } else if issues.isEmpty {
                             HStack(spacing: 10) {
                                 Image(systemName: "checkmark.seal.fill")
                                     .font(.system(size: 17, weight: .semibold))
@@ -1840,6 +1850,15 @@ struct SettingsView: View {
                                               selected: item.active) {
                                         state.setPermissionProfile(item.name)
                                     }
+                                    // #17: while a change is saved the rows wait, and say so.
+                                    .disabled(state.permissionProfileChanging)
+                                }
+                                if state.permissionProfileChanging {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.mini)
+                                        Text("Saving…").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    .accessibilityElement(children: .combine)
                                 }
                             }
                             .padding(.top, 5)
@@ -2183,6 +2202,7 @@ struct SettingsView: View {
                     }
                     HStack {
                         SecureField(settings.hasGroqKey ? "Replace Groq API key" : "Groq API key", text: $groqKey)
+                            .accessibilityLabel("Groq API key")
                         Button("Save") { saveGroqKey() }
                             .disabled(groqKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         if settings.hasGroqKey {
@@ -2197,8 +2217,9 @@ struct SettingsView: View {
 
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
                     GridRow {
-                        Text("Input").foregroundStyle(.secondary)
-                        Picker("", selection: $settings.inputDevice) {
+                        // #21: the picker carries the name VoiceOver reads; the visible label is not read twice.
+                        Text("Input").foregroundStyle(.secondary).accessibilityHidden(true)
+                        Picker("Input device", selection: $settings.inputDevice) {
                             Text("Auto").tag("auto")
                             Text("Built-in Mic").tag("built-in")
                             ForEach(audio.inputs) { device in Text(device.name).tag(device.settingValue) }
@@ -2206,8 +2227,8 @@ struct SettingsView: View {
                         .labelsHidden()
                     }
                     GridRow {
-                        Text("Output").foregroundStyle(.secondary)
-                        Picker("", selection: $settings.outputDevice) {
+                        Text("Output").foregroundStyle(.secondary).accessibilityHidden(true)
+                        Picker("Output device", selection: $settings.outputDevice) {
                             Text("System").tag("system")
                             Text("Built-in Speakers").tag("built-in")
                             ForEach(audio.outputs) { device in Text(device.name).tag(device.settingValue) }
@@ -2215,9 +2236,9 @@ struct SettingsView: View {
                         .labelsHidden()
                     }
                     GridRow {
-                        Text("Language").foregroundStyle(.secondary)
+                        Text("Language").foregroundStyle(.secondary).accessibilityHidden(true)
                         HStack {
-                            Picker("", selection: $settings.language) {
+                            Picker("Language", selection: $settings.language) {
                                 Text("Auto").tag("auto")
                                 Text("Turkish").tag("tr")
                                 Text("English").tag("en")
@@ -2228,11 +2249,13 @@ struct SettingsView: View {
                         }
                     }
                     GridRow {
-                        Text("Voice").foregroundStyle(.secondary)
+                        Text("Voice").foregroundStyle(.secondary).accessibilityHidden(true)
                         HStack {
                             TextField("tr-TR-AhmetNeural", text: $settings.voiceName)
-                            Text("Rate").foregroundStyle(.secondary)
+                                .accessibilityLabel("Voice name")
+                            Text("Rate").foregroundStyle(.secondary).accessibilityHidden(true)
                             TextField("-5%", text: $settings.ttsRate).frame(width: 58)
+                                .accessibilityLabel("Speech rate")
                         }
                     }
                 }
@@ -3669,9 +3692,12 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        if let apps = appSupport {
+                        if let problem = appSupportProblem {
+                            inlineError(problem)
+                            Button("Try again") { Task { await loadAppSupport() } }.controlSize(.small)
+                        } else if let apps = appSupport {
                             if apps.isEmpty {
-                                Text("Start Mac MCP to see this list.").font(.caption).foregroundStyle(.secondary)
+                                Text("Mac MCP found no apps to list.").font(.caption).foregroundStyle(.secondary)
                             }
                             ForEach(Array(apps.enumerated()), id: \.offset) { _, app in appSupportRow(app) }
                         } else {
@@ -3681,10 +3707,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 5)
                 }
-                .task {
-                    let result = await state.taskAPI("dashboard/api/apps/support")
-                    appSupport = result.ok ? (result.object["apps"] as? [[String: Any]] ?? []) : []
-                }
+                .task { await loadAppSupport() }
 
                 Spacer(minLength: 0)
             }
@@ -3698,6 +3721,19 @@ struct SettingsView: View {
         "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences", "Messages": "com.apple.MobileSMS",
         "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
     ]
+
+    /// Loading, a list (possibly empty) and an error are three different answers (#19).
+    private func loadAppSupport() async {
+        appSupportProblem = nil
+        appSupport = nil
+        let result = await state.taskAPI("dashboard/api/apps/support")
+        if result.ok {
+            appSupport = result.object["apps"] as? [[String: Any]] ?? []
+        } else {
+            appSupportProblem = (result.object["message"] as? String) ?? (result.object["error"] as? String)
+                ?? "Couldn’t load the app list."
+        }
+    }
 
     private func appSupportRow(_ app: [String: Any]) -> some View {
         let name = app["name"] as? String ?? ""

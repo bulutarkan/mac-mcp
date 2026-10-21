@@ -83,6 +83,12 @@ struct McpServersPane: View {
                 }
                 if !loaded, !message.isEmpty {
                     LoadProblem(message: message) { await load() }
+                } else if !loaded {
+                    // #19: before the first answer the list is neither empty nor full.
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading your servers…").font(.caption).foregroundStyle(.secondary)
+                    }
                 } else if !message.isEmpty {
                     Text(message).font(.caption).foregroundStyle(.secondary)
                 }
@@ -93,7 +99,8 @@ struct McpServersPane: View {
                 }
 
                 HStack {
-                    Text(servers.isEmpty ? "No servers yet" : "\(servers.count) server\(servers.count == 1 ? "" : "s")")
+                    Text(!loaded ? "Servers" : servers.isEmpty ? "No servers yet"
+                         : "\(servers.count) server\(servers.count == 1 ? "" : "s")")
                         .font(.headline)
                     Spacer()
                     Button {

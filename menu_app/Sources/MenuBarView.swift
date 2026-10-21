@@ -19,6 +19,8 @@ struct MenuBarView: View {
     @MacMCPState private var sessionMinutesText = ""
     @MacMCPState private var showAllAgents = false
     @MacMCPState private var showActivity = false
+    /// #20: the "n failed" count opens the list showing only the failed calls.
+    @MacMCPState private var showFailedOnly = false
     /// The content's own height (#200): the menu is as tall as what it shows, up to the screen.
     @MacMCPState private var contentHeight: CGFloat = 0
     /// The popover window: MenuBarExtra sizes it once when it opens, so later changes are applied here.
@@ -843,11 +845,27 @@ struct MenuBarView: View {
 
     private var activityCard: some View {
         let events = displayActivityEvents
-        let errorCount = events.filter { $0.status.lowercased() == "error" }.count
+        let failed = events.filter { $0.status.lowercased() == "error" }
+        let errorCount = failed.count
         let liveCount = events.filter { $0.status.lowercased() == "running" }.count
+        let shown = showFailedOnly ? failed : events
         return DisclosureGroup(isExpanded: $showActivity) {
             VStack(alignment: .leading, spacing: 5) {
-                if state.connectionState == .disconnected && events.isEmpty {
+                if showFailedOnly {
+                    HStack(spacing: 6) {
+                        Text(errorCount == 0 ? "No failed calls now." : "Showing \(errorCount) failed")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Show all") { showFailedOnly = false }
+                            .font(.caption.weight(.medium)).buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                    }
+                }
+                if showFailedOnly {
+                    ForEach(Array(shown.prefix(Self.recentActivityLimit).enumerated()), id: \.element.id) { index, event in
+                        if index > 0 { Divider() }
+                        activityRow(event)
+                    }
+                } else if state.connectionState == .disconnected && events.isEmpty {
                     activityEmptyText("Disconnected · tool activity unavailable.")
                 } else if state.connectionState == .degraded && events.isEmpty {
                     activityEmptyText("Tool activity is temporarily unavailable.")
@@ -886,8 +904,16 @@ struct MenuBarView: View {
                     .labelStyle(MenuTileLabelStyle(tint: .blue))
                 Spacer()
                 if errorCount > 0 {
-                    Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                    Button {
+                        showFailedOnly.toggle()
+                        if showFailedOnly { showActivity = true }
+                    } label: {
+                        Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(showFailedOnly ? "Show all recent activity" : "Show the \(errorCount) failed calls")
+                    .help(showFailedOnly ? "Show all recent activity" : "Show only the failed calls")
                 } else if liveCount > 0 {
                     Text("\(liveCount) live").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
                 }

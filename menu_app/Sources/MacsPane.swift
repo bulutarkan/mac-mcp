@@ -343,7 +343,9 @@ struct MacsPane: View {
     }
 
     private var macsSummary: String {
-        peers.isEmpty ? "Only this Mac yet" : "This Mac and \(peers.count) more"
+        // #19: before the first answer nothing is known yet; after a failed one, say so.
+        guard loaded else { return message.isEmpty ? "Checking…" : "Couldn’t load your Macs" }
+        return peers.isEmpty ? "Only this Mac yet" : "This Mac and \(peers.count) more"
     }
 
     private var macsControls: some View {
