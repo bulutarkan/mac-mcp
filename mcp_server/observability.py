@@ -998,7 +998,10 @@ class TelemetryManager:
         agent_id: Optional[str] = None,
         team_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        before: Optional[Tuple[float, str]] = None,
     ) -> List[Dict[str, Any]]:
+        """Newest first. before=(timestamp, event_id) continues after the last row of a page (#64):
+        rows strictly older in (timestamp, event_id) order, so pages neither repeat nor skip a row."""
         bounded_hours = max(0.05, min(float(hours), 24 * 365))
         bounded_limit = max(1, min(int(limit), 500))
         clauses = ["timestamp >= ?"]
@@ -1024,8 +1027,12 @@ class TelemetryManager:
         if run_id:
             clauses.append("run_id = ?")
             params.append(str(run_id))
+        if before is not None:
+            clauses.append("(timestamp < ? OR (timestamp = ? AND event_id < ?))")
+            params.extend([float(before[0]), float(before[0]), str(before[1])])
         params.append(bounded_limit)
-        sql = "SELECT * FROM tool_events WHERE " + " AND ".join(clauses) + " ORDER BY timestamp DESC LIMIT ?"
+        sql = ("SELECT * FROM tool_events WHERE " + " AND ".join(clauses)
+               + " ORDER BY timestamp DESC, event_id DESC LIMIT ?")
         with closing(self._connect()) as conn, conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_event(row) for row in rows]

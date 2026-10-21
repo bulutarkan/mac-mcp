@@ -7,6 +7,11 @@
     status: "all",
     tool: "",
     events: [],
+    // #64: older pages loaded with "Load older calls", kept apart from the newest page that refreshes.
+    older: [],
+    nextCursor: null,
+    hasMore: false,
+    eventsQuery: "",
     active: new Map(),
     trace: [],
     selected: null,
@@ -41,7 +46,7 @@
     agentsFreshness: $("agentsFreshness"), changesFreshness: $("changesFreshness"), version: $("versionLabel"), uptime: $("uptimeLabel"),
     activeNow: $("activeNow"), lastTool: $("lastTool"), lastLatency: $("lastLatency"), traceBars: $("traceBars"),
     calls: $("metricCalls"), success: $("metricSuccess"), errors: $("metricErrors"), average: $("metricAverage"), p95: $("metricP95"), window: $("metricWindow"),
-    rows: $("eventRows"), announcer: $("activityAnnouncer"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
+    rows: $("eventRows"), announcer: $("activityAnnouncer"), empty: $("emptyState"), eventsMore: $("events-more"), eventsMoreNote: $("events-more-note"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
     changeCount: $("changeCount"), changeTaskSwitch: $("changeTaskSwitch"), changeHeadline: $("changeHeadline"), changeList: $("changeList"),
     transactionCount: $("transactionCount"), transactionMessage: $("transactionMessage"), transactionList: $("transactionList"),
     transactionNewer: $("transactionNewer"), transactionOlder: $("transactionOlder"), transactionPage: $("transactionPage"),
@@ -284,14 +289,35 @@
     els.attentionList.innerHTML = rows.length ? rows.join("") : `<div class="no-agents">Nothing needs your attention. No requests are waiting and nothing was blocked in the last 24 hours.</div>`;
   }
 
-  async function refreshEvents() {
+  function eventsParams() {
     const params = new URLSearchParams({hours: String(state.hours), limit: "160"});
     if (state.source !== "all") params.set("source", state.source);
     if (state.status !== "all") params.set("status", state.status);
     if (state.tool) params.set("tool", state.tool);
+    return params;
+  }
+
+  function renderEventsMore() {
+    els.eventsMore.hidden = !state.hasMore;
+    els.eventsMoreNote.textContent = state.hasMore ? "Older calls in this range are not shown yet." : "";
+  }
+
+  async function refreshEvents() {
+    const params = eventsParams();
+    if (params.toString() !== state.eventsQuery) {
+      // Another range or filter: the older pages belong to the old view.
+      state.eventsQuery = params.toString();
+      state.older = [];
+      state.nextCursor = null;
+    }
     try {
       const data = await fetchJSON(`/dashboard/api/events?${params}`);
       state.events = data.events || [];
+      if (!state.older.length) {
+        state.nextCursor = data.next_cursor || null;
+        state.hasMore = Boolean(data.has_more);
+      }
+      renderEventsMore();
       state.active = new Map((data.active || []).map((event) => [event.event_id, event]));
       seedTrace(state.events);
       renderEvents();
@@ -299,6 +325,26 @@
       renderTelemetryHealth();
     } catch (error) {
       markOffline(error);
+    }
+  }
+
+  async function loadOlderEvents() {
+    if (!state.nextCursor) return;
+    const params = eventsParams();
+    params.set("before", state.nextCursor);
+    els.eventsMore.disabled = true;
+    try {
+      const data = await fetchJSON(`/dashboard/api/events?${params}`);
+      const known = new Set([...state.events, ...state.older].map((event) => event.event_id));
+      state.older = [...state.older, ...(data.events || []).filter((event) => !known.has(event.event_id))];
+      state.nextCursor = data.next_cursor || null;
+      state.hasMore = Boolean(data.has_more);
+      renderEvents();
+      renderEventsMore();
+    } catch (error) {
+      markOffline(error);
+    } finally {
+      els.eventsMore.disabled = false;
     }
   }
 
@@ -748,10 +794,15 @@
 
   function visibleEvents() {
     const active = Array.from(state.active.values()).filter(matchesFilters);
-    const finished = state.events.filter(matchesFilters);
+    const seen = new Set();
+    const finished = [...state.events, ...state.older].filter((event) => {
+      if (seen.has(event.event_id)) return false;
+      seen.add(event.event_id);
+      return matchesFilters(event);
+    });
     return [...active, ...finished]
       .sort((a, b) => Number(b.started_at || b.timestamp) - Number(a.started_at || a.timestamp))
-      .slice(0, 180);
+      .slice(0, 180 + state.older.length);
   }
 
   function matchesFilters(event) {
@@ -1131,6 +1182,7 @@
     document.querySelectorAll("[data-hours]").forEach((item) => item.classList.toggle("is-active", item === button));
     await Promise.all([refreshSummary(), refreshEvents(), refreshChanges()]);
   }));
+  els.eventsMore.addEventListener("click", loadOlderEvents);
   els.sourceFilter.addEventListener("change", () => { state.source = els.sourceFilter.value; refreshEvents(); });
   els.statusFilter.addEventListener("change", () => { state.status = els.statusFilter.value; refreshEvents(); });
   let searchTimer;

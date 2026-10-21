@@ -8,7 +8,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -176,6 +176,17 @@ def _local_only(request: Request) -> Optional[Response]:
     if request.url.path.startswith("/dashboard/api/") or request.url.path == "/dashboard/events":
         return JSONResponse({"detail": "The Mac MCP dashboard is available on localhost only."}, status_code=403)
     return HTMLResponse("Dashboard is available on localhost only.", status_code=403)
+
+
+def _event_cursor(raw: Optional[str]) -> Optional[Tuple[float, str]]:
+    """'<timestamp>:<event_id>' as the events route hands it out; None for no or a malformed cursor."""
+    if not raw or ":" not in raw:
+        return None
+    stamp, _, event_id = str(raw).partition(":")
+    try:
+        return float(stamp), event_id
+    except ValueError:
+        return None
 
 
 def _dashboard_guard(request: Request, dashboard_token: str) -> Optional[Response]:
@@ -1454,18 +1465,27 @@ def create_dashboard_routes(
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
+        # Pages (#64): before=<timestamp>:<event_id> from next_cursor continues where a page ended.
+        limit = max(1, min(_int_query(request, "limit", 120), 499))
+        before = _event_cursor(request.query_params.get("before"))
         payload = telemetry.query_events(
             hours=_float_query(request, "hours", 24),
-            limit=_int_query(request, "limit", 120),
+            limit=limit + 1,
             source=request.query_params.get("source"),
             status=request.query_params.get("status"),
             tool=request.query_params.get("tool"),
             agent_id=request.query_params.get("agent_id") or None,
             team_id=request.query_params.get("team_id") or None,
+            before=before,
         )
+        has_more = len(payload) > limit
+        page = payload[:limit]
+        last = page[-1] if has_more and page else None
         return JSONResponse({
-            "events": [_with_browser_context(event) for event in payload],
-            "active": [_with_browser_context(event) for event in telemetry.active_calls()],
+            "events": [_with_browser_context(event) for event in page],
+            "active": [_with_browser_context(event) for event in telemetry.active_calls()] if before is None else [],
+            "has_more": has_more,
+            "next_cursor": f"{float(last['timestamp'])!r}:{last['event_id']}" if last else None,
         })
 
     async def show_browser_tab(request: Request) -> Response:

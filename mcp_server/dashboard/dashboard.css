@@ -325,6 +325,11 @@ h2 { margin: 0; font-size: 15px; letter-spacing: -.015em; font-weight: 630; }
 .transaction-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .transaction-btn.is-confirm { color: #bce4d8; border-color: rgba(80,177,145,.34); background: rgba(29,81,65,.48); }
 .transaction-confirm { display: flex; gap: 4px; }
+.events-more { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 2px 2px; }
+.events-more span { color: #60798b; font-size: 9px; }
+.events-more button { padding: 4px 9px; border: 1px solid rgba(127,169,200,.16); border-radius: 7px; color: #9fb8c9; background: rgba(8,20,30,.46); font-size: 9px; cursor: pointer; }
+.events-more button:not(:disabled):hover { color: #cfe3f0; border-color: rgba(120,180,220,.32); }
+.events-more button:disabled { opacity: .45; cursor: default; }
 .transaction-pager { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; margin-top: 7px; padding-top: 7px; border-top: 1px solid rgba(141,180,210,.075); }
 .transaction-pager span { color: #60798b; font-size: 8px; text-align: center; }
 .transaction-pager button { padding: 3px 7px; border: 1px solid rgba(127,169,200,.12); border-radius: 7px; color: #829bad; background: rgba(8,20,30,.46); font-size: 8px; cursor: pointer; }
