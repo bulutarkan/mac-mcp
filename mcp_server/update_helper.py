@@ -819,13 +819,26 @@ def _format_secure_bootstrap_blocker(blocker: dict[str, object]) -> str:
     return f"{blocker.get('summary')} {blocker.get('remediation')}"
 
 
-def _detect_port(runtime: Path) -> int:
-    env = _env_values(runtime)
+def _port_value(value: object) -> int | None:
     try:
-        if env.get("MAC_MCP_PORT"):
-            return int(env["MAC_MCP_PORT"])
-    except ValueError:
-        pass
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def _detect_port(runtime: Path) -> int:
+    """The port this installation serves on, in the CLI's order: MAC_MCP_PORT, then settings.json
+    server.port (#84). A running uvicorn's --port comes last: it may belong to another runtime (a test
+    server), and a stopped server has none."""
+    env = _env_values(runtime)
+    port = _port_value(_effective_env_value(env, "MAC_MCP_PORT") or "")
+    if port:
+        return port
+    server = _settings_payload()[1].get("server")
+    port = _port_value(server.get("port")) if isinstance(server, dict) else None
+    if port:
+        return port
     ps = _run(["ps", "-axo", "command="], check=False).stdout
     for line in ps.splitlines():
         if "uvicorn mcp_server.main:app" not in line:
