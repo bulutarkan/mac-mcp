@@ -10,6 +10,7 @@ from mcp_server.native_action_verification import (
 )
 from mcp_server.security import load_settings
 from mcp_server import tools_ui
+from mcp_server.foreground_guard import foreground_authorization
 
 
 def state(**overrides):
@@ -489,6 +490,30 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
                           return_value={"effect_observed": True, "verification": "text_state_changed"}):
             self._act({"type": "type", "element_id": "w1/1", "text": "ab"})
         digest.assert_not_called()
+
+    def test_a_shortcut_reports_whether_the_window_changed_apart_from_being_sent(self) -> None:
+        # #41: a shortcut has no element to check, so it only said the keys were sent.
+        def run(digests):
+            readings = iter(digests)
+            # An app-level shortcut the owner allowed to use the keyboard (shortcuts need the foreground).
+            app_target = {key: value for key, value in self.target.items() if key != "window_handle"}
+            with foreground_authorization("test"), \
+                 patch.object(tools_ui, "_resolve_action_native_target", return_value=(app_target, None)), \
+                 patch.object(tools_ui, "_native_window_content_digest", side_effect=lambda *a, **k: next(readings)), \
+                 patch.object(tools_ui, "_perform_action", return_value=(True, "key sent")) as perform, \
+                 patch.object(tools_ui, "cancellable_sleep"):
+                result = self._act({"type": "shortcut", "key": "n", "modifiers": ["command"]})
+            perform.assert_called_once()  # never sent again
+            return result
+
+        changed = run(["before", "after"])
+        self.assertTrue(changed["ok"])
+        self.assertEqual((True, "window_content_changed"),
+                         (changed["actions"][0]["effect_observed"], changed["actions"][0]["verification"]))
+        quiet = run(["before", "before", "before"])
+        self.assertTrue(quiet["ok"], "an unseen effect does not fail the shortcut")
+        self.assertEqual((False, "unverified"),
+                         (quiet["actions"][0]["effect_observed"], quiet["actions"][0]["verification"]))
 
     def test_typing_requires_observable_text_change(self) -> None:
         ready = {

@@ -4121,6 +4121,25 @@ def _native_window_content_digest(
     return digest.hexdigest()
 
 
+# A shortcut's effect is looked for twice: soon after it, and once more a little later.
+_SHORTCUT_EFFECT_CHECKS_S = (0.15, 0.35)
+
+
+def _shortcut_window_effect(
+    app: str, window_element_id: str, *, app_pid: Optional[int], before: str, deadline: Optional[float],
+) -> Dict[str, Any]:
+    """Whether the window looked different after a keyboard shortcut (#41).
+
+    Reported beside the fact that the keys were sent; never a reason to stop or to send them again.
+    """
+    for pause in _SHORTCUT_EFFECT_CHECKS_S:
+        cancellable_sleep(pause)
+        now = _native_window_content_digest(app, window_element_id, app_pid=app_pid, deadline=deadline)
+        if now is not None and now != before:
+            return {"effect_observed": True, "verification": "window_content_changed"}
+    return {"effect_observed": False, "verification": "unverified"}
+
+
 def _wait_for_native_effect(
     app: str,
     action: Dict[str, Any],
@@ -5899,6 +5918,11 @@ def act_ui(
                             str(target.get("app") or ""), resolved_element_id,
                             app_pid=int(target["pid"]) if target.get("pid") else None, deadline=deadline,
                         )
+                    elif action_type in {"key", "keyboard", "shortcut"} and resolved_element_id is None:
+                        window_before = _native_window_content_digest(
+                            str(target.get("app") or ""), f"w{int(target.get('window_index') or 1)}",
+                            app_pid=int(target["pid"]) if target.get("pid") else None, deadline=deadline,
+                        )
                     _announce_native_pointer(
                         action_type, resolved_action, node,
                         int(target["pid"]) if target.get("pid") else None,
@@ -6156,6 +6180,15 @@ def act_ui(
                 delta_structural_refresh = True
                 delta_refresh_reasons.append("unverified_element_effect")
             elif result.get("ok"):
+                if window_before is not None and action_type in {"key", "keyboard", "shortcut"}:
+                    try:
+                        result.update(_shortcut_window_effect(
+                            str(target.get("app") or ""), f"w{int(target.get('window_index') or 1)}",
+                            app_pid=int(target["pid"]) if target.get("pid") else None,
+                            before=window_before, deadline=deadline,
+                        ))
+                    except TimeoutError:
+                        result.update({"effect_observed": False, "verification": "unverified"})
                 delta_structural_refresh = True
                 delta_refresh_reasons.append("unbound_action_effect")
 
