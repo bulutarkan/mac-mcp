@@ -539,12 +539,21 @@ def edit_file(settings: Settings, path: str, old_string: str, new_string: str,
     """Find-and-replace in a file. Fails if count doesn't match expected_replacements."""
     target = resolve_path(path)
     scope = _current_path_scope()
-    if scope is not None:
-        content = _scoped_call(lambda: scoped_read_text(scope, target, errors="strict"))
-    else:
-        if not target.exists() or not target.is_file():
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
-        content = target.read_text(encoding="utf-8")
+    try:
+        if scope is not None:
+            content = _scoped_call(lambda: scoped_read_text(scope, target, errors="strict"))
+        else:
+            if not target.exists() or not target.is_file():
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
+            content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # read_file shows such a file with replacement characters; writing that back would change its bytes (#102).
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            {"error": "not_utf8_text", "message": f"edit_file edits UTF-8 text only, and {path} is not valid UTF-8 "
+                                                   f"(byte {exc.start}). Nothing was changed.",
+             "action_executed": False},
+        ) from exc
     count = content.count(old_string)
     if count == 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "old_string not found in file.")
