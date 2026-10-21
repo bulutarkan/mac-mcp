@@ -69,6 +69,9 @@ def run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Output that is not UTF-8 raised UnicodeDecodeError and lost the whole result (#83).
+            encoding="utf-8",
+            errors="replace",
             env=env,
             cwd=str(plan.cwd),
             start_new_session=True,

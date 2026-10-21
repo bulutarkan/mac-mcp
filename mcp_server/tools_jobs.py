@@ -234,6 +234,19 @@ def _wait_timeout(settings: Settings, timeout_s: Optional[int]) -> int:
 
 def _append_stream(job_id: str, stream, filename: str) -> None:
     path = _job_dir(job_id) / filename
+    try:
+        _drain_stream(job_id, stream, path, filename)
+    except Exception as exc:
+        # Never let a reader stop without a trace: the job would show completed with output missing (#83).
+        with _LOCK:
+            meta = _read_meta(job_id)
+            meta[f"{filename.split('.')[0]}_reader_error"] = type(exc).__name__
+            _write_meta(job_id, meta)
+    finally:
+        stream.close()
+
+
+def _drain_stream(job_id: str, stream, path: Path, filename: str) -> None:
     limit = stream_max_bytes()
     written = path.stat().st_size if path.exists() else 0
     capped = False
@@ -267,7 +280,6 @@ def _append_stream(job_id: str, stream, filename: str) -> None:
                     _write_meta(job_id, meta)
                 last_meta_at = now
                 cap_recorded = capped
-    stream.close()
 
 
 
@@ -525,6 +537,9 @@ def start_background_job(
             cwd=str(workdir),
             env=plan.env if plan.sandboxed else _base_env(env),
             text=True,
+            # A byte that is not UTF-8 (binary or Latin-1 output) killed the reader and lost the rest (#83).
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
