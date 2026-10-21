@@ -261,15 +261,64 @@
     const shots = r.evidence_count ? " · " + r.evidence_count + " screenshot" + (r.evidence_count === 1 ? "" : "s") : "";
     const sub = [r.kind === "recipe" ? "Recipe" : "Plan", steps + shots, ago(r.started_at)].filter(Boolean).join(" · ");
     const cls = r.ok ? "" : "error";
-    return '<div class="activity-row"><span class="row-icon activity-icon">' + svgIcon(toolIconName("computer_plan")) +
+    const open = openRuns.has(r.run_id);
+    // #65: a run opens in place to show its steps and where it stopped.
+    return '<button type="button" class="activity-row run-row" data-run-id="' + esc(r.run_id) + '" aria-expanded="' + open +
+      '"><span class="row-icon activity-icon">' + svgIcon(toolIconName("computer_plan")) +
       '</span><div class="activity-main"><strong>' + esc(r.name || r.run_id) + '</strong><span>' + esc(sub) +
       '</span></div><div class="activity-side"><span>' + esc(duration(r.duration_ms)) + '</span><span class="result ' + cls +
-      '" aria-hidden="true"></span><span class="sr-only">' + (r.ok ? "OK" : "Failed") + '</span></div></div>';
+      '" aria-hidden="true"></span><span class="sr-only">' + (r.ok ? "OK" : "Failed") + ', show steps</span></div></button>' +
+      '<div class="run-detail" id="run-detail-' + esc(r.run_id) + '"' + (open ? "" : " hidden") + '>' +
+      (runDetails.has(r.run_id) ? runDetailHtml(runDetails.get(r.run_id)) : "") + '</div>';
+  }
+  const openRuns = new Set();
+  const runDetails = new Map();
+  function runDetailHtml(detail) {
+    if (detail.message) return '<div class="empty">' + esc(detail.message) + '</div>';
+    const run = detail.run || {};
+    const steps = detail.steps || [];
+    const head = run.ok ? "Finished" : ("Stopped" + (run.failed_step ? " at " + run.failed_step : "") +
+      (run.reason_code ? " · " + run.reason_code : ""));
+    const rows = steps.map((step, i) => {
+      const failed = step.ok === false;
+      return '<li class="' + (failed ? "error" : "") + '"><span>' + esc(String(step.index != null ? step.index + 1 : i + 1)) +
+        '</span><strong>' + esc(step.tool || step.type || step.id || "Step") + '</strong><em>' +
+        esc(failed ? (step.reason_code || "Failed") : (step.status || "OK")) + '</em></li>';
+    }).join("");
+    return '<p class="run-head">' + esc(head) + '</p>' + (rows ? '<ol class="run-steps">' + rows + '</ol>'
+      : '<div class="empty">No steps were recorded.</div>');
+  }
+  async function toggleRun(runId) {
+    const panel = document.getElementById("run-detail-" + runId);
+    const button = document.querySelector('[data-run-id="' + CSS.escape(runId) + '"]');
+    if (!panel || !button) return;
+    if (openRuns.has(runId)) {
+      openRuns.delete(runId);
+      panel.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      return;
+    }
+    openRuns.add(runId);
+    panel.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    if (!runDetails.has(runId)) {
+      panel.innerHTML = '<div class="empty">Loading…</div>';
+      try {
+        runDetails.set(runId, await api("/mobile/api/runs/" + encodeURIComponent(runId)));
+      } catch (error) {
+        runDetails.set(runId, {message: error.status === 404 ? "This run is no longer kept." : "Couldn’t load this run."});
+      }
+      panel.innerHTML = runDetailHtml(runDetails.get(runId));
+    }
   }
   function renderRuns(runs) {
-    // Compact view: what ran and how it ended. The timeline and screenshots stay on the Mac dashboard.
+    // Compact view: what ran and how it ended; a run opens to its steps. Screenshots stay on the Mac dashboard.
     $("runsMeta").textContent = (runs.runs || []).length ? "Recent" : "";
     $("runs").innerHTML = (runs.runs || []).slice(0, 6).map(runRow).join("") || '<div class="empty">No recipe or plan runs yet.</div>';
+    $("runs").onclick = (event) => {
+      const row = event.target.closest("[data-run-id]");
+      if (row) toggleRun(row.dataset.runId);
+    };
   }
   function lifecycleLabel(value) {
     return ({

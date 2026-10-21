@@ -480,6 +480,34 @@ def create_mobile_routes(
         keys = ("run_id", "kind", "name", "started_at", "duration_ms", "ok", "reason_code", "step_count", "evidence_count")
         return JSONResponse({"ok": True, "available": True, "runs": [{key: row.get(key) for key in keys} for row in rows]})
 
+    async def run_detail(request: Request) -> Response:
+        # One run's steps (#65): where it stopped and the safe reason code. No prompt, tool input, raw
+        # result, error text or screenshot leaves the Mac this way.
+        _session, denied = require_mobile(request)
+        if denied is not None:
+            return denied
+        from . import run_evidence
+        run_id = str(request.path_params.get("run_id") or "")
+        if not run_evidence.valid_run_id(run_id):
+            return JSONResponse({"ok": False, "error": "run_not_found"}, status_code=404)
+        try:
+            record = run_evidence.get_run(run_id)
+        except Exception:
+            return JSONResponse({"ok": False, "available": False, "error": "runs_unavailable"})
+        if record is None:
+            days = run_evidence.run_evidence_privacy().get("retention_days")
+            return JSONResponse({"ok": False, "error": "run_not_found", "message": (
+                f"This run is no longer kept: run records are kept {days} days." if days
+                else "This run is no longer kept.")}, status_code=404)
+        step_keys = ("index", "id", "type", "tool", "ok", "status", "duration_ms", "reason_code", "recovered")
+        run_keys = ("run_id", "kind", "name", "started_at", "duration_ms", "ok", "reason_code", "failed_step")
+        return JSONResponse({
+            "ok": True,
+            "run": {key: record.get(key) for key in run_keys},
+            "steps": [{key: step.get(key) for key in step_keys if step.get(key) is not None}
+                      for step in (record.get("steps") or []) if isinstance(step, dict)][:60],
+        })
+
     async def usage_view(request: Request) -> Response:
         _session, denied = require_mobile(request)
         if denied is not None:
@@ -567,6 +595,7 @@ def create_mobile_routes(
         Route("/mobile/api/activity", activity_view, methods=["GET"]),
         Route("/mobile/api/usage", usage_view, methods=["GET"]),
         Route("/mobile/api/runs", runs_view, methods=["GET"]),
+        Route("/mobile/api/runs/{run_id}", run_detail, methods=["GET"]),
         Route("/dashboard/api/mobile/pairings", create_pairing, methods=["POST"]),
         Route("/dashboard/api/mobile/devices", devices, methods=["GET"]),
         Route("/dashboard/api/mobile/revoke", revoke, methods=["POST"]),

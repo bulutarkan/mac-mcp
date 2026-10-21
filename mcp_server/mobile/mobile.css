@@ -268,3 +268,14 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 .agent-stop.busy{border:0;background:none;color:var(--muted);font-size:9px;cursor:default}
 .agent-stop:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .agent:has(.agent-stop){grid-template-columns:28px minmax(0,1fr) auto auto}
+
+/* #65: a run opens in place to its steps. */
+.run-row{width:100%;text-align:left;font:inherit;color:inherit;background:none;border:0;border-top:1px solid var(--line, rgba(255,255,255,.08));cursor:pointer}
+.run-detail{padding:4px 12px 12px 50px}
+.run-head{margin:0 0 6px;font-size:13px;opacity:.85}
+.run-steps{margin:0;padding:0;list-style:none;display:grid;gap:4px}
+.run-steps li{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;font-size:12px;align-items:baseline}
+.run-steps li span{opacity:.55}
+.run-steps li strong{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run-steps li em{font-style:normal;opacity:.7}
+.run-steps li.error em{color:#ff8a80;opacity:1}
