@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from mcp_server.tools_macos import (
@@ -91,7 +92,7 @@ end run
     def test_raw_run_applescript_remains_raw_execution(self) -> None:
         raw = 'display dialog "raw"'
         with patch("mcp_server.tools_macos._run_apple", return_value={"ok": True}) as run:
-            result = run_applescript(None, raw, timeout_s=17)
+            result = run_applescript(SimpleNamespace(allow_shell=True), raw, timeout_s=17)
         self.assertTrue(result["ok"])
         run.assert_called_once_with(raw, 17)
 

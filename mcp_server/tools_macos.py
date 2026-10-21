@@ -5,7 +5,7 @@ import subprocess
 from typing import Any, Dict, List, Optional
 
 from .process_supervision import run_osascript
-from .security import Settings, truncate
+from .security import Settings, require_shell_enabled, truncate
 from .clipboard_guard import ClipboardBusyError, clipboard_guard
 from . import privacy_policy, screen_lock
 from .tool_cancellation import ToolCancelledError
@@ -36,6 +36,8 @@ def _run_apple(
 
 def run_applescript(settings: Settings, script: str, timeout_s: int = 30) -> Dict[str, Any]:
     """Run any AppleScript / osascript on macOS."""
+    # AppleScript runs commands itself (do shell script), so the shell switch covers it too (#86).
+    require_shell_enabled(settings)
     return _run_apple(script, timeout_s)
 
 
