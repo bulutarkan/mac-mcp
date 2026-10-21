@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import fcntl
 import json
 from datetime import datetime
@@ -1521,7 +1522,9 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
         while progressed:
             progressed = False
             for task in tasks:
-                if task.get("state") not in {"blocked", "ready"}:
+                # Queued and ready tasks too: a dependency can go back after they were let through, as when
+                # a nested reviewer's FAIL sends the reviewer back for revision (#91).
+                if task.get("state") not in {"blocked", "ready", "queued"}:
                     continue
                 deps = [str(dep) for dep in (task.get("depends_on") or [])]
                 failed_dep = next(
@@ -1529,14 +1532,21 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
                     None,
                 )
                 if failed_dep:
+                    if task.get("state") == "queued":
+                        _release_task_admission(task)
                     task["state"] = "skipped"
                     task["failure_reason"] = f"dependency_failed:{failed_dep}"
                     changed = progressed = True
                     continue
                 if all(_team_dependency_satisfied(task, dep, task_map, reviewer_map) for dep in deps):
-                    if task.get("state") != "ready":
+                    if task.get("state") == "blocked":
                         task["state"] = "ready"
                         changed = progressed = True
+                elif task.get("state") != "blocked":
+                    if task.get("state") == "queued":
+                        _release_task_admission(task)
+                    task["state"] = "blocked"
+                    changed = progressed = True
 
         budget = _team_budget_snapshot(team)
         admission_reason = str(budget.get("admission_exhausted_reason") or "").strip() or None
@@ -6170,6 +6180,43 @@ def _wait_progress(states: List[Dict[str, Any]], *, polls: int, rebuilds: int) -
     }
 
 
+_WAIT_TICKS: Dict[str, Dict[str, Any]] = {}
+_WAIT_TICKS_GUARD = threading.Lock()
+# Even a wait with no time left gives a quick tick this long to land.
+_WAIT_TICK_MIN_JOIN_S = 0.2
+
+
+def _team_tick_within(team_id: str, deadline: float) -> Dict[str, Any]:
+    """Advance a team for a waiter without outliving the waiter's deadline (#99).
+
+    A tick can start tasks (worktree preparation included) or wait for the team lock held by another
+    tick, so it runs on its own thread, one per team at a time. When it is not done in time, the waiter
+    reads the team as last written (writes are atomic) and the tick finishes on its own.
+    """
+    with _WAIT_TICKS_GUARD:
+        run = _WAIT_TICKS.get(team_id)
+        if run is None or not run["thread"].is_alive():
+            run = {"error": None}
+
+            def tick() -> None:
+                try:
+                    _team_tick(team_id)
+                except BaseException as exc:  # handed to the waiter that joins in time
+                    run["error"] = exc
+                    print(f"wait_agents: background tick of {team_id} failed: {type(exc).__name__}: {exc}",
+                          file=sys.stderr)
+
+            context = contextvars.copy_context()
+            run["thread"] = threading.Thread(target=context.run, args=(tick,), daemon=True,
+                                             name=f"mac-mcp-team-tick-{team_id}")
+            _WAIT_TICKS[team_id] = run
+            run["thread"].start()
+    run["thread"].join(max(_WAIT_TICK_MIN_JOIN_S, deadline - time.monotonic()))
+    if not run["thread"].is_alive() and run["error"] is not None:
+        raise run["error"]
+    return _read_team_unlocked(team_id)
+
+
 def wait_agents(
     settings: Settings,
     team_id: Optional[str] = None,
@@ -6184,17 +6231,18 @@ def wait_agents(
     if bool(team_id) == bool(agent_ids):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of team_id or agent_ids.")
     ids = list(agent_ids or [])
+    # The timeout covers the whole call, the scheduler ticks below included (#99).
+    bounded_timeout = min(max(0, int(timeout_s)), MAX_WAIT_TIMEOUT_S)
+    deadline = time.monotonic() + bounded_timeout
     if team_id:
         team = _authorize_team_control(str(team_id), "wait_agents")
-        team = _team_tick(str(team_id))
+        team = _team_tick_within(str(team_id), deadline)
         ids = list(team.get("agent_ids") or [])
     else:
         for target_agent_id in ids:
             _authorize_agent_control(str(target_agent_id), "wait_agents")
     if not ids and not team_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No agents to wait for.")
-    bounded_timeout = min(max(0, int(timeout_s)), MAX_WAIT_TIMEOUT_S)
-    deadline = time.monotonic() + bounded_timeout
     condition_met = False
     waiter_timed_out = False
     quorum_possible = True
@@ -6220,7 +6268,7 @@ def wait_agents(
         signature, last_rebuild = current_signature, time.monotonic()
         rebuilds += 1
         if team_id:
-            team_summary = _team_summary(str(team_id))
+            team_summary = _team_summary(str(team_id), _team_tick_within(str(team_id), deadline))
             ids = list(team_summary.get("agent_ids") or [])
         states = [get_agent(settings, agent_id, include_logs=False) for agent_id in ids]
         wait_state = _wait_snapshot(states, team_summary)
