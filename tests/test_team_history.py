@@ -194,16 +194,27 @@ class TeamHistoryEndpointTests(unittest.TestCase):
 
 
 class TeamHistoryAppSourceTests(unittest.TestCase):
-    def test_agents_pane_has_providers_and_team_history_sections(self) -> None:
+    def test_agents_pane_shows_providers_skills_and_team_history_in_tabs(self) -> None:
+        # One long page became four tabs; the last one shown is kept and a link can name one.
         settings = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
-        self.assertIn('AgentsFoldingSection(title: "Providers")', settings)
-        self.assertIn('AgentsFoldingSection(title: "Team History")', settings)
+        self.assertIn("Picker(\"\", selection: $agentsNavigation.tab)", settings)
+        for case in ("case .general:", "case .providers:", "case .skills:", "case .history:"):
+            self.assertIn(case, settings)
         self.assertIn("refreshTeamHistory", settings)
+        tabs = (SOURCES / "AgentsTabs.swift").read_text(encoding="utf-8")
+        for title in ('"General"', '"Providers"', '"Skills"', '"Team History"', '"team-history"'):
+            self.assertIn(title, tabs)
+        self.assertIn("UserDefaults.standard.set(tab.rawValue", tabs)
+        app = (SOURCES / "MacMCPMenuApp.swift").read_text(encoding="utf-8")
+        self.assertIn("if let tab = AgentsTab(link: pane) { AgentsNavigation.shared.tab = tab }", app)
+        script = (SOURCES.parent / "build_app.sh").read_text(encoding="utf-8")
+        self.assertIn('"${SCRIPT_DIR}/Sources/AgentsTabs.swift"', script)
 
     def test_section_respects_reduce_motion_and_reads_numbers_to_voiceover(self) -> None:
         source = (SOURCES / "TeamHistorySection.swift").read_text(encoding="utf-8")
         self.assertEqual(2, source.count("@Environment(\\.accessibilityReduceMotion)"))
-        self.assertGreaterEqual(source.count(".accessibilityLabel("), 3)
+        # The team card and the per-agent row read their numbers; the third was the fold button, gone with the tabs.
+        self.assertGreaterEqual(source.count(".accessibilityLabel("), 2)
         self.assertIn("No agent team has run yet.", source)
         self.assertIn("Tokens not reported", source)
         self.assertNotRegex(source, re.compile(r"(?<![A-Za-z0-9_])@State\b"))

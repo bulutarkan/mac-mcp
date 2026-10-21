@@ -27,10 +27,13 @@ struct MacMCPMenuApp: App {
         MenuAppDelegate.openSettings = { [weak appState] pane in
             let aliases: [String: SettingsSection] = ["scheduled-tasks": .scheduled, "automation": .scheduled,
                                                       "recipes": .scheduled, "mcp-servers": .mcpServers,
-                                                      "fleet": .macs, "devices": .macs, "iphone": .macs]
+                                                      "fleet": .macs, "devices": .macs, "iphone": .macs,
+                                                      "providers": .agents, "skills": .agents, "team-history": .agents]
             guard let appState, let section = aliases[pane] ?? SettingsSection(rawValue: pane) else { return }
             // Automation holds Scheduled Tasks and Recipes; a link names the tab it wants.
             if section == .scheduled { AutomationNavigation.shared.tab = pane == "recipes" ? .recipes : .tasks }
+            // Agents keeps the tab last shown unless a link names one (macmcp://settings/skills).
+            if let tab = AgentsTab(link: pane) { AgentsNavigation.shared.tab = tab }
             SettingsWindowController.shared.show(state: appState, settings: appState.settings, section: section)
         }
         // macmcp://recipe/run links reach the running server with the dashboard token.

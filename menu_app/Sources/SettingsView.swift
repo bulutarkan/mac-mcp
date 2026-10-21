@@ -183,6 +183,7 @@ struct SettingsView: View {
     @StateObject private var audio = AudioDeviceStore()
     @StateObject private var diagnostics = DiagnosticsCenter()
     @ObservedObject private var navigation = SettingsNavigation.shared
+    @ObservedObject private var agentsNavigation = AgentsNavigation.shared
     @MacMCPState private var selection: SettingsSection
     @MacMCPState private var notice = ""
     /// This Mac's shortcuts, for the ones agents may run with commands off (#195).
@@ -1047,75 +1048,101 @@ struct SettingsView: View {
     }
 
     private var subagentsPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 13) {
                 paneHeader(
                     "Agents",
                     subtitle: "Choose delegated providers, models, and the default agent Mac MCP uses for new work.",
                     refresh: true
                 )
-
-                if !settings.settingsLoadIssue.isEmpty {
-                    Label(settings.settingsLoadIssue, systemImage: "exclamationmark.shield")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(settings.providerSettingsLocked ? Color.orange : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                settingsDataStateRow(state.providerSettingsState) {
-                    Task { await state.refreshProviders() }
-                }
-                saveFeedbackRow(.agents)
-
-                defaultAgentCard
-
-                concurrencyCard
-
-                teamMessagesCard
-
-                retentionCard
-
-                AgentsFoldingSection(title: "Providers") {
-                    Text("Choose which AI tools on this Mac Mac MCP may hand work to. Each one has to be installed and signed in first.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    providerRow(id: "opencode", title: "OpenCode", subtitle: "Uses the OpenCode command-line tool")
-                    providerRow(id: "codex", title: "Codex", subtitle: "Uses the Codex command-line tool")
-                    providerRow(id: "claude", title: "Claude Code", subtitle: "Uses Claude Code, with your Claude sign-in")
-                    providerRow(id: "kimi", title: "Kimi Code", subtitle: "Uses Kimi Code, with your kimi login or its model providers")
-                    providerRow(id: "grok", title: "Grok Build", subtitle: "Uses Grok Build, with your grok login or xAI key")
-                    providerRow(id: "antigravity", title: "Antigravity", subtitle: "Uses Antigravity, with your Google sign-in")
-                    providerRow(id: "pi", title: "pi", subtitle: "Uses the pi coding agent, with your pi login or API keys")
-                    providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
-                    providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
-                    providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
-
-                    Text("A tool that is off is hidden from AI apps and never started. Changes apply to new requests right away.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
-                }
-
-                AgentsFoldingSection(title: "Skills") {
-                    SkillsSection(state: state)
-                }
-
-                AgentsFoldingSection(title: "Team History") {
-                    TeamHistorySection(
-                        history: state.teamHistory,
-                        loading: state.teamHistoryLoading,
-                        issue: state.teamHistoryIssue
-                    ) {
-                        let shown = state.teamHistory?.teams.count ?? 0
-                        Task { await state.refreshTeamHistory(limit: shown + 10) }
+                Picker("", selection: $agentsNavigation.tab) {
+                    ForEach(AgentsTab.allCases) { tab in
+                        Label(tab.title, systemImage: tab.symbol).tag(tab)
                     }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .accessibilityLabel("Agents section")
             }
-            .padding(22)
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch agentsNavigation.tab {
+                    case .general:
+                        agentsStatusRows
+                        defaultAgentCard
+                        concurrencyCard
+                        teamMessagesCard
+                        retentionCard
+                    case .providers:
+                        agentsStatusRows
+                        providersList
+                    case .skills:
+                        SkillsSection(state: state)
+                    case .history:
+                        TeamHistorySection(
+                            history: state.teamHistory,
+                            loading: state.teamHistoryLoading,
+                            issue: state.teamHistoryIssue
+                        ) {
+                            let shown = state.teamHistory?.teams.count ?? 0
+                            Task { await state.refreshTeamHistory(limit: shown + 10) }
+                        }
+                    }
+                }
+                .padding(22)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id(agentsNavigation.tab)  // each tab opens at its top
         }
+    }
+
+    /// Whether provider settings could be read and saved; shown on the tabs that change them.
+    @ViewBuilder
+    private var agentsStatusRows: some View {
+        if !settings.settingsLoadIssue.isEmpty {
+            Label(settings.settingsLoadIssue, systemImage: "exclamationmark.shield")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(settings.providerSettingsLocked ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        settingsDataStateRow(state.providerSettingsState) {
+            Task { await state.refreshProviders() }
+        }
+        saveFeedbackRow(.agents)
+    }
+
+    @ViewBuilder
+    private var providersList: some View {
+        Text("Choose which AI tools on this Mac Mac MCP may hand work to. Each one has to be installed and signed in first.")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        providerRow(id: "opencode", title: "OpenCode", subtitle: "Uses the OpenCode command-line tool")
+        providerRow(id: "codex", title: "Codex", subtitle: "Uses the Codex command-line tool")
+        providerRow(id: "claude", title: "Claude Code", subtitle: "Uses Claude Code, with your Claude sign-in")
+        providerRow(id: "kimi", title: "Kimi Code", subtitle: "Uses Kimi Code, with your kimi login or its model providers")
+        providerRow(id: "grok", title: "Grok Build", subtitle: "Uses Grok Build, with your grok login or xAI key")
+        providerRow(id: "antigravity", title: "Antigravity", subtitle: "Uses Antigravity, with your Google sign-in")
+        providerRow(id: "pi", title: "pi", subtitle: "Uses the pi coding agent, with your pi login or API keys")
+        providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
+        providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
+        providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
+
+        Text("A tool that is off is hidden from AI apps and never started. Changes apply to new requests right away.")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 2)
     }
 
     private var usageRetentionDays: Int {

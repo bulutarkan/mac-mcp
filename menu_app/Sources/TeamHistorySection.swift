@@ -1,49 +1,5 @@
 import SwiftUI
 
-/// A titled part of the Agents pane that folds open and closed, so Providers and Team History
-/// share one screen without crowding it (#263).
-struct AgentsFoldingSection<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: () -> Content
-
-    @MacMCPState private var expanded: Bool
-
-    init(title: String, initiallyExpanded: Bool = true, @ViewBuilder content: @escaping () -> Content) {
-        self.title = title
-        self.content = content
-        _expanded = MacMCPState(initialValue: initiallyExpanded)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                    Text(title.uppercased())
-                        .font(.system(size: 10, weight: .semibold))
-                        .tracking(0.5)
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(.tertiary)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(title)
-            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
-            .accessibilityHint("Shows or hides this section")
-
-            if expanded {
-                content()
-                    .transition(.opacity)
-            }
-        }
-    }
-}
-
 enum TeamHistoryFormat {
     static func duration(_ milliseconds: Int?) -> String {
         guard let milliseconds else { return "—" }
