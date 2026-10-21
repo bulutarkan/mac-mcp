@@ -79,7 +79,7 @@ class PostChoiceTests(unittest.TestCase):
 
 
 class PostFlowTests(unittest.TestCase):
-    def _post(self, action, *, finds, submit, counts, field_text_after=True):
+    def _post(self, action, *, finds, submit, counts, field_text_after=True, page_check=None):
         """Run one post action; the page answers the submit finder and the text counter."""
         calls = {"verified": [], "checks": 0}
         counts = iter(counts)
@@ -94,6 +94,8 @@ class PostFlowTests(unittest.TestCase):
             if "field_has_text" in js:
                 calls["checks"] += 1
                 count = next(counts)
+                if page_check is not None:
+                    return page_check(js, count)
                 return {"ok": True, "count": count, "field_connected": True, "field_has_text": field_text_after}
             return {"ok": True, "url": "u", "title": "t", "dom_revision": 1}
 
@@ -136,6 +138,33 @@ class PostFlowTests(unittest.TestCase):
         self.assertTrue(result["outcome_unknown"])
         self.assertFalse(post["automatic_retry"])
         self.assertEqual(1, sum(1 for typ, *_ in calls["verified"] if typ == "click"))
+
+    def _link_only_post(self, field_empty: bool):
+        # #100: a post that is only a link has no words to look for. The page check (like the real one)
+        # then says field_has_text=false whatever the box holds, which counted as a cleared box.
+        def page(js, count):
+            self.assertIn('want=""', js)
+            return {"ok": True, "count": count, "field_connected": True, "field_has_text": False,
+                    "field_empty": field_empty}
+
+        return self._post(
+            {"type": "post", "text": "https://github.com/bulutarkan/mac-mcp", "timeout_s": 2},
+            finds=[found([box("e_box", "Add a comment")], status=None)],
+            submit={"ok": True, "element_id": "e_send", "label": "post"},
+            counts=[0] * 20, page_check=page,
+        )[0]["actions"][0]
+
+    def test_a_link_only_post_is_posted_only_once_its_box_is_empty(self) -> None:
+        still_there = self._link_only_post(field_empty=False)
+        self.assertEqual(("post_not_confirmed", None), (still_there["error"], still_there["posted"]))
+        self.assertFalse(still_there["field_cleared"])
+        cleared = self._link_only_post(field_empty=True)
+        self.assertEqual((True, "field_cleared"), (cleared["posted"], cleared["verification"]))
+
+    def test_the_page_check_reports_an_empty_box(self) -> None:
+        js = agent._post_check_js("e_box", "")
+        # The raw text, not the normalized words: an emoji-only post normalizes to nothing.
+        self.assertIn("field_empty:connected&&!String(fieldText).trim()", js)
 
     def test_missing_submit_button_stops_before_clicking(self) -> None:
         result, _find, calls = self._post(

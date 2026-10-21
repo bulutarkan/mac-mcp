@@ -3711,7 +3711,7 @@ for(var r=0;r<roots.length&&visited<60000;r++){{
 }}
 var hay=' '+norm(parts.join(' '))+' ',needle=' '+want+' ',count=0;
 if(want){{var at=hay.indexOf(needle);while(at>=0&&count<50){{count++;at=hay.indexOf(needle,at+needle.length-1);}}}}
-return __mcpB64({{ok:true,count:count,field_connected:connected,field_has_text:!!(want&&(' '+norm(fieldText)+' ').indexOf(needle)>=0),url:location.href}});
+return __mcpB64({{ok:true,count:count,field_connected:connected,field_has_text:!!(want&&(' '+norm(fieldText)+' ').indexOf(needle)>=0),field_empty:connected&&!String(fieldText).trim(),url:location.href}});
 }})()'''
 
 
@@ -4220,6 +4220,11 @@ def _download_wait(settings: Settings, action: Dict[str, Any], since_ms: Optiona
     return result
 
 
+def _caller_action_count(actions: List[Any]) -> int:
+    """Actions the caller asked for: the checks expect adds do not count against the limit (#87)."""
+    return sum(1 for action in actions if not (isinstance(action, dict) and "_expect_for" in action))
+
+
 def _expand_expectations(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Each action with expect is followed by the wait that checks it."""
     expanded: List[Dict[str, Any]] = []
@@ -4399,6 +4404,8 @@ def _browser_act_impl(
     tab_handle: Optional[str] = None,
     return_state: str = "compact",
     allow_foreground: bool = False,
+    *,
+    _expanded: bool = False,
 ) -> Dict[str, Any]:
     """Perform one serialized action transaction against a single logical tab."""
     cancellation_checkpoint()
@@ -4406,11 +4413,16 @@ def _browser_act_impl(
     try:
         if not isinstance(actions, list) or not actions:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
-        if len(actions) > _MAX_ACTIONS:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+        if not _expanded:
+            if len(actions) > _MAX_ACTIONS:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+            # Keys starting with _ are this module's own bookkeeping (expect checks), never the caller's.
+            actions = [{k: v for k, v in item.items() if not str(k).startswith("_")} if isinstance(item, dict) else item
+                       for item in actions]
         actions = normalize_act_actions(actions)
-        requested_action_count = len(actions)
-        actions = _expand_expectations(actions)
+        requested_action_count = _caller_action_count(actions)
+        if not _expanded:
+            actions = _expand_expectations(actions)
         normalized_return_state = str(return_state or "compact").lower().strip()
         if normalized_return_state not in _RETURN_STATE_MODES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
@@ -4427,6 +4439,7 @@ def _browser_act_impl(
                 answered = []
                 for item in leading:
                     answered.append(_dialog_action(b, item, target.tab_handle))
+                    answered[-1]["outcome"] = _action_outcome(answered[-1])
                     if not answered[-1].get("ok"):
                         break
             failed = next((item for item in answered if not item.get("ok")), None)
@@ -4439,10 +4452,14 @@ def _browser_act_impl(
                     out.update(error=failed.get("error"), observe_again=True)
                 return out
             rest = _browser_act_impl(settings, b, actions, None, window_index, tab_index, tab_handle,
-                                     return_state, allow_foreground)
+                                     return_state, allow_foreground, _expanded=True)
             rest["actions"] = answered + list(rest.get("actions") or [])
             rest["action_count"] = len(rest["actions"])
             rest["mutation_dispatched"] = True
+            # The rest numbered its own actions; number them again in the final list (#88).
+            rest.pop("unconfirmed_actions", None)
+            rest.pop("confirm_hint", None)
+            _flag_unconfirmed(rest)
             return rest
         _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
         with _measure_transport() as transport, _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
@@ -4488,7 +4505,7 @@ def _browser_act_locked(
     """Perform batched browser actions while the caller holds the tab lease."""
     if not isinstance(actions, list) or not actions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
-    if len(actions) > _MAX_ACTIONS:
+    if _caller_action_count(actions) > _MAX_ACTIONS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
     actions = normalize_act_actions(actions)
     return_state = str(return_state or "compact").lower().strip()
@@ -4876,7 +4893,9 @@ def _browser_act_locked(
             cancellation_checkpoint()
             check = post_page_js(_post_check_js(field_id, snippet))
             seen = int(check.get("count") or 0) > baseline
-            field_cleared = not check.get("field_connected") or not check.get("field_has_text")
+            # With no words to look for (a post that is only a link), only an emptied box shows it was sent (#100).
+            field_cleared = not check.get("field_connected") or (
+                not check.get("field_has_text") if snippet else bool(check.get("field_empty")))
             if seen or (not snippet and field_cleared) or time.monotonic() >= deadline:
                 break
             cancellable_sleep(0.4)
