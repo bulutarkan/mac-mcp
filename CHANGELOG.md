@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Your other Macs: full access for a while (roadmap #80)
+- When you invite a Mac with full access you choose how long: no time limit (as before), 1 hour, until the end of today or 7 days. The time runs from when you allow it, and the request you allow shows it.
+- When the time is over that Mac keeps reading here: its pairing stays, and anything that changes something is refused, from its next request on. Only you give full access again, in **Settings › Devices** with **Access** next to the Mac; the other Mac cannot ask for it. The same menu lowers a Mac to read only or status only.
+- Settings › Devices shows until when a Mac has full access, or that it ended. Macs you paired before keep the access they had.
+
 ### Your other Macs: read-only access writes nothing, by any path (roadmap #79)
 - A Mac you gave read-only access can no longer run the tools of your own MCP servers (Notion, GitHub, …) here. Those tools say themselves that they only read, and this Mac cannot check that; with full access, and for your own apps on this Mac, they work as before.
 - A read-only Mac's plan no longer saves a recipe draft on this Mac: it writes nothing here at all.

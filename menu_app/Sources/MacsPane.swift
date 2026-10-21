@@ -35,6 +35,26 @@ enum MacAccess {
         }
     }
 
+    /// How long full access lasts once allowed (#80); "none" is no limit, the default.
+    static let durations = ["none", "1h", "today", "7d"]
+
+    static func durationTitle(_ duration: String) -> String {
+        switch duration {
+        case "1h": return "For 1 hour"
+        case "today": return "Until the end of today"
+        case "7d": return "For 7 days"
+        default: return "No time limit"
+        }
+    }
+
+    /// When full access ends, said the short way: "until 14:30" today, else with the date.
+    static func until(_ time: Double) -> String {
+        let date = Date(timeIntervalSince1970: time)
+        return Calendar.current.isDateInToday(date)
+            ? date.formatted(date: .omitted, time: .shortened)
+            : date.formatted(date: .abbreviated, time: .shortened)
+    }
+
     static func profileTitle(_ profile: String) -> String {
         switch profile {
         case "trusted": return "Trusted"
@@ -104,10 +124,16 @@ struct FleetClient: Identifiable, Equatable {
     let effective: String
     let limited: Bool
     let lastSeenAt: Double?
+    /// Full access ends then (#80); nil when it does not end.
+    let fullUntil: Double?
+    /// Full access was given for a while and that time is over: it reads only now.
+    let fullExpired: Bool
     var id: String { clientID }
 
     init(_ object: [String: Any]) {
         clientID = object["client_id"] as? String ?? ""
+        fullUntil = object["full_until"] as? Double
+        fullExpired = object["full_expired"] as? Bool ?? false
         name = object["name"] as? String ?? "Mac"
         let access = object["access"] as? [String: Any] ?? [:]
         granted = access["granted"] as? String ?? object["permission"] as? String ?? "status"
@@ -121,6 +147,7 @@ struct FleetRequest: Identifiable, Equatable {
     let requestID: String
     let name: String
     let permission: String
+    let fullFor: String
     let checkCode: String
     var id: String { requestID }
 
@@ -128,6 +155,7 @@ struct FleetRequest: Identifiable, Equatable {
         requestID = object["request_id"] as? String ?? ""
         name = object["client_name"] as? String ?? "A Mac"
         permission = object["permission"] as? String ?? "status"
+        fullFor = object["full_for"] as? String ?? "none"
         checkCode = object["check_code"] as? String ?? ""
     }
 }
@@ -355,7 +383,10 @@ struct MacsPane: View {
             MacPicture(model: "Mac", size: 52)
             VStack(alignment: .leading, spacing: 6) {
                 Text("\(request.name) wants to use this Mac").font(.headline)
-                Label(MacAccess.title(request.permission) + " — " + MacAccess.blurb(request.permission),
+                Label(MacAccess.title(request.permission)
+                        + (request.permission == "full" && request.fullFor != "none"
+                            ? " " + MacAccess.durationTitle(request.fullFor).lowercased() : "")
+                        + " — " + MacAccess.blurb(request.permission),
                       systemImage: MacAccess.symbol(request.permission))
                     .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
@@ -483,6 +514,7 @@ struct MacsPane: View {
                         }
                         .accessibilityElement(children: .combine)
                         Spacer()
+                        accessMenu(client)
                         Button("Stop") { stoppingClient = client }
                     }
                     .padding(.vertical, 8)
@@ -497,8 +529,33 @@ struct MacsPane: View {
         }
     }
 
+    /// The owner gives full access again for a while, or less (#80). Only here: the other Mac cannot ask for it.
+    private func accessMenu(_ client: FleetClient) -> some View {
+        Menu("Access") {
+            Section("Full access") {
+                ForEach(MacAccess.durations, id: \.self) { duration in
+                    Button(MacAccess.durationTitle(duration)) {
+                        Task { await setAccess(client, "full", duration) }
+                    }
+                }
+            }
+            Button(MacAccess.title("read_only")) { Task { await setAccess(client, "read_only") } }
+            Button(MacAccess.title("status")) { Task { await setAccess(client, "status") } }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(busy)
+        .help("Change what \(client.name) may do here")
+    }
+
     private func clientLine(_ client: FleetClient) -> String {
+        if client.fullExpired, let until = client.fullUntil {
+            return "Full access ended \(MacAccess.until(until)) · reads only now"
+        }
         var line = MacAccess.title(client.granted)
+        if client.granted == "full", let until = client.fullUntil {
+            line += " until " + MacAccess.until(until)
+        }
         if client.limited {
             line += " · \(MacAccess.title(client.effective).lowercased()), because this Mac is set to \(MacAccess.profileTitle(profile))"
         }
@@ -533,6 +590,11 @@ struct MacsPane: View {
         await load()
     }
 
+    private func setAccess(_ client: FleetClient, _ permission: String, _ duration: String = "none") async {
+        await act("dashboard/api/fleet/clients/access",
+                  ["client_id": client.clientID, "permission": permission, "full_for": duration])
+    }
+
     private func decide(_ request: FleetRequest, allow: Bool) async {
         await act("dashboard/api/fleet/requests/decide", ["request_id": request.requestID, "allow": allow])
     }
@@ -553,6 +615,7 @@ struct InviteMacSheet: View {
     let done: () -> Void
 
     @MacMCPState private var access = "full"
+    @MacMCPState private var fullFor = "none"
     @MacMCPState private var invitation: FleetInvitation?
     @MacMCPState private var problem = ""
     @MacMCPState private var working = false
@@ -635,6 +698,17 @@ struct InviteMacSheet: View {
                 .taskCard(highlight: access == option ? .accentColor : nil)
                 .accessibilityAddTraits(access == option ? .isSelected : [])
             }
+            if access == "full" {
+                HStack(spacing: 8) {
+                    Picker("How long", selection: $fullFor) {
+                        ForEach(MacAccess.durations, id: \.self) { Text(MacAccess.durationTitle($0)).tag($0) }
+                    }
+                    .fixedSize()
+                    Text(fullFor == "none" ? "Until you change it or stop it."
+                                           : "From when you allow it. Then it reads only, until you give more.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if let note = limitNote {
                 Label(note, systemImage: "checkmark.shield").font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -680,7 +754,9 @@ struct InviteMacSheet: View {
                         .textSelection(.enabled)
                 }
             }
-            Label("Then allow it here. It asks for " + MacAccess.title(access).lowercased() + ".", systemImage: "3.circle.fill")
+            Label("Then allow it here. It asks for " + MacAccess.title(access).lowercased()
+                  + (access == "full" && fullFor != "none" ? " " + MacAccess.durationTitle(fullFor).lowercased() : "")
+                  + ".", systemImage: "3.circle.fill")
                 .font(.callout)
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -701,7 +777,8 @@ struct InviteMacSheet: View {
 
     private func create() async {
         working = true
-        let result = await state.taskAPI("dashboard/api/fleet/invite", body: ["permission": access])
+        let result = await state.taskAPI("dashboard/api/fleet/invite",
+                                         body: ["permission": access, "full_for": access == "full" ? fullFor : "none"])
         working = false
         guard result.ok, let link = result.object["link"] as? String, let code = result.object["code"] as? String,
               let expires = result.object["expires_at"] as? Double else {

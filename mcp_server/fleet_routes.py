@@ -113,7 +113,7 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         client, denied = caller(request)
         if denied:
             return denied
-        return JSONResponse({"ok": True, **fleet.own_status(client["permission"])})
+        return JSONResponse({"ok": True, **fleet.own_status(client["permission"], client.get("full_until"))})
 
     async def recipes_list(request: Request) -> Response:
         client, denied = caller(request)
@@ -212,11 +212,12 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
                                             "ngrok or a custom HTTPS URL in Settings › Connections first."},
                                 status_code=409)
         try:
-            offer = fleet.store().issue_offer(str(body.get("permission") or "status"))
+            offer = fleet.store().issue_offer(str(body.get("permission") or "status"),
+                                              full_for=str(body.get("full_for") or "none"))
         except fleet.FleetError as exc:
             return _error(exc)
         return JSONResponse({"ok": True, "link": f"{address}/fleet#pair={offer['token']}", "address": address,
-                             "code": offer["code"], "permission": offer["permission"],
+                             "code": offer["code"], "permission": offer["permission"], "full_for": offer["full_for"],
                              "expires_at": offer["expires_at"]})
 
     async def cancel_invite(request: Request) -> Response:
@@ -244,6 +245,18 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         if not fleet.store().revoke_client(str(body.get("client_id") or "")):
             return JSONResponse({"ok": False, "error": "fleet_client_unknown"}, status_code=404)
         return JSONResponse({"ok": True})
+
+    async def access(request: Request) -> Response:
+        """The owner gives a paired Mac full access again for a while, or less access (#80)."""
+        body, denied = await owner_body(request)
+        if denied:
+            return denied
+        try:
+            client = fleet.store().set_access(str(body.get("client_id") or ""), str(body.get("permission") or ""),
+                                              full_for=str(body.get("full_for") or "none"))
+        except fleet.FleetError as exc:
+            return _error(exc)
+        return JSONResponse({"ok": True, "client": {**client, "access": fleet.effective_access(client["permission"])}})
 
     async def add(request: Request) -> Response:
         body, denied = await owner_body(request)
@@ -322,6 +335,7 @@ def create_fleet_routes(dashboard_guard: Callable[[Request], Optional[Response]]
         Route("/dashboard/api/fleet/invite/cancel", cancel_invite, methods=["POST"]),
         Route("/dashboard/api/fleet/requests/decide", decide, methods=["POST"]),
         Route("/dashboard/api/fleet/clients/revoke", revoke, methods=["POST"]),
+        Route("/dashboard/api/fleet/clients/access", access, methods=["POST"]),
         Route("/dashboard/api/fleet/peers/add", add, methods=["POST"]),
         Route("/dashboard/api/fleet/peers/remove", remove, methods=["POST"]),
         Route("/dashboard/api/fleet/name", rename, methods=["POST"]),

@@ -103,6 +103,8 @@ For the simplest Cloudflare setup, create the tunnel and hostname in Cloudflare,
 | Read only | Use B's reading tools: read files, search, look at its screen and pages, list its recipes. Tools that change something are not shown to A and are refused, also as a step of a plan or recipe, and nothing is written on B (not even a recipe draft). Tools of B's own MCP servers (Notion, GitHub, …) are refused too: they say themselves that they only read, and B cannot check that. |
 | Status only | See that B is on, its model, Mac MCP version and uptime. No tools. |
 
+**Full access for a while.** When you invite with full access you choose how long: no time limit (the default), 1 hour, until the end of today or 7 days, counted from when you allow it. When it is over, A keeps read-only access: the pairing stays and B refuses anything that changes something, from A's next request on. Only you give full access again, with **Access** next to A in **Who can use this Mac**; A cannot ask for it. The same menu lowers A to read only or status only.
+
 **B's own setting comes first.** A connection never gets more than B's own profile in **Permissions & Safety**: full access on a Mac set to Read Only reads only. Both Macs show such a connection as limited, and the (i) next to the title says why. B's approvals still apply to what A runs there.
 
 **Busy.** The Available toggle at the top of Settings → Devices sets a Mac to Busy (orange) without removing anyone: while Busy it takes no tool calls, recipe runs or new pairing from other Macs, and they show it as Busy. Turning it back on restores every connection as it was.

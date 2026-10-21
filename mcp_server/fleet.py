@@ -43,6 +43,9 @@ MAX_ATTEMPTS_TOTAL = 200
 # status: see whether it is on. read_only: also use its tools that only read (files, search, screen,
 # pages, recipes listed). full: use all of its Mac MCP tools. Never more than that Mac's own setting.
 PERMISSIONS = ("status", "read_only", "full")
+# How long full access lasts once allowed (#80): the owner picks it in the invitation, or later in Settings.
+# When it ends the Mac keeps reading (read_only); only the owner gives full access again.
+FULL_FOR = ("none", "1h", "today", "7d")
 _ACCESS_RANK = {"status": 0, "read_only": 1, "standard": 2, "full": 3}
 STARTED_AT = time.time()
 
@@ -61,6 +64,33 @@ def _hash(value: str) -> str:
 def _clean_name(value: object, fallback: str = "Mac") -> str:
     text = " ".join(str(value or "").split())
     return text[:80] or fallback
+
+
+def full_until(full_for: Optional[str], *, now: Optional[float] = None) -> Optional[float]:
+    """When full access given now for full_for ends; None when it does not end."""
+    choice = str(full_for or "none")
+    if choice not in FULL_FOR:
+        raise FleetError("FLEET_DURATION_INVALID", f"full_for is one of {', '.join(FULL_FOR)}.")
+    start = _now() if now is None else float(now)
+    if choice == "1h":
+        return start + 3600
+    if choice == "7d":
+        return start + 7 * 86400
+    if choice == "today":
+        day = time.localtime(start)
+        return time.mktime((day.tm_year, day.tm_mon, day.tm_mday + 1, 0, 0, 0, 0, 0, -1))
+    return None
+
+
+def _with_effective_permission(row: Dict[str, Any], now: float) -> Dict[str, Any]:
+    """A client row with the access it has now: full access past its end reads only."""
+    out = dict(row)
+    out["granted_permission"] = row["permission"]
+    until = row.get("full_until")
+    out["full_expired"] = bool(row["permission"] == "full" and until is not None and now >= float(until))
+    if out["full_expired"]:
+        out["permission"] = "read_only"
+    return out
 
 
 def _now() -> float:
@@ -258,13 +288,19 @@ class FleetStore:
             pass
         if self._ready_for != path:
             conn.executescript(_SCHEMA)
+            # Columns added after the first release (#80); rows from before have no end to full access.
+            for table, column in (("offers", "full_for TEXT"), ("requests", "full_for TEXT"), ("clients", "full_until REAL")):
+                if column.split()[0] not in {info[1] for info in conn.execute(f"PRAGMA table_info({table})")}:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
             self._ready_for = path
         return conn
 
     # B: inviting another Mac ---------------------------------------------------
-    def issue_offer(self, permission: str, ttl_s: int = OFFER_TTL_S) -> Dict[str, Any]:
+    def issue_offer(self, permission: str, ttl_s: int = OFFER_TTL_S, *, full_for: str = "none") -> Dict[str, Any]:
         if permission not in PERMISSIONS:
             raise FleetError("FLEET_PERMISSION_INVALID", f"permission is one of {', '.join(PERMISSIONS)}.")
+        full_until(full_for)  # checks the choice
+        full_for = full_for if permission == "full" else "none"
         now = _now()
         token = OFFER_PREFIX + secrets.token_urlsafe(24)
         manual = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
@@ -272,11 +308,13 @@ class FleetStore:
             conn.execute("BEGIN IMMEDIATE")
             # One invitation at a time: a new one ends the last, so attempt counting stays clear.
             conn.execute("DELETE FROM offers")
-            conn.execute("INSERT INTO offers VALUES (?, ?, ?, ?, ?, NULL, 0)",
-                         (_hash(token), _hash(manual), permission, now, now + max(15, min(int(ttl_s), OFFER_TTL_S))))
+            conn.execute("INSERT INTO offers (code_hash, manual_hash, permission, created_at, expires_at, consumed_at, "
+                         "failed_attempts, full_for) VALUES (?, ?, ?, ?, ?, NULL, 0, ?)",
+                         (_hash(token), _hash(manual), permission, now, now + max(15, min(int(ttl_s), OFFER_TTL_S)),
+                          full_for))
             conn.execute("COMMIT")
             self._failures.clear()
-        return {"token": token, "code": manual[:4] + "-" + manual[4:], "permission": permission,
+        return {"token": token, "code": manual[:4] + "-" + manual[4:], "permission": permission, "full_for": full_for,
                 "created_at": now, "expires_at": now + max(15, min(int(ttl_s), OFFER_TTL_S))}
 
     def cancel_offer(self) -> None:
@@ -285,7 +323,7 @@ class FleetStore:
 
     def active_offer(self) -> Optional[Dict[str, Any]]:
         with closing(self._connect()) as conn:
-            row = conn.execute("SELECT permission, created_at, expires_at FROM offers WHERE consumed_at IS NULL "
+            row = conn.execute("SELECT permission, full_for, created_at, expires_at FROM offers WHERE consumed_at IS NULL "
                                "AND expires_at > ?", (_now(),)).fetchone()
         return dict(row) if row else None
 
@@ -328,9 +366,10 @@ class FleetStore:
                 poll = POLL_PREFIX + secrets.token_urlsafe(32)
                 digits = check_code(server_device_id, client_device_id, row["code_hash"])
                 conn.execute("INSERT INTO requests (request_id, poll_hash, client_device_id, client_name, permission, "
-                             "check_code, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                             "check_code, status, created_at, expires_at, full_for) "
+                             "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
                              (request_id, _hash(poll), client_device_id, _clean_name(client_name), row["permission"],
-                              digits, now, now + REQUEST_TTL_S))
+                              digits, now, now + REQUEST_TTL_S, row["full_for"] or "none"))
                 conn.execute("COMMIT")
             except FleetError:
                 raise
@@ -344,8 +383,8 @@ class FleetStore:
         now = _now()
         with closing(self._connect()) as conn:
             conn.execute("UPDATE requests SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?", (now,))
-            rows = conn.execute("SELECT request_id, client_name, client_device_id, permission, check_code, created_at, "
-                                "expires_at FROM requests WHERE status = 'pending' ORDER BY created_at").fetchall()
+            rows = conn.execute("SELECT request_id, client_name, client_device_id, permission, full_for, check_code, "
+                                "created_at, expires_at FROM requests WHERE status = 'pending' ORDER BY created_at").fetchall()
         return [dict(row) for row in rows]
 
     def decide(self, request_id: str, *, allow: bool) -> Dict[str, Any]:
@@ -367,9 +406,12 @@ class FleetStore:
                 # A Mac paired again replaces its earlier access rather than holding two.
                 conn.execute("UPDATE clients SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL",
                              (now, row["client_device_id"]))
-                conn.execute("INSERT INTO clients (client_id, device_id, name, permission, token_hash, created_at) "
-                             "VALUES (?, ?, ?, ?, ?, ?)",
-                             (client_id, row["client_device_id"], row["client_name"], row["permission"], _hash(token), now))
+                # Full access for a while runs from the owner's yes, not from the invitation.
+                until = full_until(row["full_for"], now=now) if row["permission"] == "full" else None
+                conn.execute("INSERT INTO clients (client_id, device_id, name, permission, token_hash, created_at, "
+                             "full_until) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                             (client_id, row["client_device_id"], row["client_name"], row["permission"], _hash(token), now,
+                              until))
                 # The credential waits, once, for the asking Mac's next poll.
                 conn.execute("UPDATE requests SET status = 'allowed', decided_at = ?, credential = ?, client_id = ? "
                              "WHERE request_id = ?", (now, token, client_id, row["request_id"]))
@@ -412,13 +454,30 @@ class FleetStore:
                 return None
             if not row["last_seen_at"] or now - float(row["last_seen_at"]) > 5:
                 conn.execute("UPDATE clients SET last_seen_at = ? WHERE client_id = ?", (now, row["client_id"]))
-        return dict(row)
+        # Checked on every request, so full access ends on time, without a timer.
+        return _with_effective_permission(dict(row), now)
 
     def clients(self) -> List[Dict[str, Any]]:
+        now = _now()
         with closing(self._connect()) as conn:
-            rows = conn.execute("SELECT client_id, device_id, name, permission, created_at, last_seen_at FROM clients "
-                                "WHERE revoked_at IS NULL ORDER BY created_at DESC").fetchall()
-        return [dict(row) for row in rows]
+            rows = conn.execute("SELECT client_id, device_id, name, permission, full_until, created_at, last_seen_at "
+                                "FROM clients WHERE revoked_at IS NULL ORDER BY created_at DESC").fetchall()
+        return [_with_effective_permission(dict(row), now) for row in rows]
+
+    def set_access(self, client_id: str, permission: str, *, full_for: str = "none") -> Dict[str, Any]:
+        """The owner changes a paired Mac's access: full again for a while, or less (#80). Only the owner calls this."""
+        if permission not in PERMISSIONS:
+            raise FleetError("FLEET_PERMISSION_INVALID", f"permission is one of {', '.join(PERMISSIONS)}.")
+        now = _now()
+        until = full_until(full_for, now=now) if permission == "full" else None
+        with self._lock, closing(self._connect()) as conn:
+            done = conn.execute("UPDATE clients SET permission = ?, full_until = ? WHERE client_id = ? AND revoked_at IS NULL",
+                                (permission, until, str(client_id)))
+            if done.rowcount != 1:
+                raise FleetError("FLEET_CLIENT_UNKNOWN", "That Mac is not connected to this one.", 404)
+            row = conn.execute("SELECT client_id, device_id, name, permission, full_until, created_at, last_seen_at "
+                               "FROM clients WHERE client_id = ?", (str(client_id),)).fetchone()
+        return _with_effective_permission(dict(row), now)
 
     def revoke_client(self, client_id: str) -> bool:
         with self._lock, closing(self._connect()) as conn:
@@ -514,7 +573,7 @@ def public_peer(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def own_status(permission: str) -> Dict[str, Any]:
+def own_status(permission: str, full_access_until: Optional[float] = None) -> Dict[str, Any]:
     """What a paired Mac sees about this one: cheap facts, nothing private."""
     from .install_kind import install_kind, installed_release_id
     from .version import __version__
@@ -525,4 +584,5 @@ def own_status(permission: str) -> Dict[str, Any]:
     return {"device_id": me["device_id"], "name": me["name"], "model": me["model"], "available": True,
             "version": __version__, "release_id": installed_release_id() if install_kind() == "pkg" else None,
             "macos": platform.mac_ver()[0] or None, "uptime_s": int(_now() - STARTED_AT),
-            "your_permission": permission, "access": effective_access(permission)}
+            "your_permission": permission, "your_full_until": full_access_until if permission == "full" else None,
+            "access": effective_access(permission)}
