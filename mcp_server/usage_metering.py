@@ -115,6 +115,9 @@ def canonical_payload(value: Any) -> tuple[Any, int, int]:
         if depth > 32:
             return "[depth-limit]"
         item = _jsonable(item)
+        if isinstance(item, float) and not math.isfinite(item):
+            # JSON has no NaN or Infinity: measured as the text a JSON writer shows for them (#93).
+            return "NaN" if item != item else ("Infinity" if item > 0 else "-Infinity")
         if item is None or isinstance(item, (bool, int, float)):
             return item
         if isinstance(item, (bytes, bytearray, memoryview)):
@@ -293,6 +296,7 @@ class UsageCollector:
         self._worker: Optional[threading.Thread] = None
         self._dropped = 0
         self._worker_errors = 0
+        self._samples_skipped = 0
         self._processed = 0
 
     @staticmethod
@@ -311,6 +315,7 @@ class UsageCollector:
                 "queue_capacity": self.queue_size,
                 "queue_dropped": self._dropped,
                 "worker_errors": self._worker_errors,
+                "samples_skipped": self._samples_skipped,
                 "processed": self._processed,
                 "worker_alive": worker_alive,
                 "tokenizer_id": TOKENIZER_ID,
@@ -393,8 +398,15 @@ class UsageCollector:
     def _write_batch(self, samples: Iterable[UsageSample]) -> None:
         rows = []
         for sample in samples:
-            input_metrics = measure_payload(sample.arguments)
-            output_metrics = measure_payload(sample.result)
+            try:
+                input_metrics = measure_payload(sample.arguments)
+                output_metrics = measure_payload(sample.result)
+            except Exception:
+                # One sample that cannot be measured is left out, not the batch around it (#93).
+                with self._lock:
+                    self._worker_errors += 1
+                    self._samples_skipped += 1
+                continue
             local_date, timezone = self._local_bucket(sample.timestamp)
             latency = max(0, int(sample.duration_ms or 0))
             buckets = {name: 0 for name, _ in _LATENCY_BUCKETS}

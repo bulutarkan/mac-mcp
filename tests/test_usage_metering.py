@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 from mcp_server.dashboard_routes import create_dashboard_routes
 from mcp_server.mobile_auth import MobileAuthStore
 from mcp_server.mobile_routes import create_mobile_routes
-from mcp_server import runtime_settings
+from mcp_server import runtime_settings, usage_metering
 from mcp_server.observability import TelemetryManager
 from mcp_server.security import load_settings
 from mcp_server.usage_metering import (
@@ -271,6 +271,41 @@ class UsageCollectorTests(unittest.TestCase):
                     ).fetchone()[0],
                 )
             self.assertEqual(0, collector.diagnostics()["queue_dropped"])
+
+    def test_a_sample_with_nan_or_infinity_never_drops_its_batch(self) -> None:
+        # #93: one non-finite number made canonical_json_text raise (allow_nan=False) and the whole
+        # batch, healthy samples included, was counted as a worker error and lost.
+        self.assertEqual(canonical_json_text({"a": float("nan")})[0], canonical_json_text({"a": "NaN"})[0])
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3", max_events=100, usage_enabled=True)
+            for value in (1.5, float("nan"), float("inf"), float("-inf"), 2.5):
+                event = manager.start_call("mcp", "get_volume", {"level": value})
+                manager.finish_call(event, result={"ok": True, "volume": value})
+            self.assertTrue(manager.wait_usage_idle(3.0))
+            self.assertEqual(5, manager.usage_summary(days=365)["totals"]["calls"])
+            self.assertEqual(0, manager._usage.diagnostics()["worker_errors"])
+
+    def test_one_sample_that_cannot_be_measured_is_dropped_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            collector = UsageCollector(Path(td) / "telemetry.sqlite3")
+            good = UsageSample(timestamp=time.time(), tool="fine", actor_class="primary", status="success",
+                               duration_ms=1, arguments={}, result={})
+            bad = UsageSample(timestamp=time.time(), tool="broken", actor_class="primary", status="success",
+                              duration_ms=1, arguments={}, result={})
+            real = usage_metering.measure_payload
+            calls = {"n": 0}
+
+            def measure(value):
+                calls["n"] += 1
+                if calls["n"] == 3:  # the second sample's arguments
+                    raise RuntimeError("cannot measure")
+                return real(value)
+
+            with patch.object(usage_metering, "measure_payload", side_effect=measure):
+                collector._write_batch([good, bad, good])
+            diag = collector.diagnostics()
+            self.assertEqual(1, diag["worker_errors"])
+            self.assertEqual(1, diag["samples_skipped"])
 
     def test_metering_failure_never_breaks_tool_completion(self) -> None:
         with tempfile.TemporaryDirectory() as td:
