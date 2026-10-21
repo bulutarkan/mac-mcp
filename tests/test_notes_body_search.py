@@ -47,6 +47,9 @@ class NotesBodySearchTests(unittest.TestCase):
         self.assertIn("invoice", result["notes"][0]["snippet"])
         self.assertEqual("Work", result["notes"][0]["folder"])
         self.assertIn("plaintext of every note", scripts[0])  # plain text, not the HTML body
+        # Notes does not resolve `note id "x-coredata…"`; the folder is read through a whose clause.
+        self.assertIn("every note whose id is (contents of noteID)", scripts[1])
+        self.assertNotIn("note id noteID", scripts[1])
 
     def test_turkish_case_and_accents_match(self) -> None:
         raw = library(("x-1", "Ofis", "Toplantı İSTANBUL ofisinde; Işık ve zeytinyağı konuşulacak."))

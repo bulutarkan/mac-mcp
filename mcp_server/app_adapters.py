@@ -661,7 +661,11 @@ tell application "Notes"
     repeat with noteID in {id_list}
         set folderName to "__MAC_MCP_NONE__"
         try
-            set folderName to name of container of note id noteID as text
+            set found to (every note whose id is (contents of noteID))
+            if (count of found) is 1 then
+                set noteFolder to container of (item 1 of found)
+                set folderName to (name of noteFolder) as text
+            end if
         end try
         if outText is not "" then set outText to outText & rs
         set outText to outText & folderName
