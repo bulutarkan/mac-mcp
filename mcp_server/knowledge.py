@@ -195,6 +195,24 @@ def configured_folders() -> List[str]:
     return folders[:MAX_FOLDERS]
 
 
+def _away_folders() -> List[str]:
+    """Saved folders that do not exist right now, such as a disk that is not mounted (#92).
+
+    They are not searched or walked, but their saved place and their index stay until they come
+    back or the owner removes them.
+    """
+    section = load_runtime_settings().get("knowledge")
+    raw = section.get("folders") if isinstance(section, dict) else None
+    away: List[str] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, str) or not Path(item).expanduser().is_absolute():
+            continue
+        resolved = str(Path(item).expanduser().resolve(strict=False))
+        if not Path(resolved).is_dir() and resolved not in away:
+            away.append(resolved)
+    return away
+
+
 def _save_folders(folders: Sequence[str]) -> None:
     update_runtime_setting("knowledge", "folders", list(folders))
 
@@ -219,7 +237,8 @@ def add_folder(raw: str) -> Dict[str, Any]:
 
 def remove_folder(raw: str) -> Dict[str, Any]:
     target = str(Path(str(raw or "")).expanduser().resolve(strict=False))
-    folders = [folder for folder in configured_folders() if folder != target]
+    # A folder away for now (a disk not mounted) keeps its place when another one is removed (#92).
+    folders = [folder for folder in configured_folders() + _away_folders() if folder != target]
     _save_folders(folders)
     # Drop its files now when the indexer is idle; otherwise its next scan does.
     if _INDEX_LOCK.acquire(timeout=2):
@@ -378,9 +397,16 @@ def _drop_outside(conn: sqlite3.Connection, folders: Sequence[str]) -> int:
 
 # Extraction -----------------------------------------------------------------------------------
 
-def _walk(folder: str) -> Iterator[Path]:
+def _walk(folder: str, unreadable: Optional[List[str]] = None) -> Iterator[Path]:
+    """Supported files under folder. Folders it could not list (no permission, a disk not mounted)
+    go into unreadable: their files were not seen, which does not mean they were deleted (#92)."""
     count = 0
-    for current, dirs, names in os.walk(folder, followlinks=False):
+
+    def note(error: OSError) -> None:
+        if unreadable is not None:
+            unreadable.append(str(getattr(error, "filename", None) or folder))
+
+    for current, dirs, names in os.walk(folder, onerror=note, followlinks=False):
         dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
         for name in sorted(names):
             if name.startswith(".") or Path(name).suffix.lower() not in SUPPORTED_SUFFIXES:
@@ -545,7 +571,8 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
     deadline = time.monotonic() + max(0.1, budget_s)
     try:
         with closing(_connect()) as conn:
-            summary["removed"] += _drop_outside(conn, folders)
+            away = _away_folders()
+            summary["removed"] += _drop_outside(conn, [*folders, *away])
             known = {row["path"]: row for row in conn.execute(
                 "SELECT path, folder, size, mtime_ns, sha256, status FROM files")}
             # Files read before extraction could OCR (#258) and found without text are read once more.
@@ -559,8 +586,9 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
             reading = 0.0  # time spent hashing and indexing, so the walk itself can be timed
 
             seen: set[str] = set()
+            unreadable: List[str] = list(away)
             for folder in folders:
-                for path in _walk(folder):
+                for path in _walk(folder, unreadable):
                     key = str(path)
                     seen.add(key)
                     try:
@@ -598,10 +626,18 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
                         log.warning("knowledge: could not index a file: %s", type(exc).__name__)
                     finally:
                         reading += time.monotonic() - read_from
-            # Deleted, renamed, now hidden or past the per-folder limit: no longer searchable.
+            # Deleted, renamed, now hidden or past the per-folder limit: no longer searchable. Files under a
+            # folder the walk could not list keep their rows until it can be read again (#92).
+            def unlisted(key: str) -> bool:
+                return any(key == root or key.startswith(root.rstrip(os.sep) + os.sep) for root in unreadable)
+
             for key in set(known) - seen:
+                if unlisted(key):
+                    continue
                 _delete_file_rows(conn, key)
                 summary["removed"] += 1
+            if unreadable:
+                summary["unreadable"] = len(unreadable)
             conn.commit()
             _set_meta(conn, "walk_s", f"{max(0.0, time.monotonic() - started - reading):.3f}")
             if summary["pending"] == 0:

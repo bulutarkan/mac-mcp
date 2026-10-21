@@ -444,6 +444,51 @@ class ChunkTests(unittest.TestCase):
         self.assertEqual([], knowledge.chunk("  \n\n "))
 
 
+class UnreadableFolderTests(KnowledgeTestCase):
+    """#92: a folder the scan cannot read is not a folder whose files were deleted."""
+
+    def names(self, query: str) -> set:
+        return {item["name"] for item in knowledge.knowledge_search(query)["results"]}
+
+    def test_a_subfolder_without_permission_keeps_its_documents(self) -> None:
+        self.write("open.md", "Invoice terms for the open folder.")
+        locked = self.docs / "Locked"
+        self.write("Locked/lease.md", "Invoice terms for the locked lease.")
+        self.use_folder()
+        self.assertEqual(2, knowledge.scan()["indexed"])
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        summary = knowledge.scan()
+        self.assertEqual((0, 1), (summary["removed"], summary["unreadable"]))
+        self.assertEqual({"open.md", "lease.md"}, self.names("invoice terms"))
+        locked.chmod(0o755)
+        (locked / "lease.md").unlink()
+        self.assertEqual(1, knowledge.scan()["removed"], "a real deletion is still dropped once it can be read")
+        self.assertEqual({"open.md"}, self.names("invoice terms"))
+
+    def test_a_folder_that_is_gone_for_now_keeps_its_documents(self) -> None:
+        # An external disk not mounted at the moment, say.
+        self.write("report.md", "Quarterly revenue report.")
+        self.use_folder()
+        knowledge.scan()
+        other = self.temp / "Other"
+        other.mkdir()
+        self.use_folder(other)
+        away = self.temp / "away"
+        self.docs.rename(away)
+        summary = knowledge.scan()
+        self.assertEqual(0, summary["removed"])
+        # Not searched while away, and removing another folder keeps its place.
+        knowledge.remove_folder(str(other))
+        self.assertEqual([], knowledge.configured_folders())
+        away.rename(self.docs)
+        self.assertEqual([str(self.docs)], knowledge.configured_folders())
+        back = knowledge.scan()
+        self.assertEqual((0, 1), (back["indexed"], back["unchanged"]), "its index was kept, not rebuilt")
+        self.assertNotIn("unreadable", back)
+        self.assertEqual({"report.md"}, self.names("quarterly revenue"))
+
+
 class OwnerRouteTests(KnowledgeTestCase):
     def setUp(self) -> None:
         super().setUp()
