@@ -463,8 +463,10 @@ def scoped_move(scope: ResourceScope, source: Path, destination: Path) -> Path:
     with guarded_parent(scope, source, access_mode=AccessMode.WORKSPACE_WRITE) as src_guard:
         src_st = _lstat_guarded(src_guard)
         # Destination semantics match shutil.move: an existing directory receives source basename.
+        opened = False
         try:
             with guarded_directory(scope, destination, access_mode=AccessMode.WORKSPACE_WRITE) as (dst_dir_fd, dst_abs):
+                opened = True
                 final_name = src_guard.name
                 try:
                     os.rename(src_guard.name, final_name, src_dir_fd=src_guard.parent_fd, dst_dir_fd=dst_dir_fd)
@@ -474,10 +476,10 @@ def scoped_move(scope: ResourceScope, source: Path, destination: Path) -> Path:
                     raise _translate_open_error(exc) from exc
                 return dst_abs / final_name
         except ScopedFilesystemError as dir_exc:
-            if dir_exc.reason not in {"path_missing", "not_directory", "path_open_failed"}:
-                # A symlink or other unsafe destination is never treated as a normal missing path.
-                if dir_exc.reason in {"symlink_or_path_swap", "scope_denied", "path_not_allowed"}:
-                    raise
+            # Only a destination that is not a directory leads to the plain rename below; every other reason
+            # (a symlink, the scope, no permission, one not known here) and a failed move into it stop (#101).
+            if opened or dir_exc.reason not in {"path_missing", "not_directory", "path_open_failed"}:
+                raise
         with guarded_parent(scope, destination, access_mode=AccessMode.WORKSPACE_WRITE, create_parents=True) as dst_guard:
             try:
                 os.rename(src_guard.name, dst_guard.name, src_dir_fd=src_guard.parent_fd, dst_dir_fd=dst_guard.parent_fd)
