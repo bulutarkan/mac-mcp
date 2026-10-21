@@ -47,18 +47,19 @@
   --ease-sheet: cubic-bezier(.32, .72, 0, 1);
   --ease-spring: cubic-bezier(.34, 1.36, .64, 1);
 
-  /* Dark: a night wallpaper and smoked glass. */
-  --wall-base: #0a0d26;
-  --wall-1: #3b1c6e;
-  --wall-2: #0b4a5a;
-  --wall-3: #1d3a8f;
-  --wall-4: #6b1f5e;
+  /* Dark: the app icon's obsidian, lit by its bronze M, the site's amber and a trace of its teal. */
+  --wall-base: #0d0e12;
+  --wall-1: #5a4526;
+  --wall-2: #131929;
+  --wall-3: #7a4a12;
+  --wall-4: #0f3f3b;
   --label: #f5f5f7;
   --label-2: rgba(235, 235, 245, .74);
   --label-3: rgba(235, 235, 245, .5);
   --label-4: rgba(235, 235, 245, .26);
   --glass: rgba(34, 34, 44, .46);
   --glass-strong: rgba(30, 30, 38, .78);
+  --bar: rgba(26, 26, 32, .93);
   --glass-inner: rgba(0, 0, 0, .2);
   --fill: rgba(255, 255, 255, .07);
   --fill-2: rgba(255, 255, 255, .12);
@@ -89,19 +90,20 @@
   background: var(--wall-base);
 }
 
-/* Light: a bright sky-to-peach wallpaper and frosted white glass. */
+/* Light: the site's cool grey, warmed by champagne and amber light, with the same teal mist. */
 :root[data-theme="light"] {
-  --wall-base: #b8d9ff;
-  --wall-1: #7cc4ff;
-  --wall-2: #c9b6ff;
-  --wall-3: #ffc9a8;
-  --wall-4: #9ee6d8;
+  --wall-base: #e7e9ed;
+  --wall-1: #ecd3a0;
+  --wall-2: #d3d8e2;
+  --wall-3: #ffbf73;
+  --wall-4: #bfe3dc;
   --label: #1d1d1f;
   --label-2: rgba(40, 40, 48, .78);
   --label-3: rgba(50, 50, 62, .58);
   --label-4: rgba(60, 60, 67, .3);
   --glass: rgba(255, 255, 255, .5);
   --glass-strong: rgba(255, 255, 255, .82);
+  --bar: rgba(250, 250, 252, .92);
   --glass-inner: rgba(255, 255, 255, .5);
   --fill: rgba(0, 0, 0, .045);
   --fill-2: rgba(0, 0, 0, .08);
@@ -702,6 +704,7 @@ pre { margin: 0; max-width: 100%; max-height: 46vh; max-height: 46dvh; padding: 
     grid-template-columns: repeat(5, 1fr);
     padding: 6px;
     border-radius: 32px;
+    background: var(--bar);
   }
   .tabbar a { flex-direction: column; justify-content: center; gap: 3px; border-radius: 26px; color: var(--label-2); font-size: 10.5px; font-weight: 600; transition: background-color .2s ease, color .2s ease; }
   .tabbar svg { width: 22px; height: 22px; stroke: currentColor; }
