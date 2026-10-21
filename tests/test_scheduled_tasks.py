@@ -276,6 +276,28 @@ class StoreTests(StoreCase):
         self.assertEqual(store.OUTPUT_LIMIT, len(store.get_run(runs[0]["id"])["output"]))
         self.assertNotIn("old", {run.get("reason") for run in runs})
 
+    def test_deleting_a_task_while_it_runs_ends_the_run_quietly(self) -> None:
+        # #94: delete_task removes the task's runs; the run still going then finished with
+        # row["task_id"] on a missing row, a TypeError that killed the runner thread.
+        task = store.create_task(self.sh())
+        run_id = store.start_run(task["id"], trigger="manual")
+        store.delete_task(task["id"])
+        finished = store.finish_run(run_id, "done", summary="finished after the task was deleted")
+        self.assertEqual((run_id, "done", True), (finished["id"], finished["status"], finished["task_deleted"]))
+        self.assertEqual([], store.list_runs(task["id"]))
+        # Once more is just as quiet; and nothing about it starts again.
+        self.assertTrue(store.finish_run(run_id, "failed", reason="again")["task_deleted"])
+        self.assertEqual([], store.due_tasks(time.time() + 10 * 86400))
+
+    def test_an_agent_run_whose_task_was_deleted_is_let_go(self) -> None:
+        task = store.create_task(self.ai())
+        run_id = store.start_run(task["id"], trigger="manual")
+        store.delete_task(task["id"])
+        scheduler = runner.Scheduler(settings=None, launch=lambda *args: None)
+        with patch.object(runner, "wait_for_agent", return_value={"status": "done", "summary": "ok"}):
+            scheduler._follow_agent(run_id, "agt_gone", deadline=time.time() + 5)
+        self.assertEqual([], store.list_runs(task["id"]))
+
     def test_one_run_at_a_time(self) -> None:
         task = store.create_task(self.sh())
         first = store.start_run(task["id"], trigger="manual")

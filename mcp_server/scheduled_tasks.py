@@ -1055,6 +1055,9 @@ def finish_run(run_id: str, status: str, *, reason: Optional[str] = None, summar
              json.dumps(verification) if verification else None, run_id),
         )
         row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            # The owner deleted the task, and its history with it, while this run went on (#94).
+            return {"id": run_id, "status": status, "task_deleted": True}
         _prune(conn, row["task_id"], now)
     _changed()
     return _run_public(row)
