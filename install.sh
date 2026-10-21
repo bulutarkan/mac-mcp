@@ -1162,17 +1162,31 @@ PYPORT
   esac
 }
 
+# started | failed | skipped: the completion summary names the one next step that fits (#66).
+START_OUTCOME="skipped"
+
 optionally_start_server() {
   section "Start Mac MCP"
   if ask_yes_no "Start the local Mac MCP server now?" "no" "MAC_MCP_START_NOW"; then
     if MAC_MCP_SKIP_MENU_APP_INSTALL=1 MAC_MCP_SKIP_MENU_APP=1 "$CLI_PATH" start; then
+      START_OUTCOME="started"
       ok "Local Mac MCP server started."
     else
-      warn "Installation completed, but the local server did not start. Run 'mac-mcp start' after reviewing the reported error."
+      START_OUTCOME="failed"
+      warn "Installation completed, but the local server did not start. Run 'mac-mcp doctor' to see why."
     fi
   else
+    START_OUTCOME="skipped"
     info "Not starting the server automatically. Run 'mac-mcp start' when ready."
   fi
+}
+
+next_step_line() {
+  case "$START_OUTCOME" in
+    started) printf '%sNext step:%s add Mac MCP to your AI app: mac-mcp clients (or Get Started in the Mac MCP menu)\n' "$C_BOLD" "$C_RESET" ;;
+    failed) printf '%sNext command:%s mac-mcp doctor (it says why the server did not start)\n' "$C_BOLD" "$C_RESET" ;;
+    *) printf '%sNext command:%s mac-mcp start\n' "$C_BOLD" "$C_RESET" ;;
+  esac
 }
 
 completion_runtime_summary() {
@@ -1361,7 +1375,8 @@ print_completion() {
     printf '\n'
     info "Open a new Terminal window (or reload your shell profile) before running 'mac-mcp' by name."
   fi
-  printf '%sNext command:%s mac-mcp start\n\n' "$C_BOLD" "$C_RESET"
+  next_step_line
+  printf '\n'
 }
 
 main() {
