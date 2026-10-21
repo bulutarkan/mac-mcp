@@ -123,6 +123,53 @@ class WebWakeTests(unittest.TestCase):
         self.assertIn('"AXEnhancedUserInterface" as CFString', act)
 
 
+class ReplyBudgetTests(unittest.TestCase):
+    """A web app's whole tree ran to 140-430 KB a reply; the model spent most of the task reading it (#82)."""
+
+    @staticmethod
+    def big_tree() -> list:
+        nodes = []
+        for i in range(1500):
+            nodes.append({**node(f"w1/{i}", "w1", 1), "actions": ["AXShowMenu", "AXScrollToVisible"],
+                          "position": {"x": 1, "y": 2, "width": 3, "height": 4}})
+            nodes.append({**node(f"w1/{i}/1", f"w1/{i}", 0, role="AXStaticText"), "value": "lorem ipsum " * 60})
+        nodes.append({**node("w1/x", "w1", 0, role="AXButton", title="Send"), "actions": ["AXPress"]})
+        return nodes
+
+    def size(self, payload: dict) -> int:
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+
+    def test_a_large_tree_fits_and_keeps_its_controls_and_ids(self) -> None:
+        payload = {"ok": True, "nodes": self.big_tree(), "telemetry": {}}
+        fitted = tools_ui._fit_to_budget(payload)
+        self.assertLessEqual(self.size(fitted), tools_ui.DEFAULT_CONTEXT_BUDGET_BYTES + 2048)
+        ids = [n["element_id"] for n in fitted["nodes"]]
+        self.assertNotIn("w1/0", ids)  # an empty container is the first to go
+        self.assertIn("w1/0/1", ids)
+        self.assertTrue(fitted["nodes"][0]["value"].endswith("…"))
+        self.assertIn("query=", fitted["budget_trimmed"]["hint"])
+        self.assertGreater(fitted["budget_trimmed"]["left_out"], 0)
+
+    def test_the_last_resort_cut_still_fits(self) -> None:
+        payload = {"ok": True, "nodes": [{**node(f"w1/{i}", "w1", 0, role="AXButton", title="B" * 200),
+                                          "actions": ["AXPress"]} for i in range(3000)]}
+        fitted = tools_ui._fit_to_budget(payload)
+        self.assertLessEqual(self.size(fitted), tools_ui.DEFAULT_CONTEXT_BUDGET_BYTES)
+        self.assertEqual("w1/0", fitted["nodes"][0]["element_id"])
+
+    def test_a_delta_after_an_action_fits_too(self) -> None:
+        payload = {"ok": True, "state_mode": "delta", "delta": {"changed_nodes": [], "added_nodes": self.big_tree(),
+                                                                "removed_element_ids": [f"w1/r{i}" for i in range(500)]}}
+        fitted = tools_ui._fit_to_budget(payload)
+        self.assertLessEqual(self.size(fitted), tools_ui.DEFAULT_CONTEXT_BUDGET_BYTES + 2048)
+        self.assertTrue(fitted["delta"]["removed_ids_truncated"])
+        self.assertIn("w1/x", [n["element_id"] for n in fitted["delta"]["added_nodes"]])
+
+    def test_a_small_reply_is_untouched(self) -> None:
+        payload = {"ok": True, "nodes": list(QueryTests.NODES)}
+        self.assertEqual(payload, tools_ui._fit_to_budget(json.loads(json.dumps(payload))))
+
+
 class ObserveWiringTests(unittest.TestCase):
     def observe(self, **kwargs) -> tuple[dict, dict]:
         seen: dict = {}

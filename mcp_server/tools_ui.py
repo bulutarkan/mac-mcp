@@ -61,7 +61,7 @@ from .permission_probe import explain_failure as _explain_permission_failure
 from . import ax_native, ax_watch, native_focus
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
-from .perception import finalize_perception_telemetry, refresh_perception_size
+from .perception import DEFAULT_CONTEXT_BUDGET_BYTES, finalize_perception_telemetry, refresh_perception_size
 from .clipboard_guard import ClipboardBusyError, clipboard_guard
 from .tool_cancellation import (
     ToolCancelledError, cancellable_sleep, cancellation_checkpoint, cancellation_cleanup_scope,
@@ -1932,9 +1932,84 @@ def _resolve_registered_native_target(
     return normalized_app, None, None, None, None
 
 
+# Containers that only group other elements: nothing to press or read on their own.
+_CONTAINER_ROLES = frozenset({"AXGroup", "AXGenericElement", "AXUnknown", "AXScrollArea", "AXSplitGroup",
+                              "AXLayoutArea", "AXList", "AXSection"})
+_INCIDENTAL_ACTIONS = frozenset({"AXShowMenu", "AXScrollToVisible"})
+_INPUT_ROLES = frozenset({"AXTextArea", "AXTextField", "AXComboBox", "AXSearchField", "AXSlider", "AXStepper"})
+_BUDGET_VALUE_CHARS = 300
+_BUDGET_HINT = ("The UI was larger than the reply budget, so empty containers and then the least useful elements "
+                "were left out; element_ids are unchanged. Use query='words on the control' to get just what you need.")
+
+
+def _is_empty_container(node: Dict[str, Any]) -> bool:
+    return (node.get("role") in _CONTAINER_ROLES and not str(node.get("title") or "").strip()
+            and not str(node.get("value") or "").strip()
+            and set(node.get("actions") or []) <= _INCIDENTAL_ACTIONS)
+
+
+def _is_control(node: Dict[str, Any]) -> bool:
+    return bool(node.get("role") in _PRESSABLE_ROLES or node.get("role") in _INPUT_ROLES
+                or set(node.get("actions") or []) - _INCIDENTAL_ACTIONS)
+
+
+def _is_useful(node: Dict[str, Any]) -> bool:
+    role = node.get("role")
+    actions = set(node.get("actions") or []) - _INCIDENTAL_ACTIONS
+    return bool(role in _PRESSABLE_ROLES or role in _INPUT_ROLES or actions
+                or str(node.get("title") or "").strip() or str(node.get("value") or "").strip())
+
+
+def _short_node(node: Dict[str, Any]) -> Dict[str, Any]:
+    value = node.get("value")
+    if isinstance(value, str) and len(value) > _BUDGET_VALUE_CHARS:
+        node = {**node, "value": value[:_BUDGET_VALUE_CHARS] + "…", "value_truncated": True}
+    return node
+
+
+def _fit_to_budget(payload: Dict[str, Any], budget: int = DEFAULT_CONTEXT_BUDGET_BYTES) -> Dict[str, Any]:
+    """Keep a native UI reply within its context budget (#82): a web app's whole tree ran to 140-430 KB a call.
+
+    Empty containers go first, then elements with nothing to press or read (long values are shortened), then the
+    list is cut. The observation keeps every node, so ids from the full tree still work with mac_act."""
+    def size() -> int:
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    if not isinstance(payload, dict) or size() <= budget:
+        return payload
+    delta = payload.get("delta") if isinstance(payload.get("delta"), dict) else None
+    lists = [(payload, "nodes")] if isinstance(payload.get("nodes"), list) else []
+    if delta:
+        lists += [(delta, key) for key in ("changed_nodes", "added_nodes") if isinstance(delta.get(key), list)]
+        if isinstance(delta.get("removed_element_ids"), list) and len(delta["removed_element_ids"]) > 100:
+            delta["removed_element_ids"] = delta["removed_element_ids"][:100]
+            delta["removed_ids_truncated"] = True
+    if not lists:
+        return payload
+    before = sum(len(owner[key]) for owner, key in lists)
+    for keep in (lambda n: not _is_empty_container(n), _is_useful):
+        for owner, key in lists:
+            owner[key] = [_short_node(node) for node in owner[key] if isinstance(node, dict) and keep(node)]
+        if size() <= budget:
+            break
+    while size() > budget and any(owner[key] for owner, key in lists):
+        owner, key = max(lists, key=lambda item: len(item[0][item[1]]))
+        # Controls are kept before text, so a Send button at the end of a long page survives the cut.
+        ranked = sorted(range(len(owner[key])), key=lambda i: (not _is_control(owner[key][i]), i))
+        keep = set(ranked[: max(0, int(len(ranked) * 0.8))])
+        owner[key] = [node for i, node in enumerate(owner[key]) if i in keep]
+    shown = sum(len(owner[key]) for owner, key in lists)
+    payload["budget_trimmed"] = {"shown": shown, "left_out": before - shown, "budget_bytes": budget,
+                                 "hint": _BUDGET_HINT}
+    if isinstance(payload.get("telemetry"), dict):
+        refresh_perception_size(payload)
+    return payload
+
+
 def _format_result(payload: Dict[str, Any], image_data: Optional[bytes] = None) -> Any:
     # Compact separators match perception.json_bytes, so payload_bytes is the
     # size of the text actually returned.
+    payload = _fit_to_budget(payload)
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if image_data:
         return [text, Image(data=image_data, format=_SCREENSHOT_FORMAT)]
