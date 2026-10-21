@@ -786,6 +786,7 @@ end tell'''
 def _mail_find(
     query: Optional[str], sender: Optional[str], *, mailbox: Optional[str],
     exact: bool, limit: int, timeout_s: float,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     q = str(query or "").strip()
     s = str(sender or "").strip()
@@ -797,10 +798,19 @@ def _mail_find(
         predicates.append(f'subject is {_apple_string(q)}' if exact else f'subject contains {_apple_string(q)}')
     if s:
         predicates.append(f'sender contains {_apple_string(s)}')
+    # Optional received-date bounds (personal_search, #67); without them every date matches as before.
+    bounds = []
+    if date_from:
+        bounds.append(_date_setup("fromDate", _parse_date_bound(date_from, end=False)))
+        predicates.append("date received ≥ fromDate")
+    if date_to:
+        bounds.append(_date_setup("toDate", _parse_date_bound(date_to, end=True)))
+        predicates.append("date received ≤ toDate")
     where = " and ".join(predicates)
     script = f'''set rs to ASCII character 30
 set us to ASCII character 31
 set maxRows to {limit}
+{chr(10).join(bounds)}
 set outText to ""
 tell application "Mail"
     set targetMailbox to {mailbox_expr}

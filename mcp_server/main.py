@@ -101,6 +101,7 @@ from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice, voice_capture
 from . import storage_review as storage_review_tool
 from . import workspaces as workspace_tool
+from . import personal_search as personal_search_tool
 from . import applescript_host, ax_native, ax_watch
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
@@ -122,18 +123,19 @@ MCP_AGENT_INSTRUCTIONS = (
     "You are connected to the user's local Mac through Mac MCP. "
     "Default home directory is the current user's home. "
     "Routing order: dedicated semantic tool first, then shell/file API, then browser DOM, with native UI only as a fallback. "
-    "Use open_app to launch apps, run_command for shell work, and file tools for filesystem work. "
+    "Use open_app to launch apps. "
     "Shell mode: run_command for a short command you wait on; start_background_job for long builds, servers or watchers, "
     "then get_job_output/wait_jobs and stop_job (use tool_discover if they are not listed); run_commands_parallel only "
     "for independent commands. "
     "If a dedicated capability is unavailable or policy-denied, do not reproduce the same side effect through Terminal, AppleScript, or generic UI; policy denial is not a fallback reason. "
     "Which tool for what (tool_discover finds any tool not in your list): "
-    "questions about the owner's own documents (contracts, invoices, notes, PDFs) -> knowledge_search, which searches "
-    "the folders they chose and cites file and page; answer from its snippets, read_file for more, and when it reports "
+    "questions about the owner's own documents (contracts, invoices, notes, PDFs) -> knowledge_search (their chosen "
+    "folders; cites file and page); answer from its snippets, read_file for more, and when it reports "
     "no folders, tell the owner they can add one in Mac MCP Settings > Privacy. It limits nothing else: search_files and "
     "read_file still work anywhere. "
     "Mail, Notes, Calendar, Reminders, Contacts, Finder, Messages, Shortcuts -> mac_app adapters before UI automation "
-    "(action=capabilities lists them; sending asks the person first). "
+    "(action=capabilities lists them; sending asks the person first); one search across them and those folders -> "
+    "personal_search. "
     "Memory: memory_search before asking the user about earlier preferences, facts or decisions. Learn as you work, "
     "without being asked: when the user states or shows a lasting preference, corrects you, decides something, or you "
     "learn a stable fact about their work, people, projects, accounts or setup that will matter later, memory_search "
@@ -2718,6 +2720,34 @@ def create_app():
         return await asyncio.to_thread(
             _log, audit_logger, "knowledge_search",
             lambda: knowledge.knowledge_search(query=query, path=path, limit=limit),
+        )
+
+    @mcp.tool(
+        name="personal_search",
+        title="Search the owner's own sources at once",
+        description=(
+            "One search across the owner's own sources: Notes (title and text), Mail (subject, inbox), Calendar "
+            "events, open Reminders, Contacts, Messages and the document folders chosen in Settings › Privacy, asked "
+            "at the same time. sources picks some (notes, mail, calendar, reminders, contacts, messages, documents); "
+            "date_from/date_to (YYYY-MM-DD) apply to mail, calendar, messages and documents. Each result names its "
+            "source, title, a short snippet, when, its id and how to open it (mac_app or read_file); sources reports "
+            "each one, and one that is excluded in Privacy, closed or failing does not stop the others. limit "
+            "(20, max 50) and next_cursor page without repeats. Read-only; nothing is kept."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _personal_search(
+        query: str,
+        sources: Optional[List[str]] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        limit: int = 20,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "personal_search",
+            lambda: personal_search_tool.personal_search(query, sources=sources, date_from=date_from,
+                                                         date_to=date_to, limit=limit, cursor=cursor),
         )
 
     @mcp.tool(

@@ -17,7 +17,7 @@ class InstructionRouteTests(unittest.TestCase):
             "-> lesson_search", "skill_search and skill_get", "computer_plan(save_as_recipe=...)",
             "recipe(action='run')", "-> scheduled_tasks", "wait for the owner's approval",
             "-> spawn_agents, then wait_agents", "-> ask_user", "-> browser_checkpoint", "<server>__<tool>",
-            "do not work around it",
+            "do not work around it", "-> personal_search",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, MCP_AGENT_INSTRUCTIONS)
@@ -26,7 +26,7 @@ class InstructionRouteTests(unittest.TestCase):
         for name in ("knowledge_search", "mac_app", "memory_search", "memory_add", "lesson_search", "lesson_feedback",
                      "skill_search", "skill_get", "computer_plan", "recipe", "scheduled_tasks", "spawn_agents",
                      "wait_agents", "ask_user", "browser_checkpoint", "search_files", "read_file", "tool_discover",
-                     "memory_update", "lesson_record"):
+                     "memory_update", "lesson_record", "personal_search"):
             with self.subTest(tool=name):
                 self.assertIn(name, RISK_REGISTRY)
 

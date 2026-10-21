@@ -806,6 +806,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "memory_add": _r("memory_add", "memory", _caps(Capability.LOCAL_WRITE), sensitive=True),
     "memory_search": _r("memory_search", "memory", _caps(Capability.READ), sensitive=True),
     "knowledge_search": _r("knowledge_search", "files", _caps(Capability.READ), sensitive=True),
+    "personal_search": _r("personal_search", "accessibility", _caps(Capability.READ), sensitive=True),
     "memory_get": _r("memory_get", "memory", _caps(Capability.READ), sensitive=True),
     "memory_update": _r("memory_update", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "memory_delete": _r("memory_delete", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
