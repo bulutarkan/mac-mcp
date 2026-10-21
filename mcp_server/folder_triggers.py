@@ -5,7 +5,8 @@ nothing happens) and looks again once a minute in case an event was missed. For 
 
 - it waits until the file is written: its size and time unchanged for SETTLE_S;
 - it ignores hidden files, folders, links and downloads still in progress (.crdownload, .part...);
-- it runs the task once per file: a file is remembered by name, size and time, and the list is
+- it runs the task once per file: a file is remembered by name, size, time and file number (so a
+  new file put in its place with the same size and time is still new), and the list is
   kept in the task database, so a restart neither repeats a file nor misses one that arrived
   while Mac MCP was off;
 - files the task's own run writes into the folder do not start it again. A file that appears while a
@@ -45,7 +46,7 @@ REASON_CAPPED = f"More than {MAX_RUNS_PER_HOUR} files arrived within an hour, so
 
 
 def listing(schedule: Dict[str, Any], scanned: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, List[float]]]:
-    """{name: [size, mtime]} of the folder's files that can start the task; None if the folder is gone.
+    """{name: [size, mtime, inode]} of the folder's files that can start the task; None if the folder is gone.
 
     scanned, when given, keeps each folder's listing for one pass, so tasks that watch the
     same folder share one read of it (#255).
@@ -76,10 +77,18 @@ def _scan(folder: str) -> Optional[Dict[str, List[float]]]:
                     info = entry.stat(follow_symlinks=False)
                 except OSError:
                     continue
-                files[name] = [info.st_size, round(info.st_mtime, 3)]
+                files[name] = [info.st_size, round(info.st_mtime, 3), info.st_ino]
     except OSError:
         return None
     return files
+
+
+def _same_file(remembered: Optional[List[float]], current: List[float]) -> bool:
+    """Whether a remembered file is the one there now. Entries saved before the file number was
+    kept ([size, mtime]) are compared on those two, so an upgrade does not make every file new (#56)."""
+    if not remembered:
+        return False
+    return list(remembered) == list(current[:len(remembered)])
 
 
 def newest_file(schedule: Dict[str, Any]) -> Optional[str]:
@@ -191,23 +200,27 @@ class FolderTriggers:
         window = store.last_run_window(task_id)
         running = store.is_running(task_id)
         ready: List[str] = []
-        for name, (size, mtime) in sorted(files.items(), key=lambda item: item[1][1]):
-            if seen.get(name) == [size, mtime]:
+        for name, sig in sorted(files.items(), key=lambda item: item[1][1]):
+            mtime = sig[1]
+            if _same_file(seen.get(name), sig):
+                if len(seen[name]) < len(sig):
+                    seen[name] = list(sig)  # an entry from before #56 gets its file number
+                    changed = True
                 continue
             if name in held or (name not in pending and self._own_output(running, window, mtime, now)):
                 if running:
-                    held[name] = [size, mtime]  # decided once the run is over
+                    held[name] = list(sig)  # decided once the run is over
                     changed = True
                     continue
                 held.pop(name, None)
                 changed = True
                 if not arrived_from_outside(os.path.join(schedule["folder"], name)):
-                    seen[name] = [size, mtime]  # written on this Mac around the run: its own output, no loop
+                    seen[name] = list(sig)  # written on this Mac around the run: its own output, no loop
                     continue
             entry = pending.get(name)
-            if entry is None or entry[:2] != [size, mtime]:
-                pending[name] = [size, mtime, now]  # new, or still being written
-            elif now - entry[2] >= SETTLE_S:
+            if entry is None or entry[:-1] != list(sig):
+                pending[name] = [*sig, now]  # new, or still being written
+            elif now - entry[-1] >= SETTLE_S:
                 ready.append(name)
         capped: List[str] = []
         for name in ready:
@@ -219,14 +232,14 @@ class FolderTriggers:
             path = os.path.join(schedule["folder"], name)
             if self._start(task_id, definition, path) != "started":
                 break
-            seen[name] = pending.pop(name)[:2]
+            seen[name] = pending.pop(name)[:-1]
             changed = True
             running = True
         if capped:
             store.record_skip(task_id, scheduled_for=now, reason=REASON_CAPPED, count=len(capped), now=now,
                               trigger="file", trigger_file=os.path.join(schedule["folder"], capped[0]))
             for name in capped:
-                seen[name] = pending.pop(name)[:2]
+                seen[name] = pending.pop(name)[:-1]
             changed = True
         if changed:
             store.save_watch_state(task_id, {key: state[key] for key in ("folder", "match", "seen", "held")}, now)

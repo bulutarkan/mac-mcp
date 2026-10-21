@@ -191,6 +191,43 @@ class WatcherTests(StoreCase):
         self.assertEqual(["a.pdf.", "while-off.pdf."], [definition["prompt"][-len("while-off.pdf."):].split("/")[-1]
                                                          for _, definition in self.launched])
 
+    def test_a_file_replaced_with_the_same_name_size_and_time_runs_again(self) -> None:
+        # #56: a file is remembered by name, size and time; a new file put in its place with the same
+        # three (copied keeping its time, or swapped in atomically) was taken for the old one.
+        self.check()
+        stamp = self.now - 60
+        self.drop("scan.pdf", body="version 1", mtime=stamp)
+        self.check(1)
+        self.check(folder_triggers.SETTLE_S + 0.5)
+        self.finish_all()
+        self.assertEqual(1, len(self.launched))
+        replacement = self.inbox / "incoming.tmp"
+        replacement.write_text("version 2")  # same length as "version 1"
+        os.utime(replacement, (stamp, stamp))
+        os.replace(replacement, self.inbox / "scan.pdf")
+        self.check(folder_triggers.QUIET_AFTER_RUN_S + 1)
+        self.check(folder_triggers.SETTLE_S + 0.5)
+        self.assertEqual(2, len(self.launched))
+        for _ in range(3):
+            self.check(10)
+        self.assertEqual(2, len(self.launched), "and only once")
+
+    def test_files_remembered_before_the_upgrade_do_not_all_run(self) -> None:
+        # Saved state from before #56 holds [size, time] only; those files must not look new.
+        self.check()
+        self.drop("a.pdf")
+        self.check(1)
+        self.check(folder_triggers.SETTLE_S + 0.5)
+        self.finish_all()
+        state = store.watch_state(self.task["id"])
+        state["seen"] = {name: value[:2] for name, value in state["seen"].items()}
+        store.save_watch_state(self.task["id"], state, self.now)
+        fresh = folder_triggers.FolderTriggers(self.scheduler._start_for_file)
+        self.now += 120
+        self.check(1, fresh)
+        self.check(folder_triggers.SETTLE_S + 0.5, fresh)
+        self.assertEqual(1, len(self.launched))
+
     def test_more_files_than_the_hourly_cap_are_recorded_as_skipped(self) -> None:
         self.check()
         with patch.object(folder_triggers, "MAX_RUNS_PER_HOUR", 1):
