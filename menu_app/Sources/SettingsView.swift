@@ -183,7 +183,7 @@ struct SettingsView: View {
     @StateObject private var audio = AudioDeviceStore()
     @StateObject private var diagnostics = DiagnosticsCenter()
     @ObservedObject private var navigation = SettingsNavigation.shared
-    @ObservedObject private var agentsNavigation = AgentsNavigation.shared
+    @ObservedObject private var tabs = SettingsTabs.shared
     @MacMCPState private var selection: SettingsSection
     @MacMCPState private var notice = ""
     /// This Mac's shortcuts, for the ones agents may run with commands off (#195).
@@ -1055,15 +1055,7 @@ struct SettingsView: View {
                     subtitle: "Choose delegated providers, models, and the default agent Mac MCP uses for new work.",
                     refresh: true
                 )
-                Picker("", selection: $agentsNavigation.tab) {
-                    ForEach(AgentsTab.allCases) { tab in
-                        Label(tab.title, systemImage: tab.symbol).tag(tab)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .fixedSize()
-                .accessibilityLabel("Agents section")
+                SettingsTabPicker(selection: $tabs.agents, label: "Agents section")
             }
             .padding(.horizontal, 22)
             .padding(.top, 22)
@@ -1074,7 +1066,7 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    switch agentsNavigation.tab {
+                    switch tabs.agents {
                     case .general:
                         agentsStatusRows
                         defaultAgentCard
@@ -1100,7 +1092,7 @@ struct SettingsView: View {
                 .padding(22)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .id(agentsNavigation.tab)  // each tab opens at its top
+            .id(tabs.agents)  // each tab opens at its top
         }
     }
 
@@ -3657,98 +3649,110 @@ struct SettingsView: View {
     }
 
     private var appsPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 13) {
                 paneHeader(
                     "Apps",
                     subtitle: "What agents can do in your Mac apps through Mac MCP, and when they ask you first."
                 )
-
-                GroupBox("Sending") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        appSendRow(
-                            bundleId: "com.apple.mail",
-                            title: "Ask before sending email",
-                            detail: "Agents can send email with Mail. When on, each email waits in a confirmation panel showing the sender, recipients, subject and full text, and goes out only when you click Send.",
-                            isOn: confirmSendBinding(\.mailConfirmSend, app: "Mail")
-                        )
-                        Divider()
-                        appSendRow(
-                            bundleId: "com.apple.MobileSMS",
-                            title: "Ask before sending messages",
-                            detail: "Agents can send a message to an existing Messages conversation. When on, each message waits in the same confirmation panel until you click Send.",
-                            isOn: confirmSendBinding(\.messagesConfirmSend, app: "Messages")
-                        )
-                    }
-                    .padding(.top, 5)
-                }
-
-                MessagesAccessSection(state: state)
-
-                GroupBox("When confirmation is off") {
-                    Text("Agents send without asking. Cancel, closing the panel or letting it time out never sends, so leave these on unless you trust every agent connected to this Mac.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 5)
-                }
-
-                GroupBox("Shortcuts agents may run") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("A shortcut can do anything its actions do, so agents run shortcuts only when running commands is allowed. The ones you turn on here can run even when it's off; with it on, any shortcut can run.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let names = macShortcutNames {
-                            if names.isEmpty {
-                                Text("No shortcuts found on this Mac.").font(.caption).foregroundStyle(.secondary)
-                            } else {
-                                ScrollView {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        ForEach(names, id: \.self) { name in
-                                            Toggle(name, isOn: allowedShortcutBinding(name))
-                                                .toggleStyle(.checkbox)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .frame(maxHeight: 180)
-                            }
-                        } else {
-                            ProgressView().controlSize(.small)
-                        }
-                    }
-                    .padding(.top, 5)
-                }
-                .task { macShortcutNames = await MacShortcuts.names() }
-
-                GroupBox("What agents can do in each app") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Built in means Mac MCP works with the app directly, even while you use it. Other apps are used by looking at their window and clicking, which is slower and depends on what the window shows.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let problem = appSupportProblem {
-                            inlineError(problem)
-                            Button("Try again") { Task { await loadAppSupport() } }.controlSize(.small)
-                        } else if let apps = appSupport {
-                            if apps.isEmpty {
-                                Text("Mac MCP found no apps to list.").font(.caption).foregroundStyle(.secondary)
-                            }
-                            ForEach(Array(apps.enumerated()), id: \.offset) { _, app in appSupportRow(app) }
-                        } else {
-                            ProgressView().controlSize(.small)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 5)
-                }
-                .task { await loadAppSupport() }
-
-                Spacer(minLength: 0)
+                SettingsTabPicker(selection: $tabs.apps, label: "Apps section")
             }
-            .padding(22)
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    switch tabs.apps {
+                    case .sending:
+                        GroupBox("Sending") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                appSendRow(
+                                    bundleId: "com.apple.mail",
+                                    title: "Ask before sending email",
+                                    detail: "Agents can send email with Mail. When on, each email waits in a confirmation panel showing the sender, recipients, subject and full text, and goes out only when you click Send.",
+                                    isOn: confirmSendBinding(\.mailConfirmSend, app: "Mail")
+                                )
+                                Divider()
+                                appSendRow(
+                                    bundleId: "com.apple.MobileSMS",
+                                    title: "Ask before sending messages",
+                                    detail: "Agents can send a message to an existing Messages conversation. When on, each message waits in the same confirmation panel until you click Send.",
+                                    isOn: confirmSendBinding(\.messagesConfirmSend, app: "Messages")
+                                )
+                            }
+                            .padding(.top, 5)
+                        }
+
+                        GroupBox("When confirmation is off") {
+                            Text("Agents send without asking. Cancel, closing the panel or letting it time out never sends, so leave these on unless you trust every agent connected to this Mac.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 5)
+                        }
+
+                        MessagesAccessSection(state: state)
+
+                    case .shortcuts:
+                        GroupBox("Shortcuts agents may run") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("A shortcut can do anything its actions do, so agents run shortcuts only when running commands is allowed. The ones you turn on here can run even when it's off; with it on, any shortcut can run.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let names = macShortcutNames {
+                                    if names.isEmpty {
+                                        Text("No shortcuts found on this Mac.").font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            ForEach(names, id: \.self) { name in
+                                                Toggle(name, isOn: allowedShortcutBinding(name))
+                                                    .toggleStyle(.checkbox)
+                                            }
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                } else {
+                                    ProgressView().controlSize(.small)
+                                }
+                            }
+                            .padding(.top, 5)
+                        }
+                        .task { macShortcutNames = await MacShortcuts.names() }
+                    case .support:
+                        GroupBox("What agents can do in each app") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Built in means Mac MCP works with the app directly, even while you use it. Other apps are used by looking at their window and clicking, which is slower and depends on what the window shows.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let problem = appSupportProblem {
+                                    inlineError(problem)
+                                    Button("Try again") { Task { await loadAppSupport() } }.controlSize(.small)
+                                } else if let apps = appSupport {
+                                    if apps.isEmpty {
+                                        Text("Mac MCP found no apps to list.").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    ForEach(Array(apps.enumerated()), id: \.offset) { _, app in appSupportRow(app) }
+                                } else {
+                                    ProgressView().controlSize(.small)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 5)
+                        }
+                        .task { await loadAppSupport() }
+                    }
+                }
+                .padding(22)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id(tabs.apps)  // each tab opens at its top
         }
     }
 
@@ -3756,7 +3760,7 @@ struct SettingsView: View {
         "Finder": "com.apple.finder", "Notes": "com.apple.Notes", "Mail": "com.apple.mail", "Calendar": "com.apple.iCal",
         "Reminders": "com.apple.reminders", "Contacts": "com.apple.AddressBook", "Shortcuts": "com.apple.shortcuts",
         "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences", "Messages": "com.apple.MobileSMS",
-        "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
+        "Photos": "com.apple.Photos", "Mission Control": "com.apple.exposelauncher", "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
     ]
 
     /// Loading, a list (possibly empty) and an error are three different answers (#19).
@@ -3777,7 +3781,7 @@ struct SettingsView: View {
         let words = { (key: String) in (app[key] as? [String] ?? []).joined(separator: ", ") }
         let lines: [(String, String)] = [
             ("Reads", words("reads")), ("Opens", words("opens")), ("Changes", words("changes")),
-            ("Sends, asking you first unless turned off above", words("sends")),
+            ("Sends, asking you first unless turned off under Sending", words("sends")),
             ("Runs, like a command", words("runs")),
         ].filter { !$0.1.isEmpty }
         let others = (app["other_ways"] as? [[String: Any]] ?? []).map {

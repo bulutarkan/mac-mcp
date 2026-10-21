@@ -29,131 +29,150 @@ struct PrivacyPane: View {
     @MacMCPState private var knowledgeMessage = ""
     @MacMCPState private var knowledgeBusy = false
 
+    @ObservedObject private var tabs = SettingsTabs.shared
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 13) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Privacy").font(.title2.weight(.semibold))
                     Text("What Mac MCP may look at, what it keeps, and where your data can go. Mac MCP enforces these rules itself; an AI app cannot turn them off.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                if !loaded, !message.isEmpty {
-                    LoadProblem(message: message) { await load() }
-                } else if !message.isEmpty {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                }
-                if !loaded, message.isEmpty {
-                    ProgressView().controlSize(.small)
-                }
-
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle(isOn: Binding(get: { paused }, set: { save(["paused": $0]) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Pause observation").font(.subheadline.weight(.semibold))
-                                Text("Mac MCP stops reading the screen, web pages, the clipboard and your voice, and starts no agents, until you turn this off. File and command tools keep working.")
-                                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        Divider()
-                        Toggle(isOn: Binding(get: { privateMode }, set: { save(["private_mode": $0]) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Private mode").font(.subheadline.weight(.semibold))
-                                Text("Work continues, but Mac MCP keeps nothing about it: no activity history, usage, memories, lessons or run timelines. The security audit log still records tool names and outcomes.")
-                                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-                    .padding(6)
-                }
-                .disabled(!loaded)
-
-                exclusionBox(
-                    title: "Never observe these apps",
-                    detail: "No screenshot, window read or action in them. A whole-screen capture is refused while one is on screen. Use the app's name or bundle id.",
-                    items: excludedApps,
-                    text: $newApp,
-                    placeholder: "App name, e.g. 1Password",
-                    suggestions: runningApps(),
-                    key: "excluded_apps"
-                )
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Also never observe").font(.subheadline.weight(.semibold))
-                        Text("Mac MCP recognizes these by name and address. Recognition can miss some, so add the ones that matter above too.")
-                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        categoryToggle("password_manager", "Password managers")
-                        categoryToggle("finance", "Banking and finance sites")
-                        categoryToggle("health", "Health portals")
-                    }
-                    .padding(6)
-                }
-                .disabled(!loaded)
-
-                exclusionBox(
-                    title: "Never observe these sites",
-                    detail: "Their pages are never read, captured or acted in, including subdomains. Tab lists show them without title or address.",
-                    items: excludedSites,
-                    text: $newSite,
-                    placeholder: "Site, e.g. mybank.com",
-                    suggestions: [],
-                    key: "excluded_sites"
-                )
-
-                knowledgeBox
-
-                GroupBox("What Mac MCP keeps on this Mac") {
-                    VStack(alignment: .leading, spacing: 0) {
-                        atRestRow
-                        Divider()
-                        ForEach(Array(stores.enumerated()), id: \.offset) { index, store in
-                            if index > 0 { Divider() }
-                            storeRow(store)
-                        }
-                        Divider()
-                        HStack(alignment: .firstTextBaseline) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Scheduled task run details").font(.callout)
-                                Text("Results, output and each step’s text. How a run ended, when, and its usage stay for 90 days.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            Spacer()
-                            Picker("Keep run details", selection: Binding(get: { runDetailDays }, set: { days in
-                                runDetailDays = days
-                                save(["run_detail_retention_days": days])
-                            })) {
-                                ForEach(runDetailChoices, id: \.self) { days in Text("\(days) days").tag(days) }
-                            }
-                            .labelsHidden()
-                            .frame(width: 110)
-                            .disabled(!loaded)
-                        }
-                        .padding(.vertical, 6)
-                    }
-                    .padding(.vertical, 4)
-                }
-
-                HStack {
-                    Spacer()
-                    Button("Move all Mac MCP data to the Trash…") {
-                        pendingDelete = ["key": "all", "name": "all Mac MCP data"]
-                    }
-                    .disabled(!loaded || deleting)
-                }
-
-                GroupBox("Where your data can go") {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(recipients.enumerated()), id: \.offset) { index, recipient in
-                            if index > 0 { Divider() }
-                            recipientRow(recipient)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
+                SettingsTabPicker(selection: $tabs.privacy, label: "Privacy section")
             }
-            .padding(22)
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !loaded, !message.isEmpty {
+                        LoadProblem(message: message) { await load() }
+                    } else if !message.isEmpty {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !loaded, message.isEmpty {
+                        ProgressView().controlSize(.small)
+                    }
+
+                    switch tabs.privacy {
+                    case .protection:
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Toggle(isOn: Binding(get: { paused }, set: { save(["paused": $0]) })) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Pause observation").font(.subheadline.weight(.semibold))
+                                        Text("Mac MCP stops reading the screen, web pages, the clipboard and your voice, and starts no agents, until you turn this off. File and command tools keep working.")
+                                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                Divider()
+                                Toggle(isOn: Binding(get: { privateMode }, set: { save(["private_mode": $0]) })) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Private mode").font(.subheadline.weight(.semibold))
+                                        Text("Work continues, but Mac MCP keeps nothing about it: no activity history, usage, memories, lessons or run timelines. The security audit log still records tool names and outcomes.")
+                                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+                            .padding(6)
+                        }
+                        .disabled(!loaded)
+
+                        exclusionBox(
+                            title: "Never observe these apps",
+                            detail: "No screenshot, window read or action in them. A whole-screen capture is refused while one is on screen. Use the app's name or bundle id.",
+                            items: excludedApps,
+                            text: $newApp,
+                            placeholder: "App name, e.g. 1Password",
+                            suggestions: runningApps(),
+                            key: "excluded_apps"
+                        )
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Also never observe").font(.subheadline.weight(.semibold))
+                                Text("Mac MCP recognizes these by name and address. Recognition can miss some, so add the ones that matter above too.")
+                                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                categoryToggle("password_manager", "Password managers")
+                                categoryToggle("finance", "Banking and finance sites")
+                                categoryToggle("health", "Health portals")
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                        }
+                        .disabled(!loaded)
+
+                        exclusionBox(
+                            title: "Never observe these sites",
+                            detail: "Their pages are never read, captured or acted in, including subdomains. Tab lists show them without title or address.",
+                            items: excludedSites,
+                            text: $newSite,
+                            placeholder: "Site, e.g. mybank.com",
+                            suggestions: [],
+                            key: "excluded_sites"
+                        )
+                    case .documents:
+                        knowledgeBox
+                    case .data:
+                        GroupBox("What Mac MCP keeps on this Mac") {
+                            VStack(alignment: .leading, spacing: 0) {
+                                atRestRow
+                                Divider()
+                                ForEach(Array(stores.enumerated()), id: \.offset) { index, store in
+                                    if index > 0 { Divider() }
+                                    storeRow(store)
+                                }
+                                Divider()
+                                HStack(alignment: .firstTextBaseline) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Scheduled task run details").font(.callout)
+                                        Text("Results, output and each step’s text. How a run ended, when, and its usage stay for 90 days.")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer()
+                                    Picker("Keep run details", selection: Binding(get: { runDetailDays }, set: { days in
+                                        runDetailDays = days
+                                        save(["run_detail_retention_days": days])
+                                    })) {
+                                        ForEach(runDetailChoices, id: \.self) { days in Text("\(days) days").tag(days) }
+                                    }
+                                    .labelsHidden()
+                                    .frame(width: 110)
+                                    .disabled(!loaded)
+                                }
+                                .padding(.vertical, 6)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        HStack {
+                            Spacer()
+                            Button("Move all Mac MCP data to the Trash…") {
+                                pendingDelete = ["key": "all", "name": "all Mac MCP data"]
+                            }
+                            .disabled(!loaded || deleting)
+                        }
+
+                        GroupBox("Where your data can go") {
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(Array(recipients.enumerated()), id: \.offset) { index, recipient in
+                                    if index > 0 { Divider() }
+                                    recipientRow(recipient)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+                .padding(22)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id(tabs.privacy)  // each tab opens at its top
         }
         .task { await load() }
         .alert(
