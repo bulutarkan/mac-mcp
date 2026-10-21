@@ -22,6 +22,7 @@ from .update_helper import (
 from .update_state import (
     INCOMPLETE_UPDATE_STATES,
     UpdateInProgress,
+    _atomic_text_write,
     acquire_update_lock,
     staging_root,
     update_state_path,
@@ -133,7 +134,8 @@ def _launch_locked_update(
         "status_path": str(status_path),
     }
     if not preserve_recovery_journal:
-        status_path.write_text(json.dumps(started_state, indent=2) + "\n", encoding="utf-8")
+        # Like every other journal write: a write cut short must leave the last journal whole (#95).
+        _atomic_text_write(status_path, json.dumps(started_state, indent=2) + "\n")
 
     log = log_path.open("a", encoding="utf-8")
     cmd = [
