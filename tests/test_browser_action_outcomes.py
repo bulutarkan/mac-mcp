@@ -91,6 +91,51 @@ class ExpectTests(unittest.TestCase):
                          (action["ok"], action["error"], action["outcome_unknown"], action["automatic_retry"]))
         self.assertEqual("unconfirmed", agent._action_outcome(action))
 
+    def test_text_expectations_are_looked_up_before_their_action(self) -> None:
+        expanded = agent._expand_expectations([
+            {"type": "click", "query": "Send", "expect": {"text": "Sent"}},
+            {"type": "click", "query": "Remove", "expect": {"gone": "Draft"}},
+            {"type": "click", "query": "Next", "expect": {"selector": "#done"}},
+        ])
+        self.assertEqual(["Sent", "Draft", None], [expanded[i].get("_expect_text") for i in (0, 2, 4)])
+
+    def test_text_already_on_the_page_does_not_confirm_the_action(self) -> None:
+        # #89: "Sent" was on the page before Submit; a Submit that changed nothing came back confirmed.
+        def run(action: dict, before: bool, kind: str = "text") -> dict:
+            results = [{**action, "_expect_text_present_before": before},
+                       {"type": "wait", "ok": True, "matched": True, "duration_ms": 1, "_expect_for": 0,
+                        "_expect": {kind: "Sent"}}]
+            return agent._fold_expectations(results)[0]
+
+        no_effect = {"type": "click", "ok": False, "error": "action_no_effect", "reason_code": "ACTION_NO_EFFECT"}
+        stale = run(no_effect, True)
+        self.assertEqual((False, "action_no_effect"), (stale["ok"], stale["error"]))
+        self.assertTrue(stale["expect"]["met"] and stale["expect"]["already_true_before_action"])
+        self.assertEqual(agent.EXPECT_ALREADY_TRUE_HINT, stale["expect"]["hint"])
+        self.assertEqual("failed", agent._action_outcome(stale))
+        self.assertNotIn("_expect_text_present_before", stale)
+        reacted = run({"type": "click", "ok": True, "verification": "state_changed", "effect_observed": True}, True)
+        self.assertEqual("page_reacted", agent._action_outcome(reacted))
+        # Text the action brought about still confirms it, and still rescues a no-effect click.
+        fresh = run(dict(no_effect), False)
+        self.assertEqual((True, "expect_met", "confirmed"), (fresh["ok"], fresh["verification"], agent._action_outcome(fresh)))
+        # gone: text already missing before the action proves nothing either; present before, it does.
+        self.assertTrue(run(dict(no_effect), False, "gone")["expect"].get("already_true_before_action"))
+        self.assertEqual("confirmed", agent._action_outcome(run(dict(no_effect), True, "gone")))
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_presence_check_matches_like_the_text_wait(self) -> None:
+        for body, want, present in (("Message SENT to Ada", "Sent", True), ("Draft saved", "Sent", False)):
+            script = (
+                "global.btoa=s=>Buffer.from(s,'binary').toString('base64');"
+                "global.unescape=s=>s;global.encodeURIComponent=s=>s;"
+                f"global.document={{body:{{innerText:{json.dumps(body)}}}}};"
+                f"console.log(Buffer.from({agent._text_present_js(want)},'base64').toString());"
+            )
+            out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=20)
+            self.assertEqual(0, out.returncode, out.stderr)
+            self.assertEqual(present, json.loads(out.stdout)["present"], body)
+
     def test_text_gone_condition_checks_the_page_text(self) -> None:
         js = agent._condition_js({"for": "text_gone", "text": "Choose an image"}, "https://example.com/")
         self.assertIn("!(document.body&&String(document.body.innerText||'').toLowerCase().indexOf(\"choose an image\")>=0)", js)

@@ -2889,6 +2889,15 @@ return __mcpB64({{ok:true,local_copy:found}});
 }})()'''
 
 
+def _text_present_js(text: str) -> str:
+    """Whether the page shows text now, matched as an expect text wait matches it."""
+    want = json.dumps(str(text or "").lower())
+    return f'''(function(){{
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+return __mcpB64({{ok:true,present:!!(document.body&&String(document.body.innerText||'').toLowerCase().indexOf({want})>=0)}});
+}})()'''
+
+
 def _extract_fields_problem(fields: Any) -> Optional[str]:
     """Validate the shared MCP/REST extraction contract before opening a page."""
     if not isinstance(fields, list) or not 1 <= len(fields) <= 20:
@@ -4127,6 +4136,11 @@ LOCAL_COPY_HINT = (
     "show the site saved it. To know it was saved, check where this browser cannot fill it in: the site's own list "
     "or sent view, another device, or a private window. Do not report it as saved, and do not submit it again."
 )
+EXPECT_ALREADY_TRUE_HINT = (
+    "The page was already like this before the action, so this check does not show the action worked. Check "
+    "something only the action brings about (new text, gone, url_change) or observe the page; do not repeat the "
+    "action to check."
+)
 CONFIRM_HINT = (
     "page_reacted means the page changed after the action, not that its intended result happened (a link "
     "copied, an image inserted, a form submitted). Add expect={text|gone|selector|url_change} to the action, "
@@ -4218,8 +4232,12 @@ def _expand_expectations(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             raise mark_not_executed(HTTPException(
                 status.HTTP_400_BAD_REQUEST, f"actions[{index}] ({action.get('type')}) takes no expect; it already reports its result.",
             ))
-        expanded.append({**{key: value for key, value in action.items() if key != "expect"}, "_expect_follows": True})
-        expanded.append(_expect_wait(index, expect))
+        wait = _expect_wait(index, expect)
+        follows: Dict[str, Any] = {"_expect_follows": True}
+        if "text" in wait["_expect"] or "gone" in wait["_expect"]:
+            follows["_expect_text"] = wait["text"]
+        expanded.append({**{key: value for key, value in action.items() if key != "expect"}, **follows})
+        expanded.append(wait)
     return expanded
 
 
@@ -4244,6 +4262,13 @@ def _fold_expectations(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             check["ambiguous"] = item["ambiguous"]
         if target is None:
             continue
+        before = target.pop("_expect_text_present_before", None)
+        if met and before is not None and before == ("text" in expect):
+            # The page already showed (or already lacked) the text before the action: finding it so
+            # afterwards says nothing about what the action did (#89).
+            check.update({"already_true_before_action": True, "hint": EXPECT_ALREADY_TRUE_HINT})
+            target["expect"] = check
+            continue
         target["expect"] = check
         if met and target.get("error") == "action_no_effect":
             # Nothing changed on the page, but the expected result (a download, say) came about.
@@ -4256,6 +4281,9 @@ def _fold_expectations(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "ok": False, "error": "expectation_not_met", "reason_code": "EXPECTATION_NOT_MET",
                 "outcome_unknown": True, "automatic_retry": False, "observe_again": True,
             })
+    for item in folded:
+        if isinstance(item, dict):
+            item.pop("_expect_text_present_before", None)
     return folded
 
 
@@ -4265,7 +4293,7 @@ def _action_outcome(result: Dict[str, Any]) -> str:
     if result.get("human_priority") or result.get("yielded") or error in _BLOCKED_ERRORS:
         return "blocked"
     expect = result.get("expect")
-    if isinstance(expect, dict):
+    if isinstance(expect, dict) and not expect.get("already_true_before_action"):
         return "confirmed" if expect.get("met") else "unconfirmed"
     if result.get("ok") is False:
         return "unconfirmed" if result.get("outcome_unknown") or result.get("posted") is None and result.get("type") == "post" else "failed"
@@ -5031,6 +5059,17 @@ def _browser_act_locked(
                 if not flush_pending():
                     break
                 in_flight = [typ]
+                text_before: Optional[bool] = None
+                if action.get("_expect_text"):
+                    # Whether the page shows the expected text before the action: its expect proves nothing if so (#89).
+                    try:
+                        seen = _run_json_js(settings, browser, _text_present_js(action["_expect_text"]),
+                                            window_index, tab_index, tab_handle)
+                        internal_js_calls += 1
+                        if isinstance(seen.get("present"), bool):
+                            text_before = seen["present"]
+                    except HTTPException:
+                        text_before = None  # could not look: the expect is judged as before
                 if typ in {"click", "double_click", "type", "type_text", "paste"}:
                     if typ in {"click", "double_click"}:
                         note_possible_navigation()
@@ -5082,6 +5121,8 @@ def _browser_act_locked(
                         and tabs_before is not None
                     ):
                         _credit_opened_tab(browser, action_result, tabs_before, tab_handle)
+                    if text_before is not None:
+                        action_result["_expect_text_present_before"] = text_before
                     results.append(action_result)
                     # A click whose result shows nowhere on the page (a download, a copy) is judged by its
                     # expect when it has one, not stopped as having no effect.
@@ -5164,6 +5205,8 @@ def _browser_act_locked(
                         }
                         if resolved_target.get("decision"):
                             select_result["resolved_target"]["decision"] = resolved_target["decision"]
+                    if text_before is not None:
+                        select_result["_expect_text_present_before"] = text_before
                     results.append(select_result)
                     if not select_result.get("ok"):
                         break
