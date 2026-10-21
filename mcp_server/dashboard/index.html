@@ -3,12 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light dark">
   <title>Mac MCP — Operations</title>
+  <script>
+    // The theme is chosen before the first paint so the page never flashes the other one.
+    (() => {
+      let choice = "auto";
+      try { choice = window.localStorage.getItem("mac_mcp_dashboard_theme") || "auto"; } catch {}
+      if (!["auto", "light", "dark"].includes(choice)) choice = "auto";
+      const light = choice === "light" || (choice === "auto" && window.matchMedia("(prefers-color-scheme: light)").matches);
+      document.documentElement.dataset.themeMode = choice;
+      document.documentElement.dataset.theme = light ? "light" : "dark";
+      document.documentElement.classList.add("has-motion");
+    })();
+  </script>
   <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
 </head>
 <body>
   <a class="skip-link" href="#activity">Skip to activity</a>
+  <div class="scroll-progress" aria-hidden="true"></div>
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
   <div class="shell">
     <header class="topbar">
       <div class="brand">
@@ -28,6 +42,20 @@
         <span class="connection is-connecting" id="connectionState"><span class="pulse-dot"></span><span id="connectionText">Connecting…</span></span>
         <span class="topbar-meta" id="versionLabel">v—</span>
         <span class="topbar-meta" id="uptimeLabel">Uptime —</span>
+        <div class="theme-switch" role="group" aria-label="Appearance">
+          <button type="button" data-theme-choice="light" aria-pressed="false" title="Light">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.2v1.9M10 15.9v1.9M2.2 10h1.9M15.9 10h1.9M4.5 4.5l1.3 1.3M14.2 14.2l1.3 1.3M4.5 15.5l1.3-1.3M14.2 5.8l1.3-1.3"/></svg>
+            <span class="sr-only">Light</span>
+          </button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 12.4A6.6 6.6 0 0 1 7.6 3.8a6.6 6.6 0 1 0 8.6 8.6z"/></svg>
+            <span class="sr-only">Dark</span>
+          </button>
+          <button type="button" data-theme-choice="auto" aria-pressed="false" title="Device (follow macOS)">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.6" y="3.6" width="14.8" height="10" rx="1.8"/><path d="M7.2 17h5.6M10 13.6V17"/></svg>
+            <span class="sr-only">Device</span>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -36,7 +64,8 @@
         <div class="overview-copy">
           <div class="overview-heading">
             <div>
-              <h1 id="pageTitle">Operations</h1>
+              <span class="eyebrow">Mac MCP · this Mac</span>
+              <h1 id="pageTitle">Operations, <em>live.</em></h1>
               <p>Live execution telemetry, tool payloads and delegated agent state on this Mac.</p>
             </div>
             <span class="recording-chip"><i></i> Recording locally</span>
@@ -54,12 +83,12 @@
           <svg id="activityTrace" viewBox="0 0 560 76" preserveAspectRatio="none" aria-hidden="true">
             <defs>
               <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="#78c6ff"/>
-                <stop offset="1" stop-color="#3a78a7"/>
+                <stop offset="0" class="stop-trace-top"/>
+                <stop offset="1" class="stop-trace-bottom"/>
               </linearGradient>
               <linearGradient id="barGradientRecent" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="#b1dcff"/>
-                <stop offset="1" stop-color="#559fd7"/>
+                <stop offset="0" class="stop-recent-top"/>
+                <stop offset="1" class="stop-recent-bottom"/>
               </linearGradient>
             </defs>
             <line x1="0" y1="58" x2="560" y2="58" class="trace-grid trace-baseline"/>
@@ -73,7 +102,7 @@
         </div>
       </section>
 
-      <section class="health-row" id="healthRow" aria-label="System health and attention">
+      <section class="health-row" data-reveal id="healthRow" aria-label="System health and attention">
         <div class="health-strip surface-card" aria-label="System health">
           <div class="health-chip" id="healthServer" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Server</span><strong>—</strong></div>
           <div class="health-chip" id="healthTelemetry" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Telemetry</span><strong>—</strong></div>
@@ -95,22 +124,22 @@
       </section>
 
       <section class="metric-grid" aria-label="Telemetry summary">
-        <div class="metric-card surface-card">
+        <div data-reveal class="metric-card surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-blue"></span>Tool calls</div>
           <strong id="metricCalls">—</strong>
           <small id="metricWindow">last 24 hours</small>
         </div>
-        <div class="metric-card surface-card">
+        <div data-reveal class="metric-card surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-green"></span>Success</div>
           <strong id="metricSuccess">—</strong>
           <small id="metricErrors">waiting for data</small>
         </div>
-        <div class="metric-card surface-card">
+        <div data-reveal class="metric-card surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-slate"></span>Average latency</div>
           <strong id="metricAverage">—</strong>
           <small>completed calls</small>
         </div>
-        <div class="metric-card metric-card-emphasis surface-card">
+        <div data-reveal class="metric-card metric-card-emphasis surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-amber"></span>P95 latency</div>
           <strong id="metricP95">—</strong>
           <small>slow-path signal</small>
@@ -118,7 +147,7 @@
       </section>
 
       <section class="workspace">
-        <article class="activity-panel surface-card" id="activity">
+        <article class="activity-panel surface-card" data-reveal id="activity">
           <div class="panel-head">
             <div>
               <h2>Tool activity</h2>
@@ -188,7 +217,7 @@
         </article>
 
         <aside class="right-rail" aria-label="Operational context">
-          <section class="rail-card changes-card surface-card" aria-labelledby="changesTitle">
+          <section data-reveal class="rail-card changes-card surface-card" aria-labelledby="changesTitle">
             <div class="rail-title changes-title">
               <div>
                 <h2 id="changesTitle">What Changed on My Mac</h2>
@@ -222,7 +251,7 @@
             </div>
           </section>
 
-          <section class="rail-card runs-card surface-card" aria-labelledby="runsTitle">
+          <section data-reveal class="rail-card runs-card surface-card" aria-labelledby="runsTitle">
             <div class="rail-title">
               <div>
                 <h2 id="runsTitle">Recipe &amp; plan runs</h2>
@@ -241,7 +270,7 @@
             </ul>
           </section>
 
-          <section class="rail-card catalog-card surface-card" aria-labelledby="catalogTitle">
+          <section data-reveal class="rail-card catalog-card surface-card" aria-labelledby="catalogTitle">
             <div class="rail-title">
               <div>
                 <h2 id="catalogTitle">Skill &amp; recipe catalog</h2>
@@ -254,7 +283,7 @@
             </ul>
           </section>
 
-          <section class="rail-card hot-tools-card surface-card">
+          <section data-reveal class="rail-card hot-tools-card surface-card">
             <div class="rail-title">
               <div>
                 <h2>Hot tools</h2>
@@ -265,7 +294,7 @@
             <div id="topTools" class="top-tools"></div>
           </section>
 
-          <section class="rail-card agents-section surface-card">
+          <section data-reveal class="rail-card agents-section surface-card">
             <div class="rail-title agents-title">
               <div>
                 <h2>Delegated agents</h2>

@@ -98,6 +98,118 @@
   };
   const windowLabel = () => state.hours === 1 ? "last hour" : state.hours === 24 ? "last 24 hours" : state.hours === 168 ? "last 7 days" : `last ${state.hours} hours`;
 
+  // ── Appearance and motion ───────────────────────────────────────────────────
+  // Light, Dark or Device (follows macOS). The head script applied the stored choice before the first paint.
+  const THEME_KEY = "mac_mcp_dashboard_theme";
+  const systemLight = window.matchMedia("(prefers-color-scheme: light)");
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const themeFor = (choice) => (choice === "light" || (choice === "auto" && systemLight.matches) ? "light" : "dark");
+
+  function renderThemeSwitch() {
+    const choice = document.documentElement.dataset.themeMode || "auto";
+    document.querySelectorAll("[data-theme-choice]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.themeChoice === choice)));
+  }
+
+  function applyTheme(choice, origin) {
+    const root = document.documentElement;
+    const next = themeFor(choice);
+    const commit = () => { root.dataset.themeMode = choice; root.dataset.theme = next; renderThemeSwitch(); };
+    if (next === root.dataset.theme || !document.startViewTransition || reducedMotion.matches) { commit(); return; }
+    if (origin) {
+      // The new theme sweeps out as a circle from the button that chose it.
+      const box = origin.getBoundingClientRect();
+      const x = box.left + box.width / 2, y = box.top + box.height / 2;
+      root.style.setProperty("--sweep-x", `${x}px`);
+      root.style.setProperty("--sweep-y", `${y}px`);
+      root.style.setProperty("--sweep-r", `${Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y))}px`);
+    }
+    document.startViewTransition(commit);
+  }
+
+  document.querySelectorAll("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => {
+    const choice = button.dataset.themeChoice;
+    try { window.localStorage.setItem(THEME_KEY, choice); } catch { /* the choice then lasts until the page closes */ }
+    applyTheme(choice, button);
+  }));
+  systemLight.addEventListener("change", () => {
+    if ((document.documentElement.dataset.themeMode || "auto") === "auto") applyTheme("auto");
+  });
+  renderThemeSwitch();
+
+  // Sections rise in as they scroll into view; siblings follow one another.
+  const revealTargets = Array.from(document.querySelectorAll("[data-reveal]"));
+  if ("IntersectionObserver" in window && !reducedMotion.matches) {
+    const revealer = new IntersectionObserver((entries) => entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add("is-in");
+      revealer.unobserve(entry.target);
+    }), {rootMargin: "0px 0px -4% 0px", threshold: 0.06});
+    revealTargets.forEach((el) => {
+      const order = Array.from(el.parentElement.children).filter((item) => item.hasAttribute("data-reveal")).indexOf(el);
+      el.style.setProperty("--reveal-delay", `${Math.min(order, 5) * 70}ms`);
+      revealer.observe(el);
+    });
+  } else {
+    revealTargets.forEach((el) => el.classList.add("is-in"));
+  }
+
+  // The top bar firms up once the page scrolls; the progress line is drawn here where CSS cannot.
+  const topbar = document.querySelector(".topbar");
+  const scrollProgress = document.querySelector(".scroll-progress");
+  const scrollLinkedCSS = Boolean(window.CSS && CSS.supports("animation-timeline: scroll()"));
+  let scrollFrame = 0;
+  function onScroll() {
+    scrollFrame = 0;
+    const y = window.scrollY;
+    topbar?.classList.toggle("is-scrolled", y > 8);
+    if (!scrollLinkedCSS && scrollProgress) {
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      scrollProgress.style.transform = `scaleX(${max > 0 ? Math.min(1, y / max) : 0})`;
+    }
+  }
+  window.addEventListener("scroll", () => { if (!scrollFrame) scrollFrame = window.requestAnimationFrame(onScroll); }, {passive: true});
+  onScroll();
+
+  // A soft light follows the pointer across the card under it.
+  if (window.matchMedia("(hover: hover)").matches) {
+    document.addEventListener("pointermove", (event) => {
+      const card = event.target instanceof Element ? event.target.closest(".surface-card") : null;
+      if (!card) return;
+      const box = card.getBoundingClientRect();
+      card.style.setProperty("--mx", `${event.clientX - box.left}px`);
+      card.style.setProperty("--my", `${event.clientY - box.top}px`);
+    }, {passive: true});
+  }
+
+  // Metric values count to their new number; a change of unit just ticks in.
+  function parseMetric(text) {
+    const match = /^(\d[\d,]*(?:\.\d+)?)(.*)$/.exec(text);
+    if (!match) return null;
+    return {value: Number(match[1].replace(/,/g, "")), digits: (match[1].split(".")[1] || "").length, unit: match[2]};
+  }
+  function setMetric(el, text) {
+    if (!el || el.textContent === text) return;
+    window.cancelAnimationFrame(el._metricFrame || 0);
+    const from = parseMetric(el.textContent);
+    const to = parseMetric(text);
+    if (!from || !to || from.unit !== to.unit || reducedMotion.matches) {
+      el.textContent = text;
+      el.classList.remove("is-ticking");
+      void el.offsetWidth;
+      el.classList.add("is-ticking");
+      return;
+    }
+    const format = new Intl.NumberFormat("en-US", {minimumFractionDigits: to.digits, maximumFractionDigits: to.digits});
+    const started = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - started) / 700);
+      const eased = 1 - Math.pow(1 - t, 3);
+      el.textContent = t < 1 ? format.format(from.value + (to.value - from.value) * eased) + to.unit : text;
+      if (t < 1) el._metricFrame = window.requestAnimationFrame(step);
+    };
+    el._metricFrame = window.requestAnimationFrame(step);
+  }
+
   const AUTH_STORAGE_KEY = "mac_mcp_dashboard_token";
   function bootstrapAuthToken() {
     const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -198,11 +310,11 @@
       const data = await fetchJSON(`/dashboard/api/summary?hours=${encodeURIComponent(state.hours)}`);
       freshness.summary = Date.now();
       freshness.authRequired = false;
-      els.calls.textContent = number(data.total_calls);
-      els.success.textContent = `${Number(data.success_rate || 0).toFixed(1).replace(".0", "")}%`;
+      setMetric(els.calls, number(data.total_calls));
+      setMetric(els.success, `${Number(data.success_rate || 0).toFixed(1).replace(".0", "")}%`);
       els.errors.textContent = `${number(data.error_calls)} ${data.error_calls === 1 ? "error" : "errors"}`;
-      els.average.textContent = duration(data.avg_duration_ms);
-      els.p95.textContent = duration(data.p95_duration_ms);
+      setMetric(els.average, duration(data.avg_duration_ms));
+      setMetric(els.p95, duration(data.p95_duration_ms));
       els.activeNow.textContent = `${number(data.active_calls)} active`;
       els.window.textContent = windowLabel();
       els.version.textContent = `v${data.version || "—"}`;
