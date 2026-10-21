@@ -133,7 +133,10 @@ class ReplyBudgetTests(unittest.TestCase):
             nodes.append({**node(f"w1/{i}", "w1", 1), "actions": ["AXShowMenu", "AXScrollToVisible"],
                           "position": {"x": 1, "y": 2, "width": 3, "height": 4}})
             nodes.append({**node(f"w1/{i}/1", f"w1/{i}", 0, role="AXStaticText"), "value": "lorem ipsum " * 60})
-        nodes.append({**node("w1/x", "w1", 0, role="AXButton", title="Send"), "actions": ["AXPress"]})
+        for i in range(40):  # a sidebar of buttons
+            nodes.append({**node(f"w1/side/{i}", "w1/side", 0, role="AXButton", title=f"Chat {i}"), "actions": ["AXPress"]})
+        nodes.append({**node("w1/f/1/1/box", "w1/f/1/1", 0, role="AXTextArea", title="Ask ChatGPT"), "actions": []})
+        nodes.append({**node("w1/f/1/2/send", "w1/f/1/2", 0, role="AXButton", title="Send"), "actions": ["AXPress"]})
         return nodes
 
     def size(self, payload: dict) -> int:
@@ -145,8 +148,12 @@ class ReplyBudgetTests(unittest.TestCase):
         self.assertLessEqual(self.size(fitted), tools_ui.DEFAULT_CONTEXT_BUDGET_BYTES + 2048)
         ids = [n["element_id"] for n in fitted["nodes"]]
         self.assertNotIn("w1/0", ids)  # an empty container is the first to go
-        self.assertIn("w1/0/1", ids)
-        self.assertTrue(fitted["nodes"][0]["value"].endswith("…"))
+        self.assertIn("w1/0/1", ids)  # text stays, in full while it can
+        self.assertFalse(fitted["nodes"][0]["value"].endswith("…"))
+        self.assertIn("w1/f/1/1/box", ids)  # the message box and its Send button
+        self.assertIn("w1/f/1/2/send", ids)
+        self.assertNotIn("w1/side/39", ids)  # a long sidebar goes before the page's text
+        self.assertNotIn("parent_id", fitted["nodes"][0])  # trimmed nodes drop what an agent does not use
         self.assertIn("query=", fitted["budget_trimmed"]["hint"])
         self.assertGreater(fitted["budget_trimmed"]["left_out"], 0)
 
@@ -163,7 +170,7 @@ class ReplyBudgetTests(unittest.TestCase):
         fitted = tools_ui._fit_to_budget(payload)
         self.assertLessEqual(self.size(fitted), tools_ui.DEFAULT_CONTEXT_BUDGET_BYTES + 2048)
         self.assertTrue(fitted["delta"]["removed_ids_truncated"])
-        self.assertIn("w1/x", [n["element_id"] for n in fitted["delta"]["added_nodes"]])
+        self.assertIn("w1/f/1/2/send", [n["element_id"] for n in fitted["delta"]["added_nodes"]])
 
     def test_a_small_reply_is_untouched(self) -> None:
         payload = {"ok": True, "nodes": list(QueryTests.NODES)}

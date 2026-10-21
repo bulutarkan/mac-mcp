@@ -1937,7 +1937,9 @@ _CONTAINER_ROLES = frozenset({"AXGroup", "AXGenericElement", "AXUnknown", "AXScr
                               "AXLayoutArea", "AXList", "AXSection"})
 _INCIDENTAL_ACTIONS = frozenset({"AXShowMenu", "AXScrollToVisible"})
 _INPUT_ROLES = frozenset({"AXTextArea", "AXTextField", "AXComboBox", "AXSearchField", "AXSlider", "AXStepper"})
-_BUDGET_VALUE_CHARS = 300
+_BUDGET_VALUE_CHARS = 1500
+# Fields a trimmed reply leaves out when they hold nothing or their default: half of a node's size.
+_DEFAULT_FIELDS = {"subrole": "", "value": "", "identifier": "", "enabled": True, "focused": False, "selected": False}
 _BUDGET_HINT = ("The UI was larger than the reply budget, so empty containers and then the least useful elements "
                 "were left out; element_ids are unchanged. Use query='words on the control' to get just what you need.")
 
@@ -1946,6 +1948,28 @@ def _is_empty_container(node: Dict[str, Any]) -> bool:
     return (node.get("role") in _CONTAINER_ROLES and not str(node.get("title") or "").strip()
             and not str(node.get("value") or "").strip()
             and set(node.get("actions") or []) <= _INCIDENTAL_ACTIONS)
+
+
+def _input_neighbourhoods(nodes: List[Dict[str, Any]]) -> Tuple[str, ...]:
+    """The subtree around each input (two levels up): its form, where its Send button sits."""
+    prefixes = []
+    for node in nodes:
+        if node.get("role") in _INPUT_ROLES:
+            parts = str(node.get("element_id") or "").split("/")
+            if len(parts) > 3:
+                prefixes.append("/".join(parts[:-3]) + "/")
+    return tuple(prefixes)
+
+
+def _cut_rank(node: Dict[str, Any], near_inputs: Tuple[str, ...] = ()) -> int:
+    """0 inputs and the controls of their form, 1 text, 2 other controls, 3 the rest: kept in that order."""
+    role = node.get("role")
+    if role in _INPUT_ROLES or (_is_control(node) and str(node.get("element_id") or "").startswith(near_inputs)
+                                and near_inputs):
+        return 0
+    if str(node.get("value") or "").strip() and role not in _PRESSABLE_ROLES:
+        return 1
+    return 2 if _is_control(node) else 3
 
 
 def _is_control(node: Dict[str, Any]) -> bool:
@@ -1958,6 +1982,20 @@ def _is_useful(node: Dict[str, Any]) -> bool:
     actions = set(node.get("actions") or []) - _INCIDENTAL_ACTIONS
     return bool(role in _PRESSABLE_ROLES or role in _INPUT_ROLES or actions
                 or str(node.get("title") or "").strip() or str(node.get("value") or "").strip())
+
+
+def _compact_node(node: Dict[str, Any]) -> Dict[str, Any]:
+    """The same element in fewer bytes: no parent link, child count or default fields, and only real actions."""
+    out = {key: value for key, value in node.items()
+           if key not in {"parent_id", "child_count"} and not (key in _DEFAULT_FIELDS and value == _DEFAULT_FIELDS[key])}
+    if str(out.get("description") or "").lower() in {"", "group", "text", "button", str(out.get("title") or "").lower()}:
+        out.pop("description", None)
+    actions = [name for name in node.get("actions") or [] if name not in _INCIDENTAL_ACTIONS]
+    if actions:
+        out["actions"] = actions
+    else:
+        out.pop("actions", None)
+    return out
 
 
 def _short_node(node: Dict[str, Any]) -> Dict[str, Any]:
@@ -1987,15 +2025,23 @@ def _fit_to_budget(payload: Dict[str, Any], budget: int = DEFAULT_CONTEXT_BUDGET
     if not lists:
         return payload
     before = sum(len(owner[key]) for owner, key in lists)
-    for keep in (lambda n: not _is_empty_container(n), _is_useful):
+    # Text is what a reader came for (a chat's answer): it is shortened only after every lighter step.
+    steps = (
+        lambda nodes: [_compact_node(n) for n in nodes if isinstance(n, dict) and not _is_empty_container(n)],
+        lambda nodes: [n for n in nodes if _is_useful(n)],
+        lambda nodes: [_short_node(n) for n in nodes],
+    )
+    for step in steps:
         for owner, key in lists:
-            owner[key] = [_short_node(node) for node in owner[key] if isinstance(node, dict) and keep(node)]
+            owner[key] = step(owner[key])
         if size() <= budget:
             break
     while size() > budget and any(owner[key] for owner, key in lists):
         owner, key = max(lists, key=lambda item: len(item[0][item[1]]))
-        # Controls are kept before text, so a Send button at the end of a long page survives the cut.
-        ranked = sorted(range(len(owner[key])), key=lambda i: (not _is_control(owner[key][i]), i))
+        # Inputs and text are kept before buttons and links: a long sidebar of buttons must not push out the
+        # message box or the page's text; within each kind the page order stays.
+        near = _input_neighbourhoods(owner[key])
+        ranked = sorted(range(len(owner[key])), key=lambda i: (_cut_rank(owner[key][i], near), i))
         keep = set(ranked[: max(0, int(len(ranked) * 0.8))])
         owner[key] = [node for i, node in enumerate(owner[key]) if i in keep]
     shown = sum(len(owner[key]) for owner, key in lists)
