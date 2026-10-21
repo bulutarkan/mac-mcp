@@ -370,6 +370,27 @@ def read_messages(item_id: Optional[str], query: Optional[str], *, limit: int, c
     }
 
 
+def _same_text(value: Optional[str]) -> str:
+    return " ".join(unicodedata.normalize("NFC", (value or "").replace("\ufffc", "")).split())
+
+
+def find_sent(chat_id: str, text: str, *, since_s: float) -> Optional[Dict[str, Any]]:
+    """The message this Mac sent to that conversation with that text at or after since_s, if Messages has
+    written it to its history (#42). Only that chat, only from_me, only new rows: an older message with the
+    same words or the same words in another chat never count. The text itself is not returned."""
+    known = chats()
+    chat = resolve_chat(chat_id, None, known)
+    # A couple of seconds' slack: Messages stamps the row a moment after Mac MCP noted the time.
+    since = int((datetime.fromtimestamp(since_s - 2.0, timezone.utc) - _APPLE_EPOCH).total_seconds() * 1e9)
+    rows = _query(_MESSAGES_SQL.format(where=f"cmj.chat_id = ? AND {_PLAIN} AND m.is_from_me = 1 AND m.date >= ?"),
+                  [chat["rowid"], since, 20], max_rows=20)
+    wanted = _same_text(text)
+    for row in rows:
+        if _same_text(row.get("body")) == wanted:
+            return {"message_id": row.get("guid"), "chat_id": chat["chat_id"], "date": _when(row.get("date"))}
+    return None
+
+
 def search_messages(query: str, *, item_id: Optional[str] = None, limit: int, cursor: Optional[str] = None,
                     date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict[str, Any]:
     """Messages whose text contains query (any case or accents), newest first, across chats or in one."""

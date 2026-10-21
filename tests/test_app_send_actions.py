@@ -181,8 +181,13 @@ class MessagesSendTests(unittest.TestCase):
     ])
 
     def _send(self, approval, outputs, **kwargs):
+        from mcp_server import messages_reader
+
+        # The history check after a send (#42) would read the real Messages database; here it finds nothing.
         with patch.object(app_adapters, "_run", side_effect=list(outputs)) as run, \
-             patch.object(app_adapters, "request_send_approval", return_value=approval) as ask:
+             patch.object(app_adapters, "request_send_approval", return_value=approval) as ask, \
+             patch.object(messages_reader, "find_sent", return_value=None), \
+             patch.object(app_adapters.time, "sleep"):
             result = mac_app(SETTINGS, app="Messages", action="send_message", body="On my way", **kwargs)
         return result, run, ask
 

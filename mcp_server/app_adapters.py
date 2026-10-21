@@ -1851,6 +1851,40 @@ def _mail_sent_count(subject: str, to_list: List[str], seconds_back: int) -> Opt
         return None
 
 
+# After a send, the conversation history is looked at a few times for the new row (#42).
+_MESSAGES_HISTORY_ATTEMPTS = 3
+_MESSAGES_HISTORY_WAIT_S = 0.7
+
+
+def _messages_history_check(chat: Dict[str, Any], text: str, sent_at: float) -> Dict[str, Any]:
+    """Whether Messages wrote the sent message to that conversation. Read-only; it never sends again."""
+    from . import messages_reader, privacy_policy
+
+    try:
+        privacy_policy.check_app("Messages", "com.apple.MobileSMS")
+    except privacy_policy.PrivacyBlocked:
+        return {"history_check": "privacy_excluded"}
+    for attempt in range(_MESSAGES_HISTORY_ATTEMPTS):
+        try:
+            found = messages_reader.find_sent(chat["chat_id"], text, since_s=sent_at)
+        except messages_reader.MessagesError as exc:
+            return {"history_check": "unavailable", "history_check_reason": exc.code}
+        if found:
+            return {
+                "verified": True, "verification": "in_conversation_history", "history_check": "found",
+                "message_id": found["message_id"], "message_date": found["date"],
+                "note": "Messages wrote this message to the conversation. That shows it left this Mac for Messages, "
+                        "not that the other person received it.",
+            }
+        if attempt + 1 < _MESSAGES_HISTORY_ATTEMPTS:
+            time.sleep(_MESSAGES_HISTORY_WAIT_S)
+    return {
+        "history_check": "not_found_yet",
+        "note": "Messages accepted the message, but it was not in the conversation history yet. Do not send it "
+                "again: look with read_messages or mac_observe first.",
+    }
+
+
 def _messages_send(
     settings: Settings, chat_id: Optional[str], query: Optional[str], body: Optional[str], *, timeout_s: float,
 ) -> Dict[str, Any]:
@@ -1888,6 +1922,7 @@ def _messages_send(
         "end tell",
         'return "SENT"',
     ])
+    sent_at = time.time()
     try:
         status = _run(script, timeout_s=max(timeout_s, 15.0), code="MESSAGES_SEND_FAILED")
     except AppAdapterError as exc:
@@ -1901,6 +1936,7 @@ def _messages_send(
         "ok": True, "sent": True, "verified": False, "verification": "accepted_by_messages",
         "confirmation": approval, "chat": chat, "automatic_retry": False,
         "note": "Messages scripting cannot read the conversation back; look at it with mac_observe to confirm delivery.",
+        **_messages_history_check(chat, text, sent_at),
     }
 
 
