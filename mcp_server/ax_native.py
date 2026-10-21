@@ -288,6 +288,18 @@ def act(
     return parsed if isinstance(parsed, dict) else None
 
 
+def wake_web_accessibility(app_pid: int, timeout_s: float = 3.0) -> bool:
+    """Ask a Chromium-based app for its full Accessibility tree, so its web controls offer AXPress (#82).
+
+    It is what VoiceOver asks for; the app keeps it on while it runs. Returns whether the helper was asked."""
+    executable = _executable()
+    if executable is None:
+        return False
+    answer = _call(executable, ["--mode", "act", "--pid", str(int(app_pid)), "--element", "w1", "--op", "wake_web"],
+                   timeout_s)
+    return bool(answer and answer[0])
+
+
 def _call(executable: str, args: List[str], timeout_s: float) -> Optional[Tuple[bool, str, str]]:
     cancellation_checkpoint()
     limit = max(0.5, float(timeout_s))

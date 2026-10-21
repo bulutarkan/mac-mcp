@@ -1990,6 +1990,37 @@ def _native_node_budget(metadata: Dict[str, Any], max_nodes: int = _NATIVE_MAX_N
     }
 
 
+# Controls a person presses. In a web view they offer AXScrollToVisible; without AXPress beside it the app has
+# not turned its full Accessibility tree on yet (#82).
+_PRESSABLE_ROLES = frozenset({"AXButton", "AXLink", "AXCheckBox", "AXRadioButton", "AXMenuItem", "AXPopUpButton", "AXTab"})
+# Browsers have their own tools and stay as they are.
+_WEB_WAKE_SKIP_BUNDLES = frozenset({"com.apple.Safari", "com.google.Chrome", "com.google.Chrome.canary",
+                                    "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.Browser"})
+_WEB_WAKE_SETTLE_S = 1.5
+_web_woken: Dict[int, float] = {}
+
+
+def _web_controls_asleep(nodes: List[Dict[str, Any]]) -> bool:
+    for node in nodes:
+        actions = set(node.get("actions") or [])
+        if node.get("role") in _PRESSABLE_ROLES and "AXScrollToVisible" in actions and "AXPress" not in actions:
+            return True
+    return False
+
+
+def _wake_web_controls(payload: Dict[str, Any]) -> bool:
+    """Once per running app: ask for the full tree when its web controls cannot be pressed yet. True when asked."""
+    pid = int(payload.get("app_pid") or 0)
+    if (not pid or pid in _web_woken or str(payload.get("bundle_id") or "") in _WEB_WAKE_SKIP_BUNDLES
+            or not _web_controls_asleep(list(payload.get("nodes") or []))):
+        return False
+    _web_woken[pid] = time.time()
+    if not ax_native.wake_web_accessibility(pid):
+        return False
+    time.sleep(_WEB_WAKE_SETTLE_S)
+    return True
+
+
 _QUERY_MAX_MATCHES = 25
 # A search reads more of the window than a plain observation, which returns every node it reads.
 _QUERY_MAX_NODES = 2000
@@ -2514,6 +2545,16 @@ def _observe_ui(
             watch_pid=int(previous.get("app_pid") or 0) if compatible_previous else None,
             max_nodes=_QUERY_MAX_NODES if terms else _NATIVE_MAX_NODES,
         )
+        if payload.get("ok") and _wake_web_controls(payload):
+            # Read again now that its web controls can be pressed.
+            payload, image_data = _collect_observation(
+                settings, resolved_app, int(window_index), max_depth, max_children, bool(include_screenshot),
+                bool(ocr), deadline=deadline, app_pid=resolved_pid,
+                max_nodes=_QUERY_MAX_NODES if terms else _NATIVE_MAX_NODES,
+            )
+            if payload.get("ok"):
+                payload["web_accessibility"] = "full_tree_requested"
+            compatible_previous = False
         if payload.get("ok") and requested_depth != max_depth and not terms:
             # Said, not silent: the depth asked for and the one used (#82).
             payload["depth"] = {"requested": requested_depth, "applied": max_depth, "limit": _MAX_OBSERVE_DEPTH}

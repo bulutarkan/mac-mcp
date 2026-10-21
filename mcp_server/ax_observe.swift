@@ -352,7 +352,7 @@ func observe(_ options: [String: String], frontmost: Bool) -> (Int32, String, St
 //
 // System Events reaches only windows on a shown desktop, so mac_act sends element-bound
 // Accessibility actions for a window on another desktop (an agent's own) here instead:
-//   --mode act --pid N --element wW/i/j --op press|action|set_text [--name AXName]
+//   --mode act --pid N --element wW/i/j --op press|action|set_text|wake_web [--name AXName]
 //   [--text T --replace true|false]
 // Windows are numbered as in observe() (shown desktop first, then the others), and each
 // path step is an AXChildren index, so an element_id from an observation names the same
@@ -413,6 +413,14 @@ func act(_ options: [String: String]) -> (Int32, String, String) {
     func answer(_ object: [String: Any]) -> (Int32, String, String) {
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
         return (0, String(decoding: data, as: UTF8.self), "")
+    }
+    if op == "wake_web" {
+        // Chromium-based apps (the ChatGPT app among them) offer AXPress on their web controls only once an
+        // assistive client asks for the full tree, as VoiceOver does by setting AXEnhancedUserInterface. The
+        // app answers the write with an error but turns the full tree on within a second or two (#82).
+        let status = AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXEnhancedUserInterface" as CFString,
+                                                  kCFBooleanTrue)
+        return answer(["ok": true, "op": "wake_web", "status": Int(status.rawValue)])
     }
     guard let element = resolve(elementID, in: allWindows(app)) else {
         return answer(["ok": false, "reason_code": "STALE_ELEMENT_PATH", "error": "\(elementID) no longer exists; observe again"])

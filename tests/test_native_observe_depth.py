@@ -88,6 +88,41 @@ class QueryTests(unittest.TestCase):
         self.assertIn("do not repeat the same search", payload["query"]["hint"])
 
 
+class WebWakeTests(unittest.TestCase):
+    """A Chromium app offers AXPress on web controls only after an assistive client asks for the full tree."""
+
+    ASLEEP = [{**node("w1/1", "w1", 0, role="AXButton", title="New chat"), "actions": ["AXShowMenu", "AXScrollToVisible"]}]
+    AWAKE = [{**node("w1/1", "w1", 0, role="AXButton", title="New chat"),
+              "actions": ["AXPress", "AXShowMenu", "AXScrollToVisible"]}]
+
+    def setUp(self) -> None:
+        tools_ui._web_woken.clear()
+        self.addCleanup(tools_ui._web_woken.clear)
+
+    def test_asleep_only_when_a_web_control_lacks_press(self) -> None:
+        self.assertTrue(tools_ui._web_controls_asleep(self.ASLEEP))
+        self.assertFalse(tools_ui._web_controls_asleep(self.AWAKE))
+        native_button = [{**node("w1/1", "w1", 0, role="AXButton"), "actions": ["AXPress"]}]
+        self.assertFalse(tools_ui._web_controls_asleep(native_button))
+        self.assertFalse(tools_ui._web_controls_asleep([{**node("w1/1", "w1", 0), "actions": ["AXScrollToVisible"]}]))
+
+    def test_woken_once_per_running_app_and_never_a_browser(self) -> None:
+        payload = {"app_pid": 4242, "bundle_id": "com.openai.codex", "nodes": self.ASLEEP}
+        with patch.object(tools_ui.ax_native, "wake_web_accessibility", return_value=True) as wake, \
+             patch.object(tools_ui.time, "sleep") as pause:
+            self.assertTrue(tools_ui._wake_web_controls(payload))
+            self.assertFalse(tools_ui._wake_web_controls(payload))  # the same app: once
+            self.assertFalse(tools_ui._wake_web_controls({**payload, "app_pid": 99, "bundle_id": "com.google.Chrome"}))
+            self.assertFalse(tools_ui._wake_web_controls({**payload, "app_pid": 77, "nodes": self.AWAKE}))
+        wake.assert_called_once_with(4242)
+        pause.assert_called_once_with(tools_ui._WEB_WAKE_SETTLE_S)
+
+    def test_the_helper_only_asks_and_does_not_need_an_element(self) -> None:
+        act = SWIFT[SWIFT.index("func act(_ options"):SWIFT.index("switch op {")]
+        self.assertLess(act.index('if op == "wake_web"'), act.index("guard let element = resolve"))
+        self.assertIn('"AXEnhancedUserInterface" as CFString', act)
+
+
 class ObserveWiringTests(unittest.TestCase):
     def observe(self, **kwargs) -> tuple[dict, dict]:
         seen: dict = {}
@@ -115,6 +150,28 @@ class ObserveWiringTests(unittest.TestCase):
         self.assertEqual(["w1/1"], [n["element_id"] for n in payload["nodes"]])
         _, plain = self.observe()
         self.assertEqual(tools_ui._NATIVE_MAX_NODES, plain["max_nodes"])
+
+    def test_an_app_with_sleeping_web_controls_is_woken_and_read_again(self) -> None:
+        reads = []
+
+        def collect(settings, app, window_index, max_depth, max_children, *args, **kw):
+            nodes = WebWakeTests.ASLEEP if not reads else WebWakeTests.AWAKE
+            reads.append(1)
+            return {"ok": True, "observation_id": f"obs_{len(reads)}", "app_pid": 4242, "bundle_id": "com.openai.codex",
+                    "nodes": list(nodes), "telemetry": {}}, None
+
+        tools_ui._web_woken.clear()
+        self.addCleanup(tools_ui._web_woken.clear)
+        with patch.object(tools_ui, "_resolve_registered_native_target", return_value=("ChatGPT", 4242, 1, None, None)), \
+             patch.object(tools_ui, "_privacy_block_app", return_value=None), \
+             patch.object(tools_ui, "_collect_observation", side_effect=collect), \
+             patch.object(tools_ui.ax_native, "wake_web_accessibility", return_value=True), \
+             patch.object(tools_ui.time, "sleep"):
+            result = tools_ui._observe_ui(load_settings(), app="ChatGPT", query="New chat")
+        payload = json.loads(result[0] if isinstance(result, list) else result)
+        self.assertEqual(2, len(reads))
+        self.assertEqual("full_tree_requested", payload["web_accessibility"])
+        self.assertIn("AXPress", payload["nodes"][0]["actions"])
 
     def test_the_tool_offers_query(self) -> None:
         source = (Path(tools_ui.__file__).with_name("main.py")).read_text(encoding="utf-8")
