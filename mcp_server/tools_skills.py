@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -358,6 +359,80 @@ def _ensure_vector_backend(conn: sqlite3.Connection, backend: str) -> int:
     return len(pending)
 
 
+# ── The owner's choice of skills (#61) ──────────────────────────────────────
+# Settings › Agents lists every skill found and lets the owner keep one out of Mac MCP's list, search and
+# skill_get. The choice is Mac MCP's alone: it is kept in settings.json by file path, survives a rebuilt
+# index, and never touches the skill's files or the CLI that owns them.
+
+_CLI_SOURCES = {
+    ".agents/skills": "Shared agent skills", ".claude/skills": "Claude", ".codex/skills": "Codex",
+    ".config/opencode/skills": "OpenCode", ".config/goose/skills": "Goose", ".gemini/skills": "Gemini",
+    ".kimi/skills": "Kimi", ".pi/agent/skills": "Pi", ".config/kilo/skills": "Kilo", ".kilo/skills": "Kilo",
+    ".config/cline/skills": "Cline", ".cline/skills": "Cline",
+}
+
+
+def excluded_locations() -> set:
+    from .runtime_settings import load_runtime_settings
+
+    section = load_runtime_settings().get("skills")
+    raw = section.get("excluded") if isinstance(section, dict) else None
+    return {str(Path(item).expanduser()) for item in raw or [] if isinstance(item, str) and item.strip()}
+
+
+def _source(location: str, managed: bool) -> str:
+    if managed:
+        return "Mac MCP"
+    path = Path(location)
+    try:
+        path.relative_to(BUNDLED_SKILLS_DIR)
+        return "Built into Mac MCP"
+    except ValueError:
+        pass
+    home = Path.home()
+    for root, label in _CLI_SOURCES.items():
+        try:
+            path.relative_to((home / root).resolve())
+            return label
+        except ValueError:
+            continue
+    return "Registered"
+
+
+def skill_catalog() -> Dict[str, Any]:
+    """Every skill found, excluded ones too, with where it comes from and when it last changed: for Settings."""
+    root = _skills_root()
+    excluded = excluded_locations()
+    with closing(_connect(root)) as conn:
+        sync = _sync_index(root, conn, allow_start=False)
+        rows = conn.execute("SELECT * FROM skills ORDER BY name").fetchall()
+    skills = []
+    for row in rows:
+        updated = datetime.fromtimestamp(int(row["mtime_ns"]) / 1e9).astimezone().isoformat(timespec="seconds")
+        skills.append({
+            "name": row["name"], "description": row["description"], "location": row["location"],
+            "source": _source(row["location"], bool(row["managed"])), "managed": bool(row["managed"]),
+            "updated_at": updated, "excluded": row["location"] in excluded,
+        })
+    return {"ok": True, "count": len(skills), "excluded": sum(1 for item in skills if item["excluded"]),
+            "skills": skills, "diagnostics": sync.get("diagnostics", [])}
+
+
+def set_skill_excluded(location: str, excluded: bool) -> Dict[str, Any]:
+    """Keep one skill (by its SKILL.md path) out of Mac MCP, or let it back in. Its files are not touched."""
+    from .runtime_settings import update_runtime_setting
+
+    wanted = str(location or "").strip()
+    known = {item["location"]: item for item in skill_catalog()["skills"]}
+    if wanted not in known:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No skill Mac MCP found is at that path.")
+    current = excluded_locations()
+    chosen = (current | {wanted}) if excluded else (current - {wanted})
+    update_runtime_setting("skills", "excluded", sorted(chosen))
+    return {"ok": True, "location": wanted, "name": known[wanted]["name"], "excluded": bool(excluded),
+            "files_changed": False}
+
+
 def _row_public(row: sqlite3.Row, *, include_body: bool = False) -> Dict[str, Any]:
     out = {
         "name": row["name"],
@@ -403,10 +478,13 @@ def skill_register(path: str) -> Dict[str, Any]:
 def skill_list(limit: int = 100) -> Dict[str, Any]:
     limit = max(1, min(int(limit), 500))
     root = _skills_root()
+    excluded = excluded_locations()
     with closing(_connect(root)) as conn:
         sync = _sync_index(root, conn, allow_start=False)
-        rows = conn.execute("SELECT * FROM skills ORDER BY name LIMIT ?", (limit,)).fetchall()
-        total = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
+        rows = [row for row in conn.execute("SELECT * FROM skills ORDER BY name").fetchall()
+                if row["location"] not in excluded]
+        total = len(rows)
+        rows = rows[:limit]
     return {
         "ok": True,
         "skills_root": str(root),
@@ -441,6 +519,8 @@ def skill_get(name: Optional[str] = None, path: Optional[str] = None, resource_l
                 row = conn.execute("SELECT * FROM skills WHERE name=?", (parsed["name"],)).fetchone()
         if not row:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Skill not found.")
+        if row["location"] in excluded_locations():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "The owner keeps this skill out of Mac MCP (Settings › Agents).")
         parsed = _parse_skill(Path(row["location"]))
     resources, truncated = _resources(Path(parsed["directory"]), resource_limit)
     return {
@@ -469,7 +549,8 @@ def skill_search(query: str, limit: int = 10) -> Dict[str, Any]:
         reindexed = _ensure_vector_backend(conn, backend)
         if reindexed:
             sync["vector_reindexed"] = reindexed
-        rows = conn.execute("SELECT * FROM skills").fetchall()
+        excluded = excluded_locations()
+        rows = [row for row in conn.execute("SELECT * FROM skills").fetchall() if row["location"] not in excluded]
         fts_scores: Dict[str, float] = {}
         words = embeddings.tokens(q)
         if words:

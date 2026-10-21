@@ -1216,6 +1216,44 @@ def create_dashboard_routes(
         except HTTPException as exc:
             return _http_error(exc)
 
+    # Settings › Agents › Skills (#61): every skill found, and the owner's choice of which ones Mac MCP uses.
+    async def skills_view(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from .tools_skills import skill_catalog
+
+        try:
+            return JSONResponse(await asyncio.to_thread(skill_catalog))
+        except HTTPException as exc:
+            return _http_error(exc)
+
+    async def skills_exclude(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from .tools_skills import set_skill_excluded
+
+        body = await _json_body(request)
+        if not isinstance(body.get("excluded"), bool):
+            return JSONResponse({"ok": False, "error": "excluded_must_be_boolean"}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(set_skill_excluded, str(body.get("location") or ""),
+                                                        body["excluded"]))
+        except HTTPException as exc:
+            return _http_error(exc)
+        except RuntimeError as exc:
+            return JSONResponse({"ok": False, "error": "settings_unwritable", "message": str(exc)}, status_code=409)
+
+    async def skills_reindex(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from .tools_skills import skill_catalog, skill_update_index
+
+        await asyncio.to_thread(skill_update_index)
+        return JSONResponse(await asyncio.to_thread(skill_catalog))
+
     async def memory_settings(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -1957,6 +1995,9 @@ def create_dashboard_routes(
         Route("/dashboard/api/lessons", lesson_items, methods=["GET"]),
         Route("/dashboard/api/lessons/feedback", lesson_item_feedback, methods=["POST"]),
         Route("/dashboard/api/lessons/delete", lesson_item_delete, methods=["POST"]),
+        Route("/dashboard/api/skills", skills_view, methods=["GET"]),
+        Route("/dashboard/api/skills/exclude", skills_exclude, methods=["POST"]),
+        Route("/dashboard/api/skills/reindex", skills_reindex, methods=["POST"]),
         Route("/dashboard/api/recipes", launcher_recipes, methods=["GET"]),
         Route("/dashboard/api/recipes/run", launcher_run_recipe, methods=["POST"]),
         Route("/dashboard/api/recipes/manage", recipes_manage_list, methods=["GET"]),

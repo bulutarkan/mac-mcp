@@ -1099,6 +1099,10 @@ struct SettingsView: View {
                         .padding(.top, 2)
                 }
 
+                AgentsFoldingSection(title: "Skills") {
+                    SkillsSection(state: state)
+                }
+
                 AgentsFoldingSection(title: "Team History") {
                     TeamHistorySection(
                         history: state.teamHistory,

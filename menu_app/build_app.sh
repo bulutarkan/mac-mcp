@@ -55,6 +55,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/ScheduledTaskWatchdog.swift"
   "${SCRIPT_DIR}/Sources/AutomationPane.swift"
   "${SCRIPT_DIR}/Sources/MemoryReviewView.swift"
+  "${SCRIPT_DIR}/Sources/SkillsSection.swift"
   "${SCRIPT_DIR}/Sources/RunReportView.swift"
   "${SCRIPT_DIR}/Sources/LiveIsland.swift"
   "${SCRIPT_DIR}/Sources/IslandHitArea.swift"
