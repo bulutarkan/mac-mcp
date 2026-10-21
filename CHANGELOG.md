@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Browser: a draft shown again is not taken as saved (roadmap #81)
+- When an agent checks for its text with `expect={text: ...}` and the page also keeps that text in the browser's own storage (as many sites do with drafts), the check now says so: `evidence: page_and_browser_storage`, `saved_on_site: unverified` and a hint that seeing a draft again, even after a reload, does not show the site saved it, so check the site's own list, another device or a private window, and do not submit again. Only where the text is kept is reported, never what is stored.
+
 ### Your other Macs: full access for a while (roadmap #80)
 - When you invite a Mac with full access you choose how long: no time limit (as before), 1 hour, until the end of today or 7 days. The time runs from when you allow it, and the request you allow shows it.
 - When the time is over that Mac keeps reading here: its pairing stays, and anything that changes something is refused, from its next request on. Only you give full access again, in **Settings › Devices** with **Access** next to the Mac; the other Mac cannot ask for it. The same menu lowers a Mac to read only or status only.

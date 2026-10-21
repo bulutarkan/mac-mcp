@@ -2866,6 +2866,29 @@ return __mcpB64({{ok:true,matched:!!({expr}),url:location.href,title:document.ti
 }})()'''
 
 
+def _local_copy_js(text: str) -> str:
+    """Where this page keeps its own copy of text (localStorage, sessionStorage), never the values (#81).
+
+    A site that keeps a draft in the browser shows it again after a reload, so seeing the text then does not
+    show the site saved it. Bounded: at most 400 keys per store, 200 KB per value; JSON values are read for
+    their text, since a stored draft escapes quotes and line breaks.
+    """
+    want = json.dumps(" ".join(str(text or "").split()).lower())
+    return f'''(function(){{
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var want={want},found=[];
+function norm(v){{return String(v||'').replace(/\\s+/g,' ').toLowerCase();}}
+function leaves(v,out,depth){{if(out.length>2000||depth>12)return;if(typeof v==='string'){{out.push(v);return;}}
+if(v&&typeof v==='object'){{for(var k in v){{if(Object.prototype.hasOwnProperty.call(v,k))leaves(v[k],out,depth+1);}}}}}}
+function holds(raw){{if(!want||typeof raw!=='string'||raw.length>204800)return false;if(norm(raw).indexOf(want)>=0)return true;
+var c=raw.charAt(0);if(c!=='{{'&&c!=='['&&c!=='"')return false;try{{var out=[];leaves(JSON.parse(raw),out,0);
+return norm(out.join(' ')).indexOf(want)>=0;}}catch(e){{return false;}}}}
+[['localStorage',function(){{return window.localStorage;}}],['sessionStorage',function(){{return window.sessionStorage;}}]].forEach(function(pair){{
+try{{var st=pair[1]();if(!st)return;var n=Math.min(st.length,400);for(var i=0;i<n;i++){{var k=st.key(i);if(holds(st.getItem(k))){{found.push(pair[0]);return;}}}}}}catch(e){{}}}});
+return __mcpB64({{ok:true,local_copy:found}});
+}})()'''
+
+
 def _extract_fields_problem(fields: Any) -> Optional[str]:
     """Validate the shared MCP/REST extraction contract before opening a page."""
     if not isinstance(fields, list) or not 1 <= len(fields) <= 20:
@@ -4099,6 +4122,11 @@ _BLOCKED_ERRORS = frozenset({
     "chrome_debugger_blocked", "foreground_not_authorized", "capability_required", "policy_denied",
     "approval_denied", "trusted_input_unavailable",
 })
+LOCAL_COPY_HINT = (
+    "This page also keeps the text in the browser's own storage, so seeing it here, even after a reload, does not "
+    "show the site saved it. To know it was saved, check where this browser cannot fill it in: the site's own list "
+    "or sent view, another device, or a private window. Do not report it as saved, and do not submit it again."
+)
 CONFIRM_HINT = (
     "page_reacted means the page changed after the action, not that its intended result happened (a link "
     "copied, an image inserted, a form submitted). Add expect={text|gone|selector|url_change} to the action, "
@@ -4206,6 +4234,10 @@ def _fold_expectations(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         expect = item.get("_expect") or {}
         met = bool(item.get("matched"))
         check = {**expect, "met": met, "waited_ms": item.get("duration_ms")}
+        if met and "text" in expect and item.get("_local_copy"):
+            # The text is on the page, and the page keeps it itself: it may be a draft, not what the site saved (#81).
+            check.update({"evidence": "page_and_browser_storage", "local_copy": item["_local_copy"],
+                          "saved_on_site": "unverified", "hint": LOCAL_COPY_HINT})
         if isinstance(item.get("download"), dict):
             check["download"] = item["download"]
         if item.get("ambiguous"):
@@ -5154,6 +5186,16 @@ def _browser_act_locked(
                     if "_expect_for" in action:
                         wait_result["_expect_for"] = action["_expect_for"]
                         wait_result["_expect"] = action.get("_expect")
+                        expected_text = (action.get("_expect") or {}).get("text")
+                        if wait_result.get("matched") and expected_text:
+                            # The text shows; say whether the page also keeps it itself (#81).
+                            try:
+                                copy = _run_json_js(settings, browser, _local_copy_js(expected_text),
+                                                    window_index, tab_index, tab_handle)
+                                internal_js_calls += 1
+                                wait_result["_local_copy"] = list(copy.get("local_copy") or [])
+                            except HTTPException:
+                                wait_result["_local_copy"] = None  # could not look: nothing is claimed
                     results.append(wait_result)
                     if not wait_result.get("matched") and action.get("required", True):
                         break
