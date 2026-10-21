@@ -16,6 +16,7 @@ from . import paths
 
 RELEASES_URL = "https://github.com/bulutarkan/mac-mcp/releases"
 LATEST_RELEASE_API = "https://api.github.com/repos/bulutarkan/mac-mcp/releases/latest"
+RELEASES_API = "https://api.github.com/repos/bulutarkan/mac-mcp/releases?per_page=30"
 _MESSAGE = (
     "This Mac MCP was installed from a package. To update, download the newer "
     ".pkg from GitHub Releases and open it; your settings and keys are kept."
@@ -70,6 +71,21 @@ def _fetch_latest_release() -> Dict[str, Any]:
     return data
 
 
+def _fetch_releases() -> list:
+    request = urllib.request.Request(RELEASES_API, headers={
+        "Accept": "application/vnd.github+json", "User-Agent": "mac-mcp-update-check"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        data = json.loads(response.read(4_000_000))
+    if not isinstance(data, list):
+        raise ValueError("unexpected GitHub Releases answer")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _has_package(release: Dict[str, Any]) -> bool:
+    assets = release.get("assets") if isinstance(release.get("assets"), list) else []
+    return any(isinstance(asset, dict) and str(asset.get("name") or "").endswith(".pkg") for asset in assets)
+
+
 def package_update_payload(check_only: bool = True) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "ok": True,
@@ -91,10 +107,21 @@ def package_update_payload(check_only: bool = True) -> Dict[str, Any]:
         payload.update(ok=False, check_failed=True, message=_FAILED_MESSAGE, error=type(exc).__name__)
         return payload
     tag = str(release.get("tag_name") or "")
-    assets = release.get("assets") if isinstance(release.get("assets"), list) else []
-    has_package = any(isinstance(asset, dict) and str(asset.get("name") or "").endswith(".pkg") for asset in assets)
     latest = _checkpoint(tag)
-    if latest and has_package and latest > _checkpoint(installed):
+    if not (latest and _has_package(release)):
+        # The newest release has no .pkg (yet): an older one that does can still be newer than this
+        # install (#103). Drafts and pre-releases never count.
+        try:
+            candidates = [item for item in _fetch_releases() if not item.get("draft") and not item.get("prerelease")
+                          and _checkpoint(str(item.get("tag_name") or "")) and _has_package(item)]
+        except (OSError, ValueError) as exc:
+            payload.update(ok=False, check_failed=True, message=_FAILED_MESSAGE, error=type(exc).__name__)
+            return payload
+        if candidates:
+            release = max(candidates, key=lambda item: _checkpoint(str(item["tag_name"])))
+            tag = str(release.get("tag_name") or "")
+            latest = _checkpoint(tag)
+    if latest and _has_package(release) and latest > _checkpoint(installed):
         page = str(release.get("html_url") or "")
         payload.update(
             update_available=True,

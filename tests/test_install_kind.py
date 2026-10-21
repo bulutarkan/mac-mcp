@@ -23,8 +23,11 @@ class InstallKindTests(unittest.TestCase):
         # No test reaches GitHub; each one that needs a release answer sets it.
         self.fetch = patch.object(ik, "_fetch_latest_release", side_effect=OSError("offline in tests"))
         self.fetch.start()
+        self.listing = patch.object(ik, "_fetch_releases", return_value=[])
+        self.listing.start()
 
     def tearDown(self) -> None:
+        self.listing.stop()
         self.fetch.stop()
         self.env.stop()
         self.td.cleanup()
@@ -76,6 +79,31 @@ class InstallKindTests(unittest.TestCase):
                 payload = ik.package_update_payload()
             self.assertFalse(payload["update_available"])
             self.assertEqual(ik.RELEASES_URL, payload["download_url"])
+
+    def test_an_older_release_with_a_package_is_found_when_the_newest_has_none(self) -> None:
+        # #103: v2.3.0-r2 was published before its .pkg was attached; v2.3.0-r1 has one and is newer
+        # than what is installed, so it is the update rather than "up to date".
+        def item(tag, assets=("a.pkg",), **extra):
+            return {"tag_name": tag, "html_url": f"{ik.RELEASES_URL}/tag/{tag}",
+                    "assets": [{"name": name} for name in assets], **extra}
+
+        listing = [item("v2.3.0-r2", assets=()), item("v2.4.0", prerelease=True), item("v2.5.0", draft=True),
+                   item("v2.3.0-r1"), item("v2.2.0-r3")]
+        fetch, installed = self.answer("v2.3.0-r2", assets=())
+        with fetch, installed, patch.object(ik, "_fetch_releases", return_value=listing):
+            payload = ik.package_update_payload()
+        self.assertEqual((True, "v2.3.0-r1"), (payload["update_available"], payload["latest_release"]))
+        self.assertEqual(f"{ik.RELEASES_URL}/tag/v2.3.0-r1", payload["download_url"])
+        # Nothing with a package newer than the install: up to date, as before.
+        fetch, installed = self.answer("v2.3.0-r2", assets=(), installed="stable-2.3.0-r1")
+        with fetch, installed, patch.object(ik, "_fetch_releases", return_value=listing):
+            self.assertFalse(ik.package_update_payload()["update_available"])
+        # The list that could not be read is a failed check, not "up to date".
+        fetch, installed = self.answer("v2.3.0-r2", assets=())
+        with fetch, installed, patch.object(ik, "_fetch_releases", side_effect=OSError("offline")):
+            failed = ik.package_update_payload()
+        self.assertTrue(failed["check_failed"])
+        self.assertFalse(failed["update_available"])
 
     def test_only_this_repositorys_release_pages_are_opened(self) -> None:
         release = {"tag_name": "v9.0.0", "html_url": "https://example.com/evil", "assets": [{"name": "a.pkg"}]}
