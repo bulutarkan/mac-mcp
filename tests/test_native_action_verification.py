@@ -283,6 +283,31 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
                 {"role": "AXButton", "subrole": "", "title": "Continue"}, app_pid=4321, deadline=2.0)
         self.assertEqual(2.0, deadlines[0])
 
+    def test_a_target_that_only_resized_gets_one_settling_look_past_the_budget(self) -> None:
+        # The counter's press renamed it and narrowed it (78 -> 76 pt). Its geometry no longer
+        # matched the observation, a second look was needed, and at ~0.7 s a probe it never fit in
+        # the 1.2 s budget: the next press of the batch failed with ELEMENT_UNSTABLE.
+        observed = {"role": "AXButton", "subrole": "", "title": "Count: 0", "identifier": "counter",
+                    "identifier_unique": True, "position": {"x": 531, "y": 487, "width": 78, "height": 26}}
+        renamed = state(title="Count: 1", identifier="counter",
+                        position={"x": 531, "y": 487, "width": 76, "height": 26})
+        with patch.object(tools_ui, "_probe_native_action_state", return_value=(renamed, None)) as probe, \
+             patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 0.72, 1.5]), \
+             patch.object(tools_ui.time, "sleep"):
+            result = tools_ui._wait_for_native_readiness(
+                "Cursor Lab", {"type": "click", "element_id": "w1/10"}, observed, app_pid=4321)
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(2, probe.call_count)
+        # Only one such look: a target still moving after it times out as before.
+        moving = [state(position={"x": 100 + i, "y": 100, "width": 120, "height": 30}) for i in range(3)]
+        with patch.object(tools_ui, "_probe_native_action_state", side_effect=[(m, None) for m in moving]) as probe, \
+             patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 0.72, 1.5]), \
+             patch.object(tools_ui.time, "sleep"):
+            late = tools_ui._wait_for_native_readiness(
+                "Cursor Lab", {"type": "click", "element_id": "w1/10"},
+                {"role": "AXButton", "subrole": "", "title": "Continue"}, app_pid=4321)
+        self.assertEqual(("ELEMENT_UNSTABLE", 2), (late["reason_code"], probe.call_count))
+
     def test_effect_wait_accepts_delayed_state_change(self) -> None:
         before = state()
         after = state(sheet_count=1)

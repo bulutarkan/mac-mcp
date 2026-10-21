@@ -3786,6 +3786,7 @@ def _wait_for_native_readiness(
     stable_since: Optional[float] = None
     probe_started = started
     probe_s = 0.0
+    probe_deadline = first_probe_deadline
 
     def timed_out(now: float) -> Dict[str, Any]:
         return {
@@ -3800,7 +3801,7 @@ def _wait_for_native_readiness(
 
     while True:
         state, probe_error = _probe_native_action_state(
-            app, element_id, app_pid=app_pid, deadline=local_deadline if attempts else first_probe_deadline,
+            app, element_id, app_pid=app_pid, deadline=probe_deadline,
             label_child_limit=int((observed_node or {}).get("subtree_child_limit") or _NATIVE_SUBTREE_CHILD_LIMIT),
             # Labels settle the target's identity once; later polls only watch readiness.
             label_limit=len((observed_node or {}).get("subtree_labels") or ()) if attempts == 0 else 0,
@@ -3868,7 +3869,12 @@ def _wait_for_native_readiness(
             last_signature = None
 
         # Another look must fit in what is left; in a big window one probe takes most of a second.
-        if now + poll_s + probe_s > local_deadline:
+        # A ready target that only moved or resized since the observation (a button its own press
+        # renamed) gets the one look that settles it, past the budget if need be.
+        probe_deadline = (
+            first_probe_deadline if attempts == 1 and last_reason == "ELEMENT_UNSTABLE" else local_deadline
+        )
+        if now + poll_s + probe_s > probe_deadline:
             return timed_out(now)
         cancellable_sleep(poll_s)
         probe_started = now + poll_s
