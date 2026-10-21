@@ -113,16 +113,20 @@ def observed_identity_matches(state: Dict[str, Any], observed_node: Optional[Dic
         current = str(state.get(key) or "")
         if before and current and before != current:
             return False
+    # An app-assigned identifier names the control itself, whatever its position.
+    before_identifier = str(observed_node.get("identifier") or "")
+    current_identifier = str(state.get("identifier") or "")
+    if before_identifier and current_identifier and before_identifier != current_identifier:
+        return False
+    # Held by no other observed control, it outweighs a label the control changes itself
+    # ("Count: 0" -> "Count: 1" after a press); a shared one leaves the labels to decide.
+    if observed_node.get("identifier_unique") and before_identifier and before_identifier == current_identifier:
+        return True
     # Actionable labels are part of the conservative identity check. Empty/dynamic
     # labels are intentionally ignored to avoid rejecting legitimate unlabeled controls.
     before_title = str(observed_node.get("title") or "")
     current_title = str(state.get("title") or "")
     if before_title and current_title and before_title != current_title:
-        return False
-    # An app-assigned identifier names the control itself, whatever its position.
-    before_identifier = str(observed_node.get("identifier") or "")
-    current_identifier = str(state.get("identifier") or "")
-    if before_identifier and current_identifier and before_identifier != current_identifier:
         return False
     # Unlabeled controls are told apart by their description instead of a title.
     if not before_title and not current_title:

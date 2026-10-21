@@ -309,6 +309,71 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
         self.assertFalse(result["automatic_retry"])
         self.assertEqual(2, probe.call_count)
 
+    def test_a_press_that_changes_another_part_of_the_window_has_an_effect(self) -> None:
+        # A Calculator key changes the display and a list row a status line, not themselves: the
+        # target looked unchanged, so working presses were reported as ACTION_NO_EFFECT.
+        before = state()
+        with patch.object(tools_ui, "_probe_native_effect_state", return_value=(before, None)), \
+             patch.object(tools_ui, "_native_window_content_digest", return_value="after") as digest, \
+             patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 0.1, 0.15]), \
+             patch.object(tools_ui.time, "sleep"):
+            result = tools_ui._wait_for_native_effect(
+                "Calculator", {"type": "click", "element_id": "w1/1"}, before, app_pid=4321,
+                window_before="before")
+        self.assertTrue(result["effect_observed"])
+        self.assertEqual("window_content_changed", result["verification"])
+        digest.assert_called_once()
+        # The same window text is still no effect; without a native reading nothing changes either.
+        for now_digest in ("before", None):
+            with patch.object(tools_ui, "_probe_native_effect_state", return_value=(before, None)), \
+                 patch.object(tools_ui, "_native_window_content_digest", return_value=now_digest), \
+                 patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 0.1, 0.15, 0.7, 0.75]), \
+                 patch.object(tools_ui.time, "sleep"):
+                result = tools_ui._wait_for_native_effect(
+                    "Calculator", {"type": "click", "element_id": "w1/1", "verify_timeout_s": 0.55}, before,
+                    app_pid=4321, window_before="before")
+            self.assertEqual("ACTION_NO_EFFECT", result["reason_code"], now_digest)
+
+    def test_window_digest_follows_the_window_text(self) -> None:
+        nodes = [{"element_id": "w1/1", "role": "AXStaticText", "value": "12"},
+                 {"element_id": "w1/2", "role": "AXButton", "description": "8"}]
+
+        def digest(display: str):
+            shown = [{**nodes[0], "value": display}, nodes[1]]
+            with patch.object(tools_ui.ax_native, "observe", return_value=(True, "raw", "")), \
+                 patch.object(tools_ui, "_parse_observation", return_value=({}, shown)):
+                return tools_ui._native_window_content_digest("Calculator", "w1/2", app_pid=4321)
+
+        self.assertEqual(digest("12"), digest("12"))
+        self.assertNotEqual(digest("12"), digest("128"))
+        with patch.object(tools_ui.ax_native, "observe", return_value=None):
+            self.assertIsNone(tools_ui._native_window_content_digest("Calculator", "w1/2", app_pid=4321))
+        self.assertIsNone(tools_ui._native_window_content_digest("Calculator", "w1/2", app_pid=None))
+
+    def test_a_unique_identifier_outweighs_a_label_the_press_changed(self) -> None:
+        # Cursor Lab: "Count: 0" became "Count: 1" after the first press, so the second press of the
+        # same batch stopped with STALE_ELEMENT_PATH although the identifier still named that button.
+        stored = {"nodes": {
+            "w1/1": {"element_id": "w1/1", "parent_id": "w1", "role": "AXButton", "title": "Count: 0",
+                     "identifier": "counter"},
+            "w1/2": {"element_id": "w1/2", "parent_id": "w1", "role": "AXButton", "title": "Row 1"},
+        }}
+        observed = tools_ui._native_identity_node(stored, stored["nodes"]["w1/1"])
+        self.assertTrue(observed["identifier_unique"])
+        pressed = state(title="Count: 1", identifier="counter")
+        self.assertIsNone(readiness_reason(pressed, observed_node=observed))
+        self.assertEqual("STALE_ELEMENT_PATH",
+                         readiness_reason(state(title="Count: 1", identifier="other"), observed_node=observed))
+        # Rows sharing one identifier: the label still tells them apart.
+        shared = {"nodes": {
+            "w1/1": {"element_id": "w1/1", "parent_id": "w1", "role": "AXButton", "title": "Row 1", "identifier": "row"},
+            "w1/2": {"element_id": "w1/2", "parent_id": "w1", "role": "AXButton", "title": "Row 2", "identifier": "row"},
+        }}
+        row = tools_ui._native_identity_node(shared, shared["nodes"]["w1/1"])
+        self.assertNotIn("identifier_unique", row)
+        self.assertEqual("STALE_ELEMENT_PATH",
+                         readiness_reason(state(title="Row 2", identifier="row"), observed_node=row))
+
     def test_readiness_probe_is_side_effect_free(self) -> None:
         script = tools_ui._native_action_state_script("DemoApp", "w1/1", app_pid=4321)
         self.assertIn("AXElementBusy", script)
@@ -371,6 +436,34 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
         self.assertTrue(result["actions"][0]["effect_observed"])
         self.assertEqual("window_state_changed", result["actions"][0]["verification"])
         perform.assert_called_once()
+
+    def test_a_press_reads_the_window_before_it_and_hands_that_to_the_effect_check(self) -> None:
+        ready = {"ready": True, "state": state(), "stable_for_ms": 150, "attempts": 1}
+        effect = {"effect_observed": True, "verification": "window_content_changed", "attempts": 1,
+                  "duration_ms": 90}
+        order: list = []
+        with patch.object(tools_ui, "_resolve_action_native_target", return_value=(self.target, None)), \
+             patch.object(tools_ui, "_wait_for_native_readiness", return_value=ready), \
+             patch.object(tools_ui, "_native_window_content_digest",
+                          side_effect=lambda *a, **k: order.append("digest") or "before"), \
+             patch.object(tools_ui, "_perform_action",
+                          side_effect=lambda *a, **k: order.append("press") or (True, "semantic click completed")), \
+             patch.object(tools_ui, "_wait_for_native_effect", return_value=effect) as wait:
+            result = self._act({"type": "click", "element_id": "w1/1"})
+        self.assertEqual(["digest", "press"], order)
+        self.assertEqual("before", wait.call_args.kwargs["window_before"])
+        self.assertTrue(result["ok"])
+        self.assertEqual("window_content_changed", result["actions"][0]["verification"])
+        # Typing checks its own field: no window reading for it.
+        typed = {"ready": True, "state": state(role="AXTextField", value="a", character_count=1), "stable_for_ms": 150}
+        with patch.object(tools_ui, "_resolve_action_native_target", return_value=(self.target, None)), \
+             patch.object(tools_ui, "_wait_for_native_readiness", return_value=typed), \
+             patch.object(tools_ui, "_native_window_content_digest") as digest, \
+             patch.object(tools_ui, "_perform_action", return_value=(True, "text typed")), \
+             patch.object(tools_ui, "_wait_for_native_effect",
+                          return_value={"effect_observed": True, "verification": "text_state_changed"}):
+            self._act({"type": "type", "element_id": "w1/1", "text": "ab"})
+        digest.assert_not_called()
 
     def test_typing_requires_observable_text_change(self) -> None:
         ready = {

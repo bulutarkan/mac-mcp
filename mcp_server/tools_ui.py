@@ -3739,6 +3739,10 @@ def _native_identity_node(
     identity = dict(node)
     if node.get("identifier"):
         identity["identity_basis"] = _native_identity_basis(identity)
+        if not any(
+            other is not node and other.get("identifier") == node.get("identifier") for other in nodes.values()
+        ):
+            identity["identifier_unique"] = True
         return identity
     # Only a sibling that looks the same (role, subrole, title, description) could
     # take this path after a reorder; then the labels below decide.
@@ -4074,6 +4078,43 @@ def _probe_native_effect_state(
         return None, str(state["probe_error"])
     return state, None
 
+_EFFECT_WINDOW_NODE_BUDGET = 600
+
+
+def _native_window_content_digest(
+    app: str,
+    element_id: str,
+    *,
+    app_pid: Optional[int],
+    deadline: Optional[float] = None,
+) -> Optional[str]:
+    """A fingerprint of the target window's text, read natively in one pass.
+
+    A press often changes something other than the control pressed: a Calculator key its
+    display, a list row a status line. Comparing this before and after sees that. None when
+    the native observer is unavailable.
+    """
+    if app_pid is None:
+        return None
+    native = ax_native.observe(
+        app=app, app_pid=app_pid, window_index=_element_window_index(element_id) or 1,
+        max_depth=_MAX_OBSERVE_DEPTH, max_children=100, max_nodes=_EFFECT_WINDOW_NODE_BUDGET,
+        timeout_s=_operation_timeout(deadline, 1.5),
+    )
+    if native is None or not native[0]:
+        return None
+    _metadata, nodes = _parse_observation(native[1])
+    if not nodes:
+        return None
+    digest = hashlib.sha256()
+    for node in nodes:
+        for key in ("element_id", "role", "value", "title", "description"):
+            digest.update(str(node.get(key) or "")[:500].encode("utf-8", "replace"))
+            digest.update(b"\x1f")
+        digest.update(b"\x1e")
+    return digest.hexdigest()
+
+
 def _wait_for_native_effect(
     app: str,
     action: Dict[str, Any],
@@ -4081,6 +4122,7 @@ def _wait_for_native_effect(
     *,
     app_pid: Optional[int] = None,
     deadline: Optional[float] = None,
+    window_before: Optional[str] = None,
 ) -> Dict[str, Any]:
     element_id = _validate_element_id(action.get("element_id"))
     timeout_s = max(0.1, min(float(action.get("verify_timeout_s", _NATIVE_ACTION_VERIFY_TIMEOUT_S)), 2.0))
@@ -4111,6 +4153,18 @@ def _wait_for_native_effect(
                 }
         elif probe_error:
             last_error = probe_error
+
+        if window_before is not None:
+            window_now = _native_window_content_digest(app, element_id, app_pid=app_pid, deadline=deadline)
+            if window_now is not None and window_now != window_before:
+                return {
+                    "effect_observed": True,
+                    "verification": "window_content_changed",
+                    "attempts": attempts,
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "state": state,
+                }
+            now = time.perf_counter()
 
         if now >= local_deadline:
             if last_state is None and last_error:
@@ -5781,6 +5835,7 @@ def act_ui(
             dialog_details: Optional[Dict[str, Any]] = None
             handoff_details: Optional[Dict[str, Any]] = None
             scroll_before: Optional[Dict[str, Any]] = None
+            window_before: Optional[str] = None
             try:
                 if action_type == "handoff_mail_text":
                     if handoff_id:
@@ -5826,6 +5881,15 @@ def act_ui(
                         mark_handoff_consumed(handoff_id, consumer=f"mac_act:{action_type}")
                     if action_type == "scroll" and resolved_element_id is not None:
                         scroll_before = _probe_native_scroll_state(
+                            str(target.get("app") or ""), resolved_element_id,
+                            app_pid=int(target["pid"]) if target.get("pid") else None, deadline=deadline,
+                        )
+                    if (
+                        before_state is not None
+                        and _native_verification_required(action_type, resolved_element_id)
+                        and _native_action_effect_kind(action_type) == "activation"
+                    ):
+                        window_before = _native_window_content_digest(
                             str(target.get("app") or ""), resolved_element_id,
                             app_pid=int(target["pid"]) if target.get("pid") else None, deadline=deadline,
                         )
@@ -6001,6 +6065,7 @@ def act_ui(
                         before_state,
                         app_pid=int(target["pid"]) if target.get("pid") else None,
                         deadline=deadline,
+                        window_before=window_before,
                     )
                 except TimeoutError as exc:
                     verification = {
@@ -6017,7 +6082,11 @@ def act_ui(
                 if verification.get("duration_ms") is not None:
                     result["verification_duration_ms"] = verification.get("duration_ms")
                 verification_state = verification.get("state")
-                if verification.get("effect_observed") and isinstance(verification_state, dict):
+                if verification.get("verification") == "window_content_changed":
+                    # The change is elsewhere in the window: the delta must read the window again.
+                    delta_structural_refresh = True
+                    delta_refresh_reasons.append("window_content_effect")
+                elif verification.get("effect_observed") and isinstance(verification_state, dict):
                     if _effect_state_requires_structural_refresh(before_state, verification_state):
                         delta_structural_refresh = True
                         delta_refresh_reasons.append("structural_effect")
