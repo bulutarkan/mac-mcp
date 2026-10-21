@@ -164,6 +164,26 @@ done
 /usr/bin/plutil -lint "${READER}/Contents/Info.plist" >/dev/null
 /usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${READER}" >/dev/null
 
+# Mac MCP Photos (#45): the one app the owner lets see the Photos library; it lists albums, finds items by
+# their metadata and copies chosen originals, through PhotoKit, and never changes the library.
+PHOTOS_HELPER="${CONTENTS}/Helpers/Mac MCP Photos.app"
+mkdir -p "${PHOTOS_HELPER}/Contents/MacOS"
+xcrun swiftc -O -target "${ARCH}-apple-macos13.0" -module-name MacMCPPhotos -framework Photos \
+  "${SCRIPT_DIR}/PhotosReader/main.swift" -o "${PHOTOS_HELPER}/Contents/MacOS/MacMCPPhotos"
+/usr/bin/plutil -create xml1 "${PHOTOS_HELPER}/Contents/Info.plist"
+for pair in "CFBundleExecutable string MacMCPPhotos" "CFBundleIdentifier string ${APP_BUNDLE_ID}.photos" \
+            "CFBundleName string Mac MCP Photos" "CFBundlePackageType string APPL" \
+            "CFBundleShortVersionString string 1.0" "CFBundleVersion string 1" "LSUIElement bool YES" \
+            "LSMinimumSystemVersion string 13.0"; do
+  read -r key kind value <<<"${pair}"
+  /usr/bin/plutil -insert "${key}" -"${kind}" "${value}" "${PHOTOS_HELPER}/Contents/Info.plist"
+done
+/usr/bin/plutil -insert NSPhotoLibraryUsageDescription -string \
+  "Mac MCP finds photos by date, album and type and copies the ones you ask for. It never changes your library." \
+  "${PHOTOS_HELPER}/Contents/Info.plist"
+/usr/bin/plutil -lint "${PHOTOS_HELPER}/Contents/Info.plist" >/dev/null
+/usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${PHOTOS_HELPER}" >/dev/null
+
 if [[ ! -f "${ICON_SOURCE}" ]]; then
   printf 'App icon source is missing: %s\n' "${ICON_SOURCE}" >&2
   exit 1

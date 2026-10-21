@@ -365,7 +365,7 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
         "capabilities", "selection", "find_notes", "find_messages",
         "find_events", "list_documents", "list_panes", "list_reminders",
         "find_chats", "list_workspaces", "find_free_time", "find_contacts", "list_shortcuts", "plan_day",
-        "list_desktops", "read_messages", "search_messages",
+        "list_desktops", "read_messages", "search_messages", "list_albums", "find_photos",
     }
     # A shortcut runs whatever its actions do, like a command.
     if action == "run_shortcut":
@@ -388,7 +388,7 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     # Mail drafts are saved, never sent.
     if action in {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                   "create_reminder", "append_to_note", "update_reminder", "update_message",
-                  "create_contact", "update_contact", "schedule_reminders"}:
+                  "create_contact", "update_contact", "schedule_reminders", "export_photos"}:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
             destructive=False,

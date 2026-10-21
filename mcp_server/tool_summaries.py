@@ -82,8 +82,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "foreground-only input and risky clicks fail closed unless explicitly authorized."
     ),
     "mac_app": (
-        "Typed adapters: Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, System Settings, "
-        "Messages, Xcode, Mission Control; prefer them to UI control. Sends ask first. action=capabilities lists actions."
+        "Typed adapters: Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Photos, Preview, System "
+        "Settings, Messages, Xcode, Mission Control; use before UI control. Sends ask first. action=capabilities lists them."
     ),
     "computer_plan": (
         "One bounded macOS/browser plan in a call. Step: {id:'a', tool:'mac_app', arguments:{...}}; "

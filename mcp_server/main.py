@@ -1612,6 +1612,12 @@ def create_app():
             "organization, notes; the last word is the family name)|update_contact (item_id from find_contacts, or a "
             "query matching one person; title, email, phone, organization and/or notes: email or phone replaces the "
             "person's only one or adds the first, and with several it changes nothing and says so). "
+            "Photos (read through Mac MCP Photos; the owner allows it once in Privacy & Security › Photos, "
+            "PHOTOS_ACCESS_REQUIRED until then: do not work around it; the library is never changed): list_albums|"
+            "find_photos (date_from/date_to, optional album = id or name from list_albums, media_type photo or video, "
+            "favorite true/false, query = part of the file name; newest first; items say has_location, never where)|"
+            "export_photos (item_id = ids from find_photos, comma-separated, at most 50; optional path = folder, "
+            "default ~/Downloads/Mac MCP Photos/<time>; originals copied, each file read back with its sha256). "
             "Shortcuts: list_shortcuts (optional query)|run_shortcut (item_id from list_shortcuts or title = exact name, "
             "optional body as its text input; returns its text output). A shortcut can do anything its actions do, so "
             "run one only when asked; it needs running commands to be allowed (or the shortcut on the owner's list in "
@@ -1686,6 +1692,9 @@ def create_app():
         email: Optional[str] = None,
         phone: Optional[str] = None,
         organization: Optional[str] = None,
+        album: Optional[str] = None,
+        media_type: Optional[str] = None,
+        favorite: Optional[bool] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1735,6 +1744,9 @@ def create_app():
                 email=email,
                 phone=phone,
                 organization=organization,
+                album=album,
+                media_type=media_type,
+                favorite=favorite,
             ),
         )
 

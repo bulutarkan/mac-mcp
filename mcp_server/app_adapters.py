@@ -52,6 +52,8 @@ _APP_ALIASES = {
     "contacts": "Contacts",
     "address book": "Contacts",
     "shortcuts": "Shortcuts",
+    "photos": "Photos",
+    "photo library": "Photos",
     "mission control": "Mission Control",
     "desktops": "Mission Control",
     "desktop": "Mission Control",
@@ -72,6 +74,7 @@ _ACTIONS = {
     "Xcode": ("list_workspaces",),
     "Contacts": ("find_contacts", "create_contact", "update_contact", "undo"),
     "Shortcuts": ("list_shortcuts", "run_shortcut"),
+    "Photos": ("list_albums", "find_photos", "export_photos"),
     "Mission Control": ("list_desktops", "create_desktop", "remove_desktop", "open_on_desktop", "move_to_desktop"),
 }
 
@@ -93,13 +96,16 @@ _READ_ACTIONS = {
     "find_contacts",
     "list_shortcuts",
     "list_desktops",
+    "list_albums",
+    "find_photos",
 }
 
 # Change app data through the app's own scripting model; they never drive the UI,
 # so a person using the app's window does not block them.
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                        "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
-                       "update_message", "create_contact", "update_contact", "schedule_reminders", "undo"}
+                       "update_message", "create_contact", "update_contact", "schedule_reminders", "export_photos",
+                       "undo"}
 # A shortcut can do anything its actions do, so running one is gated like run_command: the shell
 # switch and the permission profile decide, as for any other command (no new approval prompt).
 _RUN_ACTIONS = {"run_shortcut"}
@@ -136,6 +142,18 @@ _SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
             "inspect_project": "first_party: list_workspaces (open projects, schemes, active scheme, targets)",
             "build_or_test": "run_command or start_background_job: xcodebuild build/test",
             "inspect_window": "generic_ax: mac_observe the project window and navigator",
+        },
+    },
+    "Photos": {
+        "aliases": ("photos", "photo library"),
+        "bundle_paths": ("/System/Applications/Photos.app",),
+        "native_api": "PhotoKit through Mac MCP Photos, which the owner allows once under Privacy & Security › Photos; "
+                      "the Photos app is not opened and the library is never changed",
+        "tasks": {
+            "find_photos": "first_party: list_albums and find_photos (date, album, photo or video, favourite, file "
+                           "name; locations are not shared)",
+            "export_photos": "first_party: export_photos copies chosen originals into a folder",
+            "edit_or_organize": "generic_ax: mac_observe and mac_act in the Photos window",
         },
     },
     "Slack": {
@@ -2238,6 +2256,46 @@ return outText'''
     }
 
 
+def _photos(action: str, *, item_id: Optional[str], query: Optional[str], path: Optional[str], date_from: Optional[str],
+            date_to: Optional[str], album: Optional[str], media_type: Optional[str], favorite: Optional[bool],
+            limit: int) -> Dict[str, Any]:
+    """The Photos library, read through Mac MCP Photos (#45); see photos_reader."""
+    from . import photos_reader, privacy_policy
+    from .policy import current_policy_context
+    from .policy_scope import path_is_within
+
+    try:
+        privacy_policy.check_app("Photos", "com.apple.Photos")
+    except privacy_policy.PrivacyBlocked as exc:
+        raise AppAdapterError(exc.code, str(exc.detail), retryable=False) from exc
+    try:
+        if action == "list_albums":
+            return photos_reader.list_albums(limit=limit)
+        if action == "find_photos":
+            return photos_reader.find_photos(date_from=date_from, date_to=date_to, album=album, media_type=media_type,
+                                             favorite=favorite, name=query, limit=limit)
+        folder = str(path or "").strip() or None
+        target = Path(folder).expanduser() if folder else photos_reader.default_export_folder()
+        scope = current_policy_context().scope
+        roots = scope.path_roots if scope is not None else None
+        if roots and not any(path_is_within(target, root) for root in roots):
+            raise AppAdapterError("SCOPE_PATH_DENIED", "That folder is outside the paths this agent may write.",
+                                  retryable=False)
+        return photos_reader.export_photos(str(item_id or "").split(","), str(target))
+    except photos_reader.PhotosError as exc:
+        raise AppAdapterError(exc.code, str(exc), **exc.extra) from exc
+
+
+def _photos_access() -> Dict[str, Any]:
+    """Whether Mac MCP Photos may see the library, asked without showing the owner anything."""
+    from . import photos_reader
+
+    try:
+        return photos_reader.access()
+    except Exception as exc:  # capabilities never fail on this
+        return {"state": "error", "message": type(exc).__name__}
+
+
 def _messages_read(action: str, *, item_id: Optional[str], query: Optional[str], limit: int,
                    cursor: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> Dict[str, Any]:
     """Message text from the Messages database, read-only (#261); see messages_reader."""
@@ -2504,6 +2562,9 @@ def mac_app(
     email: Optional[str] = None,
     phone: Optional[str] = None,
     organization: Optional[str] = None,
+    album: Optional[str] = None,
+    media_type: Optional[str] = None,
+    favorite: Optional[bool] = None,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -2533,6 +2594,7 @@ def mac_app(
             "ok": True,
             "actions": list(_ACTIONS[canonical]),
             **({"native_api": listed["native_api"], "tasks": dict(listed["tasks"])} if listed else {}),
+            **({"access": _photos_access()} if canonical == "Photos" else {}),
             "generic_fallback": {
                 "observe": "mac_observe",
                 "act": "mac_act",
@@ -2746,6 +2808,10 @@ def mac_app(
                 payload = _messages_find_chats(query, limit=bounded, timeout_s=timeout)
         elif canonical == "Xcode":
             payload = _xcode_list_workspaces(limit=bounded, timeout_s=timeout)
+        elif canonical == "Photos":
+            payload = _photos(normalized_action, item_id=item_id, query=query, path=path, date_from=date_from,
+                              date_to=date_to, album=album, media_type=media_type, favorite=favorite,
+                              limit=bounded)
         elif canonical == "System Settings":
             payload = (
                 _settings_list(limit=bounded, timeout_s=timeout)
