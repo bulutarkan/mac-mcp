@@ -10,6 +10,18 @@ struct SkillsSection: View {
     @MacMCPState private var problem: String?
     @MacMCPState private var notice: String?
     @MacMCPState private var rescanning = false
+    @MacMCPState private var filter = ""
+
+    /// A long list (tools' shared folders can hold dozens) narrows by name, description or source.
+    private var shown: [[String: Any]] {
+        let words = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !words.isEmpty else { return skills }
+        return skills.filter { skill in
+            ["name", "description", "source"].contains { key in
+                (skill[key] as? String ?? "").lowercased().contains(words)
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -34,7 +46,16 @@ struct SkillsSection: View {
             } else if skills.isEmpty {
                 Text("No skills were found.").font(.callout).foregroundStyle(.secondary)
             } else {
-                ForEach(skills.indices, id: \.self) { index in row(skills[index]) }
+                if skills.count > 8 {
+                    TextField("Filter \(skills.count) skills", text: $filter)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Filter skills")
+                }
+                let list = shown
+                ForEach(list.indices, id: \.self) { index in row(list[index]) }
+                if list.isEmpty {
+                    Text("No skill matches.").font(.callout).foregroundStyle(.secondary)
+                }
                 Text("A skill that is off is left out of Mac MCP's skill list and search. Its files and the tool that owns it are not changed.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
