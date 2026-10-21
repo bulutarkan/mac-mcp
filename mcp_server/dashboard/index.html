@@ -21,10 +21,10 @@
 </head>
 <body>
   <a class="skip-link" href="#activity">Skip to activity</a>
-  <div class="scroll-progress" aria-hidden="true"></div>
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-  <div class="shell">
-    <header class="topbar">
+  <div class="wallpaper" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+
+  <div class="app">
+    <nav class="sidebar glass" aria-label="Dashboard sections">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 64 64"><defs><linearGradient id="brandMark" x1="12" y1="7" x2="60" y2="55" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f1e7d2"/><stop offset="1" stop-color="#b9a98a"/></linearGradient></defs><path d="M14 49 V15 L32 33 L50 15 V29" fill="none" stroke="url(#brandMark)" stroke-width="5.6" stroke-linecap="round" stroke-linejoin="round"/><path transform="translate(50 33.2) rotate(22) scale(0.8) translate(-3.4 -3.2)" d="M3.4 3.2 23 11.2 14.6 14.4 11.3 23.2Z" fill="url(#brandMark)" stroke="url(#brandMark)" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -34,14 +34,37 @@
           <span class="brand-subtitle">Operations</span>
         </div>
       </div>
-      <div class="topbar-status">
+
+      <ul class="nav-list">
+        <li><a href="#overview" data-nav="overview" aria-current="true">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.6"/><rect x="11" y="3" width="6" height="6" rx="1.6"/><rect x="3" y="11" width="6" height="6" rx="1.6"/><rect x="11" y="11" width="6" height="6" rx="1.6"/></svg>
+          <span>Overview</span></a></li>
+        <li><a href="#activity" data-nav="activity">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10h3l2-5.5 4 11 2-5.5h4"/></svg>
+          <span>Activity</span></a></li>
+        <li><a href="#changes" data-nav="changes">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7.5A6 6 0 0 0 4.6 6.2M4.5 12.5a6 6 0 0 0 10.9 1.3"/><path d="M15.8 3.5v4h-4M4.2 16.5v-4h4"/></svg>
+          <span>Changes</span></a></li>
+        <li><a href="#runs" data-nav="runs">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2"/><path d="m8.4 7.1 4.4 2.9-4.4 2.9z"/></svg>
+          <span>Runs</span></a></li>
+        <li><a href="#catalog" data-nav="catalog">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2.8 6.4 3.4v7.6L10 17.2l-6.4-3.4V6.2z"/><path d="m3.8 6.3 6.2 3.4 6.2-3.4M10 9.7v7.4"/></svg>
+          <span>Catalog</span></a></li>
+        <li><a href="#agents" data-nav="agents">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7.4" cy="7" r="2.7"/><circle cx="13.6" cy="8.2" r="2.1"/><path d="M2.8 16c.5-2.7 2.3-4.2 4.6-4.2s4.1 1.5 4.6 4.2M12.2 12.4c2.3-.4 4.4.8 5 3.4"/></svg>
+          <span>Agents</span></a></li>
+      </ul>
+
+      <div class="sidebar-foot">
         <span class="local-pill">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.25 16 4.7v4.75c0 3.9-2.45 6.7-6 8.3-3.55-1.6-6-4.4-6-8.3V4.7z"/><path d="m7.2 9.8 1.75 1.75 3.85-4.1"/></svg>
           Local only
         </span>
-        <span class="connection is-connecting" id="connectionState"><span class="pulse-dot"></span><span id="connectionText">Connecting…</span></span>
-        <span class="topbar-meta" id="versionLabel">v—</span>
-        <span class="topbar-meta" id="uptimeLabel">Uptime —</span>
+        <div class="sidebar-meta">
+          <span class="topbar-meta" id="versionLabel">v—</span>
+          <span class="topbar-meta" id="uptimeLabel">Uptime —</span>
+        </div>
         <div class="theme-switch" role="group" aria-label="Appearance">
           <button type="button" data-theme-choice="light" aria-pressed="false" title="Light">
             <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.2v1.9M10 15.9v1.9M2.2 10h1.9M15.9 10h1.9M4.5 4.5l1.3 1.3M14.2 14.2l1.3 1.3M4.5 15.5l1.3-1.3M14.2 5.8l1.3-1.3"/></svg>
@@ -57,260 +80,279 @@
           </button>
         </div>
       </div>
-    </header>
+    </nav>
 
-    <main class="app-main">
-      <section class="overview" aria-labelledby="pageTitle">
-        <div class="overview-copy">
-          <div class="overview-heading">
-            <div>
-              <span class="eyebrow">Mac MCP · this Mac</span>
-              <h1 id="pageTitle">Operations, <em>live.</em></h1>
-              <p>Live execution telemetry, tool payloads and delegated agent state on this Mac.</p>
-            </div>
-            <span class="recording-chip"><i></i> Recording locally</span>
+    <div class="main">
+      <header class="toolbar">
+        <div class="toolbar-title">
+          <h1 id="pageTitle">Operations</h1>
+          <p>What AI apps are doing on this Mac, as it happens.</p>
+        </div>
+        <div class="toolbar-controls">
+          <span class="connection is-connecting" id="connectionState"><span class="pulse-dot"></span><span id="connectionText">Connecting…</span></span>
+          <div class="window-switch" role="group" aria-label="Time range">
+            <button type="button" data-hours="1">1h</button>
+            <button type="button" data-hours="24" class="is-active">24h</button>
+            <button type="button" data-hours="168">7d</button>
+          </div>
+          <div class="theme-switch theme-switch-compact" role="group" aria-label="Appearance">
+            <button type="button" data-theme-choice="light" aria-pressed="false" title="Light">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.2v1.9M10 15.9v1.9M2.2 10h1.9M15.9 10h1.9M4.5 4.5l1.3 1.3M14.2 14.2l1.3 1.3M4.5 15.5l1.3-1.3M14.2 5.8l1.3-1.3"/></svg>
+              <span class="sr-only">Light</span>
+            </button>
+            <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 12.4A6.6 6.6 0 0 1 7.6 3.8a6.6 6.6 0 1 0 8.6 8.6z"/></svg>
+              <span class="sr-only">Dark</span>
+            </button>
+            <button type="button" data-theme-choice="auto" aria-pressed="false" title="Device (follow macOS)">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.6" y="3.6" width="14.8" height="10" rx="1.8"/><path d="M7.2 17h5.6M10 13.6V17"/></svg>
+              <span class="sr-only">Device</span>
+            </button>
           </div>
         </div>
+      </header>
 
-        <div class="signal-monitor surface-card" aria-label="Live latency monitor">
-          <div class="monitor-head">
-            <div>
-              <span>Latency pulse</span>
-              <small>Newest completed calls</small>
-            </div>
-            <strong id="activeNow">0 active</strong>
+      <main class="content">
+        <section class="widgets" id="overview" aria-label="Telemetry summary">
+          <div class="metric-card glass">
+            <div class="metric-label"><span class="metric-dot metric-dot-blue"></span>Tool calls</div>
+            <strong id="metricCalls">—</strong>
+            <small id="metricWindow">last 24 hours</small>
           </div>
-          <svg id="activityTrace" viewBox="0 0 560 76" preserveAspectRatio="none" aria-hidden="true">
-            <defs>
-              <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" class="stop-trace-top"/>
-                <stop offset="1" class="stop-trace-bottom"/>
-              </linearGradient>
-              <linearGradient id="barGradientRecent" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" class="stop-recent-top"/>
-                <stop offset="1" class="stop-recent-bottom"/>
-              </linearGradient>
-            </defs>
-            <line x1="0" y1="58" x2="560" y2="58" class="trace-grid trace-baseline"/>
-            <line x1="0" y1="30" x2="560" y2="30" class="trace-grid"/>
-            <g id="traceBars"></g>
-          </svg>
-          <div class="monitor-foot">
-            <span id="lastTool">Waiting for a tool call</span>
-            <span id="lastLatency">—</span>
+          <div class="metric-card glass">
+            <div class="metric-label"><span class="metric-dot metric-dot-green"></span>Success</div>
+            <strong id="metricSuccess">—</strong>
+            <small id="metricErrors">waiting for data</small>
           </div>
-        </div>
-      </section>
-
-      <section class="health-row" data-reveal id="healthRow" aria-label="System health and attention">
-        <div class="health-strip surface-card" aria-label="System health">
-          <div class="health-chip" id="healthServer" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Server</span><strong>—</strong></div>
-          <div class="health-chip" id="healthTelemetry" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Telemetry</span><strong>—</strong></div>
-          <div class="health-chip" id="healthProfile" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Permissions</span><strong>—</strong></div>
-          <div class="health-chip" id="healthApproval" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Server approval</span><strong>—</strong></div>
-          <div class="health-chip" id="healthCompanion" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Chrome companion</span><strong>—</strong></div>
-          <div class="health-chip" id="healthRecord" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Security record</span><strong>—</strong></div>
-        </div>
-        <div class="attention-card surface-card" aria-labelledby="attentionTitle">
-          <div class="rail-title">
-            <div>
-              <h2 id="attentionTitle">Needs your attention</h2>
-              <p id="attentionHint">Requests are answered in the Mac MCP Allow Once / Block prompt on this Mac.</p>
-            </div>
-            <span id="attentionCount">—</span>
+          <div class="metric-card glass">
+            <div class="metric-label"><span class="metric-dot metric-dot-slate"></span>Average latency</div>
+            <strong id="metricAverage">—</strong>
+            <small>completed calls</small>
           </div>
-          <div id="attentionList" class="attention-list" role="status" aria-live="polite"><div class="no-agents">Checking…</div></div>
-        </div>
-      </section>
-
-      <section class="metric-grid" aria-label="Telemetry summary">
-        <div data-reveal class="metric-card surface-card">
-          <div class="metric-label"><span class="metric-dot metric-dot-blue"></span>Tool calls</div>
-          <strong id="metricCalls">—</strong>
-          <small id="metricWindow">last 24 hours</small>
-        </div>
-        <div data-reveal class="metric-card surface-card">
-          <div class="metric-label"><span class="metric-dot metric-dot-green"></span>Success</div>
-          <strong id="metricSuccess">—</strong>
-          <small id="metricErrors">waiting for data</small>
-        </div>
-        <div data-reveal class="metric-card surface-card">
-          <div class="metric-label"><span class="metric-dot metric-dot-slate"></span>Average latency</div>
-          <strong id="metricAverage">—</strong>
-          <small>completed calls</small>
-        </div>
-        <div data-reveal class="metric-card metric-card-emphasis surface-card">
-          <div class="metric-label"><span class="metric-dot metric-dot-amber"></span>P95 latency</div>
-          <strong id="metricP95">—</strong>
-          <small>slow-path signal</small>
-        </div>
-      </section>
-
-      <section class="workspace">
-        <article class="activity-panel surface-card" data-reveal id="activity">
-          <div class="panel-head">
-            <div>
-              <h2>Tool activity</h2>
-              <p>Live calls stay pinned. Completed calls appear newest first.</p>
-            </div>
-            <div class="window-switch" role="group" aria-label="Time range">
-              <button type="button" data-hours="1">1h</button>
-              <button type="button" data-hours="24" class="is-active">24h</button>
-              <button type="button" data-hours="168">7d</button>
-            </div>
+          <div class="metric-card metric-card-emphasis glass">
+            <div class="metric-label"><span class="metric-dot metric-dot-amber"></span>P95 latency</div>
+            <strong id="metricP95">—</strong>
+            <small>slow-path signal</small>
           </div>
 
-          <section class="active-zone is-empty" aria-label="Active tool calls">
-            <div class="active-zone-head">
-              <div><span class="live-indicator"></span><strong>Active calls</strong></div>
-              <span id="activeStripCount">0 running</span>
-            </div>
-            <div id="activeStrip" class="active-strip">
-              <div class="active-empty">No tools are running right now.</div>
-            </div>
-          </section>
-
-          <div class="filters">
-            <label class="search-box">
-              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.8" cy="8.8" r="5.4"/><path d="m12.8 12.8 4 4"/></svg>
-              <span class="sr-only">Filter by tool name</span>
-              <input id="toolFilter" type="search" placeholder="Filter tools" autocomplete="off">
-            </label>
-            <label>
-              <span class="sr-only">Source</span>
-              <select id="sourceFilter">
-                <option value="all">All sources</option>
-                <option value="mcp">MCP</option>
-                <option value="rest">REST</option>
-              </select>
-            </label>
-            <label>
-              <span class="sr-only">Status</span>
-              <select id="statusFilter">
-                <option value="all">All statuses</option>
-                <option value="success">Success</option>
-                <option value="error">Error</option>
-              </select>
-            </label>
-          </div>
-
-          <div class="activity-table">
-            <div class="activity-header" aria-hidden="true">
-              <span>Time</span>
-              <span>Tool</span>
-              <span>Source</span>
-              <span>Duration</span>
-              <span>Status</span>
-            </div>
-            <ul id="eventRows" class="event-rows" aria-label="Tool calls, newest first"></ul>
-            <div class="events-more">
-              <span id="events-more-note"></span>
-              <button id="events-more" type="button" hidden>Load older calls</button>
-            </div>
-            <div id="activityAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
-            <div id="emptyState" class="empty-state" hidden>
-              <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 14h32M8 24h21M8 34h14"/><circle cx="36" cy="31" r="7"/></svg>
-              <strong>No calls in this view</strong>
-              <span>Change the filters or run a Mac MCP tool to create a signal.</span>
-            </div>
-          </div>
-        </article>
-
-        <aside class="right-rail" aria-label="Operational context">
-          <section data-reveal class="rail-card changes-card surface-card" aria-labelledby="changesTitle">
-            <div class="rail-title changes-title">
+          <div class="signal-monitor glass" aria-label="Live latency monitor">
+            <div class="monitor-head">
               <div>
-                <h2 id="changesTitle">What Changed on My Mac</h2>
-                <p>Sanitized action receipts for the latest task.</p>
-                <small class="freshness" id="changesFreshness" hidden></small>
+                <span>Latency pulse</span>
+                <small>Newest completed calls</small>
               </div>
-              <span id="changeCount">—</span>
+              <strong id="activeNow">0 active</strong>
             </div>
-            <div id="changeTaskSwitch" class="change-task-switch" aria-label="Recent task change sets"></div>
-            <div id="changeHeadline" class="change-headline">No Mac changes recorded.</div>
-            <div id="changeList" class="change-list">
-              <div class="no-agents">File, app, browser, command and external changes will appear here.</div>
+            <svg id="activityTrace" viewBox="0 6 560 54" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" class="stop-trace-top"/>
+                  <stop offset="1" class="stop-trace-bottom"/>
+                </linearGradient>
+                <linearGradient id="barGradientRecent" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" class="stop-recent-top"/>
+                  <stop offset="1" class="stop-recent-bottom"/>
+                </linearGradient>
+              </defs>
+              <line x1="0" y1="58" x2="560" y2="58" class="trace-grid trace-baseline"/>
+              <line x1="0" y1="30" x2="560" y2="30" class="trace-grid"/>
+              <g id="traceBars"></g>
+            </svg>
+            <div class="monitor-foot">
+              <span id="lastTool">Waiting for a tool call</span>
+              <span id="lastLatency">—</span>
             </div>
+          </div>
+        </section>
 
-            <div class="transaction-divider" aria-hidden="true"></div>
-            <div class="transaction-head">
-              <div>
-                <h3>Transaction history</h3>
-                <p>Reversible filesystem receipts only. Paths and file contents stay private.</p>
-              </div>
-              <span id="transactionCount">0</span>
-            </div>
-            <div id="transactionMessage" class="transaction-message" role="status" aria-live="polite"></div>
-            <div id="transactionList" class="transaction-list">
-              <div class="no-agents">No reversible transaction receipts yet.</div>
-            </div>
-            <div class="transaction-pager" aria-label="Transaction history pagination">
-              <button id="transactionNewer" type="button" disabled>Newer</button>
-              <span id="transactionPage">—</span>
-              <button id="transactionOlder" type="button" disabled>Older</button>
-            </div>
-          </section>
-
-          <section data-reveal class="rail-card runs-card surface-card" aria-labelledby="runsTitle">
+        <section class="health-row" id="healthRow" aria-label="System health and attention">
+          <div class="health-strip glass" aria-label="System health">
+            <div class="health-chip" id="healthServer" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Server</span><strong>—</strong></div>
+            <div class="health-chip" id="healthTelemetry" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Telemetry</span><strong>—</strong></div>
+            <div class="health-chip" id="healthProfile" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Permissions</span><strong>—</strong></div>
+            <div class="health-chip" id="healthApproval" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Server approval</span><strong>—</strong></div>
+            <div class="health-chip" id="healthCompanion" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Chrome companion</span><strong>—</strong></div>
+            <div class="health-chip" id="healthRecord" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Security record</span><strong>—</strong></div>
+          </div>
+          <div class="attention-card glass" aria-labelledby="attentionTitle">
             <div class="rail-title">
               <div>
-                <h2 id="runsTitle">Recipe &amp; plan runs</h2>
-                <p>Each run's ordered steps, outcomes, approvals and opted-in screenshots.</p>
+                <h2 id="attentionTitle">Needs your attention</h2>
+                <p id="attentionHint">Requests are answered in the Mac MCP Allow Once / Block prompt on this Mac.</p>
               </div>
-              <span id="runCount">—</span>
+              <span id="attentionCount">—</span>
             </div>
-            <div class="runs-settings">
-              <label><input id="runEvidenceCapture" type="checkbox"> Keep checkpoint screenshots</label>
-              <label>Keep for
-                <select id="runEvidenceRetention" aria-label="Keep run records and screenshots for"></select>
+            <div id="attentionList" class="attention-list" role="status" aria-live="polite"><div class="no-agents">Checking…</div></div>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <article class="activity-panel glass" id="activity">
+            <div class="panel-head">
+              <div>
+                <h2>Tool activity</h2>
+                <p>Live calls stay pinned. Completed calls appear newest first.</p>
+              </div>
+            </div>
+
+            <section class="active-zone is-empty" aria-label="Active tool calls">
+              <div class="active-zone-head">
+                <div><span class="live-indicator"></span><strong>Active calls</strong></div>
+                <span id="activeStripCount">0 running</span>
+              </div>
+              <div id="activeStrip" class="active-strip">
+                <div class="active-empty">No tools are running right now.</div>
+              </div>
+            </section>
+
+            <div class="filters">
+              <label class="search-box">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.8" cy="8.8" r="5.4"/><path d="m12.8 12.8 4 4"/></svg>
+                <span class="sr-only">Filter by tool name</span>
+                <input id="toolFilter" type="search" placeholder="Filter tools" autocomplete="off">
+              </label>
+              <label>
+                <span class="sr-only">Source</span>
+                <select id="sourceFilter">
+                  <option value="all">All sources</option>
+                  <option value="mcp">MCP</option>
+                  <option value="rest">REST</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">Status</span>
+                <select id="statusFilter">
+                  <option value="all">All statuses</option>
+                  <option value="success">Success</option>
+                  <option value="error">Error</option>
+                </select>
               </label>
             </div>
-            <ul id="runList" class="run-list" aria-label="Recent runs, newest first">
-              <li class="no-agents">computer_plan and recipe runs will appear here.</li>
-            </ul>
-          </section>
 
-          <section data-reveal class="rail-card catalog-card surface-card" aria-labelledby="catalogTitle">
-            <div class="rail-title">
-              <div>
-                <h2 id="catalogTitle">Skill &amp; recipe catalog</h2>
-                <p>Signed packs. Review what a pack can do before you install it.</p>
+            <div class="activity-table">
+              <div class="activity-header" aria-hidden="true">
+                <span>Time</span>
+                <span>Tool</span>
+                <span>Source</span>
+                <span>Duration</span>
+                <span>Status</span>
               </div>
-              <span id="catalogCount">—</span>
-            </div>
-            <ul id="catalogList" class="run-list" aria-label="Catalog packs">
-              <li class="no-agents">Loading the signed catalog…</li>
-            </ul>
-          </section>
-
-          <section data-reveal class="rail-card hot-tools-card surface-card">
-            <div class="rail-title">
-              <div>
-                <h2>Hot tools</h2>
-                <p>Most frequently used in this window.</p>
+              <ul id="eventRows" class="event-rows" aria-label="Tool calls, newest first"></ul>
+              <div class="events-more">
+                <span id="events-more-note"></span>
+                <button id="events-more" type="button" hidden>Load older calls</button>
               </div>
-              <span id="sourceMix">—</span>
-            </div>
-            <div id="topTools" class="top-tools"></div>
-          </section>
-
-          <section data-reveal class="rail-card agents-section surface-card">
-            <div class="rail-title agents-title">
-              <div>
-                <h2>Delegated agents</h2>
-                <p>Active first, then the most recent workers.</p>
-                <small class="freshness" id="agentsFreshness" hidden></small>
+              <div id="activityAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+              <div id="emptyState" class="empty-state" hidden>
+                <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 14h32M8 24h21M8 34h14"/><circle cx="36" cy="31" r="7"/></svg>
+                <strong>No calls in this view</strong>
+                <span>Change the filters or run a Mac MCP tool to create a signal.</span>
               </div>
-              <span id="agentCount">—</span>
             </div>
-            <div id="agentList" class="agent-list"></div>
-          </section>
+          </article>
 
+          <aside class="right-rail" aria-label="Operational context">
+            <section class="rail-card changes-card glass" id="changes" aria-labelledby="changesTitle">
+              <div class="rail-title changes-title">
+                <div>
+                  <h2 id="changesTitle">What Changed on My Mac</h2>
+                  <p>Sanitized action receipts for the latest task.</p>
+                  <small class="freshness" id="changesFreshness" hidden></small>
+                </div>
+                <span id="changeCount">—</span>
+              </div>
+              <div id="changeTaskSwitch" class="change-task-switch" aria-label="Recent task change sets"></div>
+              <div id="changeHeadline" class="change-headline">No Mac changes recorded.</div>
+              <div id="changeList" class="change-list">
+                <div class="no-agents">File, app, browser, command and external changes will appear here.</div>
+              </div>
 
-        </aside>
-      </section>
-    </main>
+              <div class="transaction-divider" aria-hidden="true"></div>
+              <div class="transaction-head">
+                <div>
+                  <h3>Transaction history</h3>
+                  <p>Reversible filesystem receipts only. Paths and file contents stay private.</p>
+                </div>
+                <span id="transactionCount">0</span>
+              </div>
+              <div id="transactionMessage" class="transaction-message" role="status" aria-live="polite"></div>
+              <div id="transactionList" class="transaction-list">
+                <div class="no-agents">No reversible transaction receipts yet.</div>
+              </div>
+              <div class="transaction-pager" aria-label="Transaction history pagination">
+                <button id="transactionNewer" type="button" disabled>Newer</button>
+                <span id="transactionPage">—</span>
+                <button id="transactionOlder" type="button" disabled>Older</button>
+              </div>
+            </section>
+
+            <section class="rail-card runs-card glass" id="runs" aria-labelledby="runsTitle">
+              <div class="rail-title">
+                <div>
+                  <h2 id="runsTitle">Recipe &amp; plan runs</h2>
+                  <p>Each run's ordered steps, outcomes, approvals and opted-in screenshots.</p>
+                </div>
+                <span id="runCount">—</span>
+              </div>
+              <div class="runs-settings">
+                <label><input id="runEvidenceCapture" type="checkbox"> Keep checkpoint screenshots</label>
+                <label>Keep for
+                  <select id="runEvidenceRetention" aria-label="Keep run records and screenshots for"></select>
+                </label>
+              </div>
+              <ul id="runList" class="run-list" aria-label="Recent runs, newest first">
+                <li class="no-agents">computer_plan and recipe runs will appear here.</li>
+              </ul>
+            </section>
+
+            <section class="rail-card catalog-card glass" id="catalog" aria-labelledby="catalogTitle">
+              <div class="rail-title">
+                <div>
+                  <h2 id="catalogTitle">Skill &amp; recipe catalog</h2>
+                  <p>Signed packs. Review what a pack can do before you install it.</p>
+                </div>
+                <span id="catalogCount">—</span>
+              </div>
+              <ul id="catalogList" class="run-list" aria-label="Catalog packs">
+                <li class="no-agents">Loading the signed catalog…</li>
+              </ul>
+            </section>
+
+            <section class="rail-card hot-tools-card glass">
+              <div class="rail-title">
+                <div>
+                  <h2>Hot tools</h2>
+                  <p>Most frequently used in this window.</p>
+                </div>
+                <span id="sourceMix">—</span>
+              </div>
+              <div id="topTools" class="top-tools"></div>
+            </section>
+
+            <section class="rail-card agents-section glass" id="agents">
+              <div class="rail-title agents-title">
+                <div>
+                  <h2>Delegated agents</h2>
+                  <p>Active first, then the most recent workers.</p>
+                  <small class="freshness" id="agentsFreshness" hidden></small>
+                </div>
+                <span id="agentCount">—</span>
+              </div>
+              <div id="agentList" class="agent-list"></div>
+            </section>
+          </aside>
+        </section>
+      </main>
+    </div>
   </div>
+
+  <nav class="tabbar glass" aria-label="Dashboard sections">
+    <a href="#overview" data-nav="overview" aria-current="true"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.6"/><rect x="11" y="3" width="6" height="6" rx="1.6"/><rect x="3" y="11" width="6" height="6" rx="1.6"/><rect x="11" y="11" width="6" height="6" rx="1.6"/></svg><span>Overview</span></a>
+    <a href="#activity" data-nav="activity"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10h3l2-5.5 4 11 2-5.5h4"/></svg><span>Activity</span></a>
+    <a href="#changes" data-nav="changes"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7.5A6 6 0 0 0 4.6 6.2M4.5 12.5a6 6 0 0 0 10.9 1.3"/><path d="M15.8 3.5v4h-4M4.2 16.5v-4h4"/></svg><span>Changes</span></a>
+    <a href="#runs" data-nav="runs"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2"/><path d="m8.4 7.1 4.4 2.9-4.4 2.9z"/></svg><span>Runs</span></a>
+    <a href="#agents" data-nav="agents"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7.4" cy="7" r="2.7"/><circle cx="13.6" cy="8.2" r="2.1"/><path d="M2.8 16c.5-2.7 2.3-4.2 4.6-4.2s4.1 1.5 4.6 4.2M12.2 12.4c2.3-.4 4.4.8 5 3.4"/></svg><span>Agents</span></a>
+  </nav>
 
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
   <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="drawerTitle">

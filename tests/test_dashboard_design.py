@@ -1,5 +1,5 @@
-"""The dashboard's look: Light, Dark or Device themes, motion that respects Reduce Motion, and
-token-based colours so both themes stay whole.
+"""The dashboard's look: a macOS window of glass over a wallpaper, with Light, Dark or Device themes,
+a sidebar (a tab bar on phones), motion that respects Reduce Motion, and token colours for both themes.
 """
 from __future__ import annotations
 
@@ -33,25 +33,45 @@ class ThemeTests(unittest.TestCase):
         self.assertIn('systemLight.addEventListener("change"', JS)
         self.assertIn("!document.startViewTransition || reducedMotion.matches", JS)
 
-    def test_light_theme_redefines_the_colours(self) -> None:
+    def test_light_theme_redefines_the_glass_and_labels(self) -> None:
         light = re.search(r':root\[data-theme="light"\] \{(.*?)\n\}', CSS, re.S).group(1)
-        for token in ("--text", "--muted", "--surface", "--line", "--canvas", "--card-top", "--code-bg", "--drawer", "color-scheme: light"):
+        for token in ("--wall-base", "--label", "--label-3", "--glass", "--glass-strong", "--fill", "--separator",
+                      "--tint", "--good-text", "--bad-text", "--well", "color-scheme: light"):
             self.assertIn(token, light)
 
 
-class MotionTests(unittest.TestCase):
-    def test_reveals_are_shown_without_motion(self) -> None:
-        reduced = CSS[CSS.index("@media (prefers-reduced-motion: reduce)"):]
-        self.assertIn("[data-reveal] { opacity: 1;", reduced)
-        self.assertIn('revealTargets.forEach((el) => el.classList.add("is-in"))', JS)
+class WindowTests(unittest.TestCase):
+    def test_sidebar_and_tab_bar_point_at_real_sections(self) -> None:
+        for nav in ('<nav class="sidebar glass"', '<nav class="tabbar glass"'):
+            self.assertIn(nav, HTML)
+        for section in set(re.findall(r'data-nav="([a-z]+)"', HTML)):
+            self.assertIn(f'id="{section}"', HTML)
+        self.assertIn('link.setAttribute("aria-current", "true")', JS)
 
-    def test_scroll_linked_css_has_a_fallback(self) -> None:
-        self.assertIn("@supports (animation-timeline: scroll())", CSS)
-        self.assertIn("if (!scrollLinkedCSS && scrollProgress)", JS)
+    def test_glass_has_the_safari_prefix(self) -> None:
+        glass = re.search(r"\n\.glass \{(.*?)\n\}", CSS, re.S).group(1)
+        self.assertIn("-webkit-backdrop-filter", glass)
+        self.assertIn("backdrop-filter", glass)
+
+    def test_no_fonts_or_scripts_from_the_network(self) -> None:
+        self.assertNotRegex(HTML + CSS, r"https?://(?!www\.w3\.org/2000/svg)")
+
+
+class MotionTests(unittest.TestCase):
+    def test_reduced_motion_stops_everything(self) -> None:
+        reduced = CSS[CSS.index("@media (prefers-reduced-motion: reduce)"):]
+        self.assertIn("animation-duration: .001ms", reduced)
+        self.assertIn(".wallpaper i { animation: none; }", reduced)
+
+    def test_no_scroll_reveals_hide_content(self) -> None:
+        self.assertNotIn("data-reveal", HTML + CSS + JS)
 
     def test_metrics_still_start_empty_and_end_on_the_exact_text(self) -> None:
         self.assertIn('<strong id="metricCalls">—</strong>', HTML)
         self.assertIn("t < 1 ? format.format(from.value + (to.value - from.value) * eased) + to.unit : text", JS)
+
+    def test_focus_returns_to_the_row_when_the_opener_was_the_page(self) -> None:
+        self.assertIn("state.restoreFocus !== document.body", JS)
 
 
 if __name__ == "__main__":

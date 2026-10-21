@@ -136,50 +136,27 @@
   });
   renderThemeSwitch();
 
-  // Sections rise in as they scroll into view; siblings follow one another.
-  const revealTargets = Array.from(document.querySelectorAll("[data-reveal]"));
-  if ("IntersectionObserver" in window && !reducedMotion.matches) {
-    const revealer = new IntersectionObserver((entries) => entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      entry.target.classList.add("is-in");
-      revealer.unobserve(entry.target);
-    }), {rootMargin: "0px 0px -4% 0px", threshold: 0.06});
-    revealTargets.forEach((el) => {
-      const order = Array.from(el.parentElement.children).filter((item) => item.hasAttribute("data-reveal")).indexOf(el);
-      el.style.setProperty("--reveal-delay", `${Math.min(order, 5) * 70}ms`);
-      revealer.observe(el);
+  // The sidebar and the phone tab bar mark the section in view: the last one whose top has passed
+  // the upper third of the window (the activity panel is sticky, so its top never leaves).
+  const navLinks = Array.from(document.querySelectorAll("[data-nav]"));
+  const navSections = [...new Set(navLinks.map((link) => link.dataset.nav))]
+    .map((id) => document.getElementById(id)).filter(Boolean);
+  let navFrame = 0;
+  function markSection() {
+    navFrame = 0;
+    const line = window.innerHeight * 0.32;
+    const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+    let current = navSections[0];
+    for (const section of navSections) if (section.getBoundingClientRect().top <= line) current = section;
+    if (atEnd && window.scrollY > 0) current = navSections[navSections.length - 1];
+    navLinks.forEach((link) => {
+      if (link.dataset.nav === current?.id) link.setAttribute("aria-current", "true");
+      else link.removeAttribute("aria-current");
     });
-  } else {
-    revealTargets.forEach((el) => el.classList.add("is-in"));
   }
-
-  // The top bar firms up once the page scrolls; the progress line is drawn here where CSS cannot.
-  const topbar = document.querySelector(".topbar");
-  const scrollProgress = document.querySelector(".scroll-progress");
-  const scrollLinkedCSS = Boolean(window.CSS && CSS.supports("animation-timeline: scroll()"));
-  let scrollFrame = 0;
-  function onScroll() {
-    scrollFrame = 0;
-    const y = window.scrollY;
-    topbar?.classList.toggle("is-scrolled", y > 8);
-    if (!scrollLinkedCSS && scrollProgress) {
-      const max = document.documentElement.scrollHeight - window.innerHeight;
-      scrollProgress.style.transform = `scaleX(${max > 0 ? Math.min(1, y / max) : 0})`;
-    }
-  }
-  window.addEventListener("scroll", () => { if (!scrollFrame) scrollFrame = window.requestAnimationFrame(onScroll); }, {passive: true});
-  onScroll();
-
-  // A soft light follows the pointer across the card under it.
-  if (window.matchMedia("(hover: hover)").matches) {
-    document.addEventListener("pointermove", (event) => {
-      const card = event.target instanceof Element ? event.target.closest(".surface-card") : null;
-      if (!card) return;
-      const box = card.getBoundingClientRect();
-      card.style.setProperty("--mx", `${event.clientX - box.left}px`);
-      card.style.setProperty("--my", `${event.clientY - box.top}px`);
-    }, {passive: true});
-  }
+  window.addEventListener("scroll", () => { if (!navFrame) navFrame = window.requestAnimationFrame(markSection); }, {passive: true});
+  window.addEventListener("resize", markSection);
+  markSection();
 
   // Metric values count to their new number; a change of unit just ticks in.
   function parseMetric(text) {
@@ -1088,7 +1065,9 @@
     // Agent cards re-render every few seconds; find the same agent's Activity button again.
     const agentButton = state.timelineAgent
       ? els.agentList.querySelector(`[data-agent-activity="${CSS.escape(state.timelineAgent)}"]`) : null;
-    const target = state.restoreFocus && state.restoreFocus.isConnected ? state.restoreFocus : (selectedRow || agentButton);
+    // Safari does not focus a clicked button, so the opener can be <body>; then the row or agent button is the target.
+    const opener = state.restoreFocus && state.restoreFocus.isConnected && state.restoreFocus !== document.body ? state.restoreFocus : null;
+    const target = opener || selectedRow || agentButton;
     if (target && typeof target.focus === "function") target.focus();
     state.selected = null;
     state.timelineAgent = null;

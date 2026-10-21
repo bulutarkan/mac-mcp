@@ -161,9 +161,11 @@ class ChangeSummaryTests(unittest.TestCase):
         self.assertIn("renderChanges", js)
         self.assertIn("scheduleChangesRefresh", js)
         self.assertIn(".changes-card", css)
-        # The page scrolls (the activity panel stays in view), so the rail keeps its card order but no scroll of its own.
-        self.assertRegex(css, r"\.right-rail\s*\{[^}]*grid-template-rows:\s*auto\s+max-content\s+max-content\s+146px\s+max-content;[^}]*\}")
+        # The page scrolls with the activity panel held in view; the side column stacks its cards, changes first.
+        self.assertRegex(css, r"\.right-rail\s*\{[^}]*display:\s*grid;[^}]*\}")
         self.assertRegex(css, r"\.activity-panel\s*\{[^}]*position:\s*sticky;")
+        rail = html[html.index('<aside class="right-rail"'):]
+        self.assertLess(rail.index('id="changesTitle"'), rail.index('id="runsTitle"'))
 
     def test_observed_tool_call_persists_public_session_id(self) -> None:
         async def run() -> None:
