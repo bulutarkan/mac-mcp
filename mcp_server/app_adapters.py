@@ -62,7 +62,8 @@ _ACTIONS = {
     "Finder": ("selection", "select_file"),
     "Notes": ("find_notes", "open_note", "create_note", "append_to_note", "update_note", "undo"),
     "Mail": ("find_messages", "open_message", "create_draft", "send_mail", "update_message", "undo"),
-    "Calendar": ("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event", "undo"),
+    "Calendar": ("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event",
+                 "schedule_reminders", "undo"),
     "Reminders": ("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder",
                   "undo"),
     "Preview": ("list_documents", "open_document"),
@@ -98,7 +99,7 @@ _READ_ACTIONS = {
 # so a person using the app's window does not block them.
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                        "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
-                       "update_message", "create_contact", "update_contact", "undo"}
+                       "update_message", "create_contact", "update_contact", "schedule_reminders", "undo"}
 # A shortcut can do anything its actions do, so running one is gated like run_command: the shell
 # switch and the permission profile decide, as for any other command (no new approval prompt).
 _RUN_ACTIONS = {"run_shortcut"}
@@ -1172,6 +1173,154 @@ def _calendar_create(
                               outcome_unknown=True, automatic_retry=False)
     return {"ok": True, "created": True, "verified": True, "verification": "read_back",
             "event": _event_row(parts[1:]), "all_day": all_day}
+
+
+# ── Calendar: schedule_reminders (#70) ──────────────────────────────────────
+
+_SCHEDULE_MAX = 20
+# Each block's notes carry the reminder it came from, so a replay finds the block instead of making a second one.
+_REMINDER_MARK = "mac-mcp-reminder="
+_SCHEDULE_STOP = {"CALENDAR_NOT_FOUND", "CALENDAR_NOT_UNIQUE", "CALENDAR_READ_ONLY"}
+
+
+def _schedule_items(item_id: Optional[str], default_minutes: int) -> List[tuple]:
+    """Reminder ids from list_reminders, comma-separated; `id=45` gives that one its own minutes."""
+    items: List[tuple] = []
+    for part in str(item_id or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        rid, sep, minutes = part.rpartition("=")
+        rid, minutes = (rid.strip(), int(minutes)) if sep and minutes.strip().isdigit() else (part, default_minutes)
+        if not 5 <= minutes <= 12 * 60:
+            raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Each block must be 5 to 720 minutes.")
+        if rid not in [known for known, _ in items]:
+            items.append((rid, minutes))
+    if not items:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "schedule_reminders requires item_id: one or more "
+                              "reminder ids from list_reminders, separated by commas (id=45 for 45 minutes).")
+    if len(items) > _SCHEDULE_MAX:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"Schedule at most {_SCHEDULE_MAX} reminders at once.")
+    return items
+
+
+def _scheduled_blocks(start: datetime, end: datetime, timeout_s: float) -> Dict[str, Dict[str, str]]:
+    """Events in the window that Mac MCP made from a reminder, by reminder id."""
+    raw = _run(f'''set rs to ASCII character 30
+set us to ASCII character 31
+{_date_setup("windowStart", start)}
+{_date_setup("windowEnd", end)}
+set outText to ""
+tell application "Calendar"
+    repeat with c in calendars
+        try
+            set found to (every event of c whose start date ≥ windowStart and start date ≤ windowEnd and description contains "{_REMINDER_MARK}")
+            repeat with e in found
+                set rowText to (uid of e as text) & us & (summary of e as text) & us & (name of c as text) & us & ¬
+                    (((start date of e) - windowStart) as text) & us & (description of e as text) & us & "#"
+                if outText is not "" then set outText to outText & rs
+                set outText to outText & rowText
+            end repeat
+        end try
+    end repeat
+end tell
+return outText''', timeout_s=timeout_s, code="CALENDAR_SCHEDULE_FAILED")
+    blocks: Dict[str, Dict[str, str]] = {}
+    for row in _parse_records(raw, ("uid", "summary", "calendar", "offset_s", "description", "end")):
+        when = datetime.fromtimestamp(start.timestamp() + float(row["offset_s"].replace(",", ".") or 0))
+        for rid in re.findall(re.escape(_REMINDER_MARK) + r"(\S+)", row["description"]):
+            blocks.setdefault(rid, {"uid": row["uid"], "summary": row["summary"], "calendar": row["calendar"],
+                                    "start": when.isoformat(timespec="minutes")})
+    return blocks
+
+
+def _calendar_schedule_reminders(
+    item_id: Optional[str], *, calendar: Optional[str], date_from: Optional[str], date_to: Optional[str],
+    duration_min: Optional[int], hours: Optional[str], include_weekends: bool, buffer_min: Optional[int],
+    timeout_s: float, now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Each reminder, in the order given, gets the first free time that fits and does not overlap the blocks
+    made before it (#70).
+
+    Busy time is every calendar's timed events (all-day ones do not fill a day, as in find_free_time). The
+    reminder is not completed or changed; each block is read back and can be undone on its own."""
+    default = int(duration_min or 30)
+    items = _schedule_items(item_id, default)
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    start = max(_parse_date_bound(date_from, end=False), now) if date_from else now
+    end = _parse_date_bound(date_to, end=True) if date_to else datetime.combine(
+        start.date() + timedelta(days=6), datetime.max.time()).replace(microsecond=0)
+    if end <= start:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "date_to must be after date_from (and after now).")
+    if (end - start).days > more._MAX_FREE_DAYS:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"Plan at most {more._MAX_FREE_DAYS} days ahead at once.")
+    day_start, day_end = more._hours(hours)
+    pad = more._buffer(buffer_min)
+    target = _clean_field(calendar, "calendar", 200)
+    existing = _scheduled_blocks(start, end, timeout_s)
+    found = more._busy(start, end, "", timeout_s)
+    busy = sorted((item["start"] - pad, item["end"] + pad) for item in found["events"])
+    scheduled: List[Dict[str, Any]] = []
+    already: List[Dict[str, Any]] = []
+    unscheduled: List[Dict[str, Any]] = []
+    stopped = False
+    for rid, minutes in items:
+        if stopped:
+            unscheduled.append({"reminder_id": rid, "reason": "not_tried"})
+            continue
+        if rid in existing:
+            already.append({"reminder_id": rid, "event": existing[rid]})
+            continue
+        try:
+            reminder = app_undo.read_reminder(rid, timeout_s)
+        except AppAdapterError as exc:
+            unscheduled.append({"reminder_id": rid, "reason": "reminder_unreadable", "detail": exc.code})
+            continue
+        if reminder is None:
+            unscheduled.append({"reminder_id": rid, "reason": "reminder_not_found"})
+            continue
+        slots = more._free_slots(busy, start, end, day_start=day_start, day_end=day_end,
+                                 need=timedelta(minutes=minutes), include_weekends=include_weekends, limit=1)
+        if not slots:
+            unscheduled.append({"reminder_id": rid, "title": reminder["name"], "minutes": minutes,
+                                "reason": "no_free_time"})
+            continue
+        block_start = datetime.fromisoformat(slots[0]["start"])
+        block_end = block_start + timedelta(minutes=minutes)
+        notes = f'Planned by Mac MCP from the reminder "{reminder["name"]}". {_REMINDER_MARK}{rid}'
+        plan = _undo_prepare("Calendar", "create_event")
+        try:
+            payload = _calendar_create(reminder["name"], block_start.isoformat(timespec="minutes"),
+                                       block_end.isoformat(timespec="minutes"), calendar=target, location=None,
+                                       notes=notes, timeout_s=timeout_s)
+        except AppAdapterError as exc:
+            unscheduled.append({"reminder_id": rid, "title": reminder["name"], "reason": exc.code,
+                                "outcome_unknown": bool(exc.extra.get("outcome_unknown"))})
+            # An unclear write or a calendar that cannot take blocks ends the run: nothing is piled on top.
+            stopped = bool(exc.extra.get("outcome_unknown")) or exc.code in _SCHEDULE_STOP
+            continue
+        busy = sorted([*busy, (block_start - pad, block_end + pad)])
+        scheduled.append({
+            "reminder_id": rid, "title": reminder["name"], "minutes": minutes,
+            "start": block_start.isoformat(timespec="minutes"), "end": block_end.isoformat(timespec="minutes"),
+            "event": payload.get("event"), "verified": bool(payload.get("verified")),
+            "undo": _undo_record(plan, payload, timeout_s=timeout_s),
+        })
+    out: Dict[str, Any] = {
+        "ok": True, "scheduled": scheduled, "already_scheduled": already, "unscheduled": unscheduled,
+        "counts": {"scheduled": len(scheduled), "already_scheduled": len(already), "unscheduled": len(unscheduled)},
+        "partial": bool(unscheduled), "date_from": start.isoformat(timespec="minutes"),
+        "date_to": end.isoformat(timespec="minutes"),
+        "hours": f"{day_start // 60:02d}:{day_start % 60:02d}-{day_end // 60:02d}:{day_end % 60:02d}",
+        **({"buffer_min": int(pad.total_seconds() // 60)} if pad else {}),
+        "reminders_changed": False,
+    }
+    if found["unexpanded"]:
+        out["approximate"] = True
+        out["unexpanded_repeating_events"] = sorted(set(found["unexpanded"]))[:20]
+        out["message"] = ("Some repeating events use rules Mac MCP does not expand; only their first time was "
+                          "counted, so check the blocks against them.")
+    return out
 
 
 def _calendar_update(
@@ -2479,7 +2628,7 @@ def mac_app(
     try:
         bounded = _bounded_limit(limit)
         timeout = max(1.0, min(float(timeout_s), _RUN_TIMEOUT_S if normalized_action in _RUN_ACTIONS else 30.0))
-        if normalized_action in {"find_free_time", "plan_day"}:
+        if normalized_action in {"find_free_time", "plan_day", "schedule_reminders"}:
             # Calendar can take 20+ seconds to list a week across many calendars; these only read, so they wait.
             timeout = 30.0
         undo_plan: Optional[app_undo.Plan] = None
@@ -2527,6 +2676,11 @@ def mac_app(
                 payload = _calendar_find(
                     str(query or ""), date_from=date_from, date_to=date_to,
                     exact=exact, limit=bounded, timeout_s=timeout,
+                )
+            elif normalized_action == "schedule_reminders":
+                payload = _calendar_schedule_reminders(
+                    item_id, calendar=calendar, date_from=date_from, date_to=date_to, duration_min=duration_min,
+                    hours=hours, include_weekends=include_weekends, buffer_min=buffer_min, timeout_s=timeout,
                 )
             elif normalized_action == "find_free_time":
                 payload = more.calendar_free_time(

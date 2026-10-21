@@ -29,7 +29,7 @@ def _capture_scripts(call, *, reply: str = "OK" + US + "uid-1" + US + "T" + US +
 class AppDataActionTests(unittest.TestCase):
     def test_registry_and_risk_treat_data_changes_as_local_writes(self) -> None:
         self.assertEqual(("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event",
-                          "undo"), aa.supported_actions("calendar"))
+                          "schedule_reminders", "undo"), aa.supported_actions("calendar"))
         self.assertEqual(("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder",
                           "undo"), aa.supported_actions("reminders"))
         self.assertTrue(aa.is_read_action("list_reminders"))
@@ -99,6 +99,30 @@ class AppDataActionTests(unittest.TestCase):
             state = "OK" + US + str(bool(kwargs["read"])).lower() + US + str(bool(kwargs["flagged"])).lower() + US + "A"
             scripts += _capture_scripts(lambda kwargs=kwargs: aa._mail_update("<m@x>", mailbox="inbox", timeout_s=5,
                                                                               **kwargs), reply=state)
+        # #44 Notes body search, #43 Contacts writes and their undo, #70 the block lookup.
+        scripts += _capture_scripts(lambda: aa._notes_find("x", exact=False, limit=5, timeout_s=5, search_in="body"),
+                                    reply=chr(29).join(["n1", "T", "body x"]))
+        scripts += _capture_scripts(lambda: aa._scheduled_blocks(aa.datetime(2026, 11, 2, 9), aa.datetime(2026, 11, 9, 9), 5),
+                                    reply="")
+        from mcp_server import app_undo
+
+        person = {"id": "p:ABPerson", "name": "Ada \"L\"", "first_name": "Ada", "last_name": "L", "organization": "",
+                  "note": "a\nb", "emails": [["work", "a@x.com"]], "phones": [["", "+90 1"]]}
+        scripts += more_scripts(lambda: more.contacts_create("Ada \"Lovelace\"", email="a@x.com", phone="+90 555",
+                                                             organization="Acme", notes="hi", timeout_s=5), "")
+        with patch.object(app_undo, "read_person", return_value=person):
+            scripts += more_scripts(lambda: more.contacts_update("p:ABPerson", title="Ada Byron", email="b@x.com",
+                                                                 phone="+90 2", organization="X", notes="n", timeout_s=5),
+                                    "OK")
+        undo_scripts: list[str] = []
+        with patch.object(app_undo, "_run", side_effect=lambda script, **_: undo_scripts.append(script) or "OK"):
+            for call in (lambda: app_undo.read_person("p:ABPerson"), lambda: app_undo._restore_person(person, 5),
+                         lambda: app_undo._delete_created({"app": "Contacts", "after": person}, 5)):
+                try:
+                    call()
+                except aa.AppAdapterError:
+                    pass
+        scripts += undo_scripts
         with tempfile.TemporaryDirectory() as attach_dir:
             attachment = Path(attach_dir) / "a \"b\".pdf"
             attachment.write_bytes(b"x")
