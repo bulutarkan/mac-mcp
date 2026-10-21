@@ -102,6 +102,7 @@ from .tools_voice import ask_user_voice, voice_capture
 from . import storage_review as storage_review_tool
 from . import workspaces as workspace_tool
 from . import personal_search as personal_search_tool
+from . import daily_briefing as daily_briefing_tool
 from . import applescript_host, ax_native, ax_watch
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
@@ -135,7 +136,7 @@ MCP_AGENT_INSTRUCTIONS = (
     "read_file still work anywhere. "
     "Mail, Notes, Calendar, Reminders, Contacts, Finder, Messages, Shortcuts -> mac_app adapters before UI automation "
     "(action=capabilities lists them; sending asks the person first); one search across them and those folders -> "
-    "personal_search. "
+    "personal_search; today at a glance -> daily_briefing. "
     "Memory: memory_search before asking the user about earlier preferences, facts or decisions. Learn as you work, "
     "without being asked: when the user states or shows a lasting preference, corrects you, decides something, or you "
     "learn a stable fact about their work, people, projects, accounts or setup that will matter later, memory_search "
@@ -2748,6 +2749,30 @@ def create_app():
             _log, audit_logger, "personal_search",
             lambda: personal_search_tool.personal_search(query, sources=sources, date_from=date_from,
                                                          date_to=date_to, limit=limit, cursor=cursor),
+        )
+
+    @mcp.tool(
+        name="daily_briefing",
+        title="Today at a glance",
+        description=(
+            "Today at a glance in one short answer: the day's events and free time, open reminders due (overdue "
+            "too), mail that came into the inbox (subject, sender, time, unread) and conversations with new messages "
+            "(who, when, unread count). No mail or message text is included. sources picks some (calendar, "
+            "reminders, mail, messages); date (YYYY-MM-DD, default today); limit items per section (10, max 25). "
+            "Each section answers on its own: one excluded in Privacy is not read, one that fails is reported. "
+            "notify=true also shows the one-line summary as a notification. Read-only; nothing is kept."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _daily_briefing(
+        date: Optional[str] = None,
+        sources: Optional[List[str]] = None,
+        limit: int = 10,
+        notify: bool = False,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "daily_briefing",
+            lambda: daily_briefing_tool.daily_briefing(settings, date=date, sources=sources, limit=limit, notify=notify),
         )
 
     @mcp.tool(

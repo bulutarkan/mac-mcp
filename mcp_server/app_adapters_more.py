@@ -402,8 +402,21 @@ end tell
 return outText'''
 
 
+def reminders_due(start: datetime, end: datetime, *, timeout_s: float) -> List[Dict[str, Any]]:
+    """Open reminders due by the end of a day, overdue ones included, soonest first."""
+    raw = _run(_due_script(start, end), timeout_s=timeout_s, code="REMINDERS_LIST_FAILED")
+    due = []
+    for row in _parse_records(raw, ("id", "name", "list", "offset_s", "end")):
+        when = start + timedelta(seconds=float(row["offset_s"].replace(",", ".")))
+        due.append({"id": row["id"], "name": row["name"], "list": row["list"],
+                    "due": when.isoformat(timespec="minutes"), "overdue": when < start})
+    due.sort(key=lambda item: item["due"])
+    return due
+
+
 def plan_day(*, date_from: Optional[str], calendar: Optional[str], duration_min: Optional[int], hours: Optional[str],
-             buffer_min: Optional[int], limit: int, timeout_s: float, now: Optional[datetime] = None) -> Dict[str, Any]:
+             buffer_min: Optional[int], limit: int, timeout_s: float, now: Optional[datetime] = None,
+             reminders: bool = True) -> Dict[str, Any]:
     """One day at a glance: its events, the free time between them, and reminders due by its end (overdue too).
 
     Read-only: it suggests nothing it would then do; the agent proposes and the person decides."""
@@ -420,20 +433,15 @@ def plan_day(*, date_from: Optional[str], calendar: Optional[str], duration_min:
     busy = sorted((item["start"] - pad, item["end"] + pad) for item in found["events"])
     free = _free_slots(busy, max(start, now), end, day_start=day_start, day_end=day_end,
                        need=timedelta(minutes=minutes), include_weekends=True, limit=limit)
-    raw = _run(_due_script(start, end), timeout_s=timeout_s, code="REMINDERS_LIST_FAILED")
-    due = []
-    for row in _parse_records(raw, ("id", "name", "list", "offset_s", "end")):
-        when = start + timedelta(seconds=float(row["offset_s"].replace(",", ".")))
-        due.append({"id": row["id"], "name": row["name"], "list": row["list"],
-                    "due": when.isoformat(timespec="minutes"), "overdue": when < start})
-    due.sort(key=lambda item: item["due"])
+    # daily_briefing leaves Reminders unread when the owner excluded it or did not ask for it (#68).
+    due = reminders_due(start, end, timeout_s=timeout_s) if reminders else []
     out: Dict[str, Any] = {
         "ok": True, "date": day.isoformat(),
         "events": [{"title": item["title"], "calendar": item["calendar"], "uid": item["uid"],
                     "start": item["start"].isoformat(timespec="minutes"), "end": item["end"].isoformat(timespec="minutes")}
                    for item in found["events"]][:50],
         "all_day": sorted(set(found["all_day"]))[:20],
-        "free": free[:limit], "reminders_due": due[:50],
+        "free": free[:limit], **({"reminders_due": due[:50]} if reminders else {}),
         "hours": f"{day_start // 60:02d}:{day_start % 60:02d}-{day_end // 60:02d}:{day_end % 60:02d}",
         "duration_min": minutes, **({"buffer_min": int(pad.total_seconds() // 60)} if pad else {}),
     }

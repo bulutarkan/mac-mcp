@@ -562,6 +562,14 @@ def _workspace_risk(arguments: Mapping[str, Any]) -> RiskOverride:
                         sensitive=True)
 
 
+def _daily_briefing_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    if arguments.get("notify") is True:
+        # Also shows a notification, like send_notification.
+        return RiskOverride(capabilities=_caps(Capability.READ, Capability.UI_ACTION), destructive=False, sensitive=True)
+    return RiskOverride(capabilities=_caps(Capability.READ), destructive=False, sensitive=True,
+                        requested_access_mode=AccessMode.READ_ONLY)
+
+
 def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     check_only = arguments.get("check_only", True)
     if check_only is not False:
@@ -807,6 +815,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "memory_search": _r("memory_search", "memory", _caps(Capability.READ), sensitive=True),
     "knowledge_search": _r("knowledge_search", "files", _caps(Capability.READ), sensitive=True),
     "personal_search": _r("personal_search", "accessibility", _caps(Capability.READ), sensitive=True),
+    "daily_briefing": _r("daily_briefing", "accessibility", _caps(Capability.READ, Capability.UI_ACTION), sensitive=True, resolver=_daily_briefing_risk),
     "memory_get": _r("memory_get", "memory", _caps(Capability.READ), sensitive=True),
     "memory_update": _r("memory_update", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "memory_delete": _r("memory_delete", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
