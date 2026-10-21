@@ -99,6 +99,8 @@ from . import browser_checkpoint, browser_tabs
 from .tool_cancellation import cancellable_sleep
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice, voice_capture
+from . import storage_review as storage_review_tool
+from . import workspaces as workspace_tool
 from . import applescript_host, ax_native, ax_watch
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
@@ -1211,6 +1213,43 @@ def create_app():
                     lambda: delete_path(settings, path=path, recursive=recursive))
 
     @mcp.tool(
+        name="storage_review",
+        title="Find what takes room in a folder",
+        description=(
+            "Free up room: action=scan (read-only) lists large files, files not changed for a long time and exact "
+            "duplicates in path (default ~/Downloads), each with why; min_size_mb (100), older_than_days (180), "
+            "duplicates, limit. Show the owner the list; move_to_trash takes scan_id + the item_ids they chose and "
+            "moves only files unchanged since the scan to the Trash (Finder can Put Back). undo with receipt_id "
+            "moves them back when Mac MCP may open the Trash, otherwise names what to Put Back in Finder. "
+            "Skips links, hidden files, app bundles, iCloud placeholders; refuses macOS folders and ~/Library."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+    )
+    def _storage_review(
+        action: str = "scan",
+        path: Optional[str] = None,
+        min_size_mb: Optional[float] = None,
+        older_than_days: Optional[int] = None,
+        duplicates: bool = True,
+        limit: int = 50,
+        scan_id: Optional[str] = None,
+        item_ids: Optional[List[str]] = None,
+        receipt_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        def run() -> Dict[str, Any]:
+            chosen = str(action or "scan").strip().lower()
+            if chosen == "scan":
+                return storage_review_tool.scan(path, min_size_mb=min_size_mb, older_than_days=older_than_days,
+                                                duplicates=duplicates, limit=limit)
+            if chosen == "move_to_trash":
+                return storage_review_tool.move_to_trash(scan_id or "", item_ids or [])
+            if chosen == "undo":
+                return storage_review_tool.undo(receipt_id or "")
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "action is scan, move_to_trash or undo.")
+
+        return _log(audit_logger, "storage_review", run)
+
+    @mcp.tool(
         name="file_transaction_batch",
         description=(
             "Execute up to 50 write/move/delete actions as one reversible all-or-nothing filesystem transaction. "
@@ -1408,6 +1447,47 @@ def create_app():
                 target_css_selector=target_css_selector, include_url=include_url, clear=clear,
             ),
         )
+
+    @mcp.tool(
+        name="workspace",
+        title="Save and reopen a named workspace",
+        description=(
+            "Named workspaces such as 'Research' or 'Writing'. action=save stores what is open now (apps with a "
+            "window, Safari/Chrome tabs, the Finder folder and selection) or the apps, urls and finder_paths given; "
+            "include picks the parts (apps, urls, finder), exclude_apps leaves apps out, desktop saves a Mission "
+            "Control space id to open onto. list, inspect and delete manage them. restore opens what is missing in "
+            "the background without taking focus or moving windows (apps already running stay as they are) and "
+            "reports what is not installed or no longer there. Apps and sites excluded in Privacy are never saved. "
+            "Kept only on this Mac."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True),
+    )
+    def _workspace(
+        action: str = "list",
+        name: Optional[str] = None,
+        include: Optional[List[str]] = None,
+        apps: Optional[List[str]] = None,
+        urls: Optional[List[str]] = None,
+        finder_paths: Optional[List[str]] = None,
+        exclude_apps: Optional[List[str]] = None,
+        desktop: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        def run() -> Dict[str, Any]:
+            chosen = str(action or "list").strip().lower()
+            if chosen == "list":
+                return workspace_tool.list_workspaces()
+            if chosen == "save":
+                return workspace_tool.save(settings, name or "", include=include, apps=apps, urls=urls,
+                                           finder_paths=finder_paths, exclude_apps=exclude_apps, desktop=desktop)
+            if chosen == "inspect":
+                return workspace_tool.inspect(name or "")
+            if chosen == "restore":
+                return workspace_tool.restore(settings, name or "", desktop=desktop)
+            if chosen == "delete":
+                return workspace_tool.delete(name or "")
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "action is list, save, inspect, restore or delete.")
+
+        return _log(audit_logger, "workspace", run)
 
     @mcp.tool(
         name="mac_snapshot",

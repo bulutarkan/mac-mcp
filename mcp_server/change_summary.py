@@ -14,7 +14,7 @@ _SIDE_EFFECT_CAPS = {
 _FILE_TOOLS = {
     "write_file", "write_files_batch", "edit_file", "move_file", "copy_file",
     "delete_path", "file_transaction_batch", "file_transaction_undo", "create_directory",
-    "screenshot", "browser_screenshot", "browser_wait_for_download", "browser_upload_artifact",
+    "screenshot", "browser_screenshot", "browser_wait_for_download", "browser_upload_artifact", "storage_review",
 }
 _BROWSER_TOOLS = {
     "browser_open_url", "browser_activate_tab", "browser_close_tab", "browser_act", "browser_do",
@@ -25,7 +25,7 @@ _COMMAND_TOOLS = {
     "run_command", "run_commands_parallel", "start_background_job", "stop_job", "kill_process",
     "run_applescript", "computer_plan", "tool_invoke",
 }
-_APP_TOOLS = {"open_app", "mac_act", "mac_app"}
+_APP_TOOLS = {"open_app", "mac_act", "mac_app", "workspace"}
 _EXTERNAL_TOOLS = {"http_request", "open_url", "send_notification", "set_reminder"}
 _SYSTEM_TOOLS = {"clipboard_set", "set_volume", "set_brightness", "mac_mcp_update"}
 _AGENT_TOOLS = {"spawn_agent", "spawn_agents", "agent_action"}
@@ -84,6 +84,10 @@ def _is_change(event: Mapping[str, Any]) -> bool:
     tool = str(event.get("tool") or "")
     if tool == "mac_app" and _mac_app_action(event) not in _MAC_APP_VERBS:
         return False  # finding, listing and opening change nothing
+    if tool == "storage_review" and str(_mapping(event.get("arguments")).get("action") or "scan") == "scan":
+        return False  # a scan only reads
+    if tool == "workspace" and str(_mapping(event.get("arguments")).get("action") or "list") in {"list", "inspect"}:
+        return False
     if tool in _FILE_TOOLS | _BROWSER_TOOLS | _COMMAND_TOOLS | _APP_TOOLS | _EXTERNAL_TOOLS | _SYSTEM_TOOLS | _AGENT_TOOLS:
         return True
     return bool(_capabilities(event).intersection(_SIDE_EFFECT_CAPS))
@@ -113,6 +117,12 @@ def _file_items(event: Mapping[str, Any]) -> List[Dict[str, Any]]:
                 if target:
                     labels = {"write": "Wrote file", "delete": "Deleted path", "copy": "Copied file", "mkdir": "Created directory"}
                     items.append({"action": labels.get(kind, "Changed file"), "target": target})
+    elif tool == "storage_review":
+        undo = str(args.get("action") or "") == "undo"
+        moved = result.get("restored") if undo else [item.get("path") for item in result.get("moved") or [] if isinstance(item, Mapping)]
+        for path in moved if isinstance(moved, list) else []:
+            if target := _safe_path(path):
+                items.append({"action": "Took back from Trash" if undo else "Moved to Trash", "target": target})
     elif tool == "move_file":
         source = _safe_path(args.get("source")); dest = _safe_path(args.get("destination") or result.get("destination"))
         items.append({"action": "Moved file", "target": dest or source or "File", "detail": f"{source} → {dest}" if source and dest else None})
@@ -189,6 +199,10 @@ def _app_item(event: Mapping[str, Any]) -> Dict[str, Any]:
     app = _safe_text(args.get("app_name") or args.get("app") or result.get("app") or result.get("application"), 100) or "macOS app"
     if tool == "open_app":
         return {"action": "Opened app", "target": app}
+    if tool == "workspace":
+        verb = {"save": "Saved workspace", "restore": "Opened workspace", "delete": "Deleted workspace"}
+        return {"action": verb.get(str(args.get("action") or ""), "Changed workspace"),
+                "target": _safe_text(args.get("name"), 60) or "Workspace"}
     if tool == "mac_app":
         undo = _mapping(result.get("undo"))
         item: Dict[str, Any] = {"action": _MAC_APP_VERBS.get(_mac_app_action(event), "Changed app data"), "target": app}

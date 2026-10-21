@@ -534,6 +534,34 @@ def _recipe_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _storage_review_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "scan").strip().lower()
+    if action == "scan":
+        # Only reads the folder; the report it keeps is Mac MCP's own state.
+        return RiskOverride(
+            capabilities=_caps(Capability.READ),
+            destructive=False,
+            sensitive=True,
+            requested_access_mode=AccessMode.READ_ONLY,
+        )
+    return RiskOverride(capabilities=_caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True)
+
+
+def _workspace_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "list").strip().lower()
+    if action in {"list", "inspect"}:
+        return RiskOverride(capabilities=_caps(Capability.READ), destructive=False, sensitive=True,
+                            requested_access_mode=AccessMode.READ_ONLY)
+    if action == "restore":
+        # Opens apps, pages and folders in the background, like open_app and browser_open_url.
+        return RiskOverride(capabilities=_caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION,
+                                               Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT),
+                            destructive=False, sensitive=True)
+    # save reads what is open; save and delete change only Mac MCP's own workspace list.
+    return RiskOverride(capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE), destructive=action == "delete",
+                        sensitive=True)
+
+
 def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     check_only = arguments.get("check_only", True)
     if check_only is not False:
@@ -697,6 +725,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "read_multiple_files": _r("read_multiple_files", "files", _caps(Capability.READ), sensitive=True),
     "edit_file": _r("edit_file", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "move_file": _r("move_file", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
+    "storage_review": _r("storage_review", "files", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True, resolver=_storage_review_risk),
     "copy_file": _r("copy_file", "files", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "delete_path": _r("delete_path", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "file_transaction_batch": _r("file_transaction_batch", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
@@ -712,6 +741,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "clipboard_get": _r("clipboard_get", "macos", _caps(Capability.READ), sensitive=True),
     "clipboard_set": _r("clipboard_set", "macos", _caps(Capability.LOCAL_WRITE, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "open_app": _r("open_app", "macos", _caps(Capability.PROCESS_CONTROL, Capability.UI_ACTION)),
+    "workspace": _r("workspace", "macos", _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_workspace_risk),
     "open_url": _r("open_url", "macos", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT)),
     "set_volume": _r("set_volume", "macos", _caps(Capability.UI_ACTION, Capability.EXTERNAL_SIDE_EFFECT)),
     "get_volume": _r("get_volume", "macos", _caps(Capability.READ)),
