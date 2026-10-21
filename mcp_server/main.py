@@ -1583,7 +1583,7 @@ def create_app():
             "(body, plus item_id = a chat_id from find_chats or a query matching exactly one chat). Xcode: list_workspaces (projects, schemes, targets). "
             "These read actions never launch the app; a closed app returns APP_NOT_RUNNING. "
             "Finder: selection|select_file. "
-            "Notes: find_notes|open_note|create_note (title, optional body/folder/account)|append_to_note (item_id or "
+            "Notes: find_notes (query; search_in = title (default), body or both: body matches return a short masked snippet; matching ignores case and accents, Turkish letters included)|open_note|create_note (title, optional body/folder/account)|append_to_note (item_id or "
             "query matching one note, body added at its end)|update_note (item_id only; replaces the title and/or body). "
             "Mail: find_messages|open_message|create_draft (title as subject, optional body, to/cc as comma-separated "
             "addresses or contact names that lead to one address, account name or address; required when several "
@@ -1674,6 +1674,7 @@ def create_app():
         window_ids: Optional[List[int]] = None,
         cursor: Optional[str] = None,
         force: bool = False,
+        search_in: Optional[str] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1719,6 +1720,7 @@ def create_app():
                 window_ids=window_ids,
                 cursor=cursor,
                 force=force,
+                search_in=search_in,
             ),
         )
 

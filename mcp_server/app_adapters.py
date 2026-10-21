@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -578,10 +579,110 @@ return "NO_LIST"'''
     result["focus"] = _focus_finish(focus, "Finder", deadline)
     return result
 
-def _notes_find(query: str, *, exact: bool, limit: int, timeout_s: float) -> Dict[str, Any]:
+_NOTES_SEARCH_IN = ("title", "body", "both")
+_NOTES_SNIPPET_CHARS = 160
+
+
+def _fold_text(text: str) -> tuple[str, list[int]]:
+    """Text lower-cased the Turkish way (İ, I and ı all become i) and without accents, so "isik" finds "Işık"
+    and "istanbul" finds "İSTANBUL"; with each folded character's position in the original text."""
+    folded: list[str] = []
+    index: list[int] = []
+    for position, char in enumerate(text):
+        if char in "İIı":
+            piece = "i"
+        else:
+            piece = "".join(c for c in unicodedata.normalize("NFKD", char.lower()) if not unicodedata.combining(c))
+        for c in piece:
+            folded.append(c)
+            index.append(position)
+    return "".join(folded), index
+
+
+def _note_snippet(text: str, index: list[int], hit: int, length: int) -> str:
+    """A short piece of the note around the match, on one line, with secrets masked."""
+    from .data_guard import redact_sensitive_text
+
+    first = index[hit]
+    last = index[min(hit + length, len(index)) - 1] + 1
+    room = max(0, _NOTES_SNIPPET_CHARS - (last - first)) // 2
+    start, end = max(0, first - room), min(len(text), last + room)
+    piece = redact_sensitive_text(" ".join(text[start:end].split()))
+    return ("…" if start else "") + piece + ("…" if end < len(text) else "")
+
+
+def _notes_find_text(q: str, *, search_in: str, exact: bool, limit: int, timeout_s: float) -> Dict[str, Any]:
+    """Title and/or body search done here: Notes' own `contains` misses Turkish case and accent variants."""
+    from . import privacy_policy
+
+    # Note text is content; the owner's exclusions hold for it as they do for the Notes window.
+    try:
+        privacy_policy.check_app("Notes", "com.apple.Notes")
+    except privacy_policy.PrivacyBlocked as exc:
+        raise AppAdapterError(exc.code, str(exc.detail), retryable=False) from exc
+    script = '''set rs to ASCII character 30
+set gs to ASCII character 29
+tell application "Notes"
+    set noteIDs to id of every note
+    set noteNames to name of every note
+    set noteTexts to plaintext of every note
+end tell
+set AppleScript's text item delimiters to rs
+set outText to (noteIDs as text) & gs & (noteNames as text) & gs & (noteTexts as text)
+set AppleScript's text item delimiters to ""
+return outText'''
+    raw = _run(script, timeout_s=timeout_s, code="NOTES_FIND_FAILED")
+    sections = raw.split(chr(29))
+    if len(sections) != 3:
+        raise AppAdapterError("NOTES_FIND_FAILED", "Notes returned an unreadable note list.")
+    ids, names, texts = (section.split(_RS) if section else [] for section in sections)
+    if not (len(ids) == len(names) == len(texts)):
+        raise AppAdapterError("NOTES_FIND_FAILED", "Notes returned note fields that do not line up; nothing was guessed.")
+    needle, _ = _fold_text(" ".join(q.split()))
+    matches = []
+    for note_id, name, text in zip(ids, names, texts):
+        folded_name, _ = _fold_text(name)
+        in_title = search_in != "body" and (folded_name == needle if exact else needle in folded_name)
+        folded_body, index = _fold_text(text) if search_in != "title" else ("", [])
+        hit = folded_body.find(needle) if search_in != "title" else -1
+        if not in_title and hit < 0:
+            continue
+        row: Dict[str, Any] = {"id": note_id, "title": name, "folder": None,
+                               "matched_in": [part for part, ok in (("title", in_title), ("body", hit >= 0)) if ok]}
+        if hit >= 0:
+            row["snippet"] = _note_snippet(text, index, hit, len(needle))
+        matches.append(row)
+    rows = matches[:limit]
+    if rows:
+        id_list = "{" + ", ".join(_apple_string(row["id"]) for row in rows) + "}"
+        folders = _run(f'''set rs to ASCII character 30
+set outText to ""
+tell application "Notes"
+    repeat with noteID in {id_list}
+        set folderName to "__MAC_MCP_NONE__"
+        try
+            set folderName to name of container of note id noteID as text
+        end try
+        if outText is not "" then set outText to outText & rs
+        set outText to outText & folderName
+    end repeat
+end tell
+return outText''', timeout_s=timeout_s, code="NOTES_FIND_FAILED").split(_RS)
+        for row, folder_name in zip(rows, folders):
+            row["folder"] = None if folder_name == "__MAC_MCP_NONE__" else folder_name
+    return {"ok": True, "count": len(rows), "notes": rows, "search_in": search_in,
+            "total_matches": len(matches), "truncated": len(matches) > limit}
+
+
+def _notes_find(query: str, *, exact: bool, limit: int, timeout_s: float, search_in: Optional[str] = None) -> Dict[str, Any]:
     q = str(query or "").strip()
     if not q:
         raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Notes find_notes requires query.")
+    where = str(search_in or "title").strip().lower()
+    if where not in _NOTES_SEARCH_IN:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "search_in must be title, body or both.")
+    if where != "title":
+        return _notes_find_text(q, search_in=where, exact=exact, limit=limit, timeout_s=timeout_s)
     predicate = f'name is {_apple_string(q)}' if exact else f'name contains {_apple_string(q)}'
     script = f'''set rs to ASCII character 30
 set us to ASCII character 31
@@ -2209,6 +2310,7 @@ def mac_app(
     window_ids: Optional[List[int]] = None,
     cursor: Optional[str] = None,
     force: bool = False,
+    search_in: Optional[str] = None,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -2350,7 +2452,8 @@ def mac_app(
             )
         elif canonical == "Notes":
             if normalized_action == "find_notes":
-                payload = _notes_find(str(query or ""), exact=exact, limit=bounded, timeout_s=timeout)
+                payload = _notes_find(str(query or ""), exact=exact, limit=bounded, timeout_s=timeout,
+                                      search_in=search_in)
             elif normalized_action == "create_note":
                 payload = _notes_create(title, body, folder=folder, account=account, timeout_s=timeout)
             elif normalized_action == "append_to_note":
