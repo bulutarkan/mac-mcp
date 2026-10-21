@@ -1369,8 +1369,36 @@ def _find_spawned_team_agent(team_id: str, task: Dict[str, Any]) -> Optional[str
     return max(found)[1] if found else None
 
 
+_TICKING = threading.local()
+
+
 def _team_tick(team_id: str) -> Dict[str, Any]:
-    """Advance one persisted DAG team. Safe to call concurrently from worker processes."""
+    """Advance one persisted DAG team. Safe to call concurrently from worker processes.
+
+    A tick can call itself for the same team (reading a cancelled agent settles it, and settling ticks its
+    team). The inner tick would start tasks the outer one, working on its own copy, then starts again and
+    writes over (#90). So the inner call only asks the outer tick to run once more when it is done.
+    """
+    ticking = getattr(_TICKING, "teams", None)
+    if ticking is None:
+        ticking = _TICKING.teams = {}
+    if team_id in ticking:
+        ticking[team_id] = True
+        with _locked_team(team_id):
+            return _read_team_unlocked(team_id)
+    ticking[team_id] = False
+    try:
+        for _ in range(3):
+            ticking[team_id] = False
+            team = _team_tick_once(team_id)
+            if not ticking[team_id]:
+                break
+        return team
+    finally:
+        ticking.pop(team_id, None)
+
+
+def _team_tick_once(team_id: str) -> Dict[str, Any]:
     with _locked_team(team_id):
         team = _read_team_unlocked(team_id)
         if int(team.get("scheduler_version") or 0) < 1:
