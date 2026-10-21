@@ -45,7 +45,7 @@ class PlainSettingsTextTests(unittest.TestCase):
         settings = read("SettingsView.swift")
         for jargon in ("CLI provider", "cannot be spawned", '"Detected"', '"Not detected"'):
             self.assertNotIn(jargon, settings)
-        self.assertIn("Choose which AI tools on this Mac Mac MCP may hand work to.", settings)
+        self.assertIn("Choose which AI tools on this Mac can take work from Mac MCP.", settings)
         self.assertIn('"Found on this Mac"', settings)
 
 

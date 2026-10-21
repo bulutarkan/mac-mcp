@@ -1122,7 +1122,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var providersList: some View {
-        Text("Choose which AI tools on this Mac Mac MCP may hand work to. Each one has to be installed and signed in first.")
+        Text("Choose which AI tools on this Mac can take work from Mac MCP. Each one has to be installed and signed in first.")
             .font(.caption2)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
