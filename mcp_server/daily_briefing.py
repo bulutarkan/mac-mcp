@@ -89,7 +89,7 @@ def _messages(day: datetime, limit: int) -> Dict[str, Any]:
     from . import messages_reader
 
     found = messages_reader.recent_chats(day.date().isoformat(), day.date().isoformat(), limit=limit)
-    return {"conversations": found["chats"], "unread": sum(chat["unread"] for chat in found["chats"]),
+    return {"conversations": found["chats"], "unread": found["unread"], "with_new_messages": found["conversations"],
             "truncated": found["truncated"]}
 
 

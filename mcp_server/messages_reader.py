@@ -370,6 +370,7 @@ def read_messages(item_id: Optional[str], query: Optional[str], *, limit: int, c
     }
 
 
+_RECENT_MAX = 1000
 _RECENT_SQL = """
 SELECT cmj.chat_id AS chat_rowid, max(m.date) AS last_date,
        sum(CASE WHEN m.is_from_me = 0 THEN 1 ELSE 0 END) AS received,
@@ -388,13 +389,15 @@ def recent_chats(date_from: str, date_to: str, *, limit: int) -> Dict[str, Any]:
     unread. No message text (daily_briefing, #68)."""
     known = chats()
     extra, params = _range_where(date_from, date_to)
-    rows = _query(_RECENT_SQL.format(where=_PLAIN + extra), [*params, limit + 1], max_rows=limit + 1)
+    # Every conversation of the range is counted, so the totals hold beyond the ones listed.
+    rows = _query(_RECENT_SQL.format(where=_PLAIN + extra), [*params, _RECENT_MAX], max_rows=_RECENT_MAX)
     out = []
     for row in rows[:limit]:
         chat = known.get(int(row.get("chat_rowid") or 0)) or {}
         out.append({"chat_id": chat.get("chat_id"), "name": chat.get("name"), "last_message": _when(row.get("last_date")),
                     "received": int(row.get("received") or 0), "unread": int(row.get("unread") or 0)})
-    return {"ok": True, "count": len(out), "chats": out, "truncated": len(rows) > limit, "read_only": True}
+    return {"ok": True, "count": len(out), "chats": out, "truncated": len(rows) > limit, "read_only": True,
+            "conversations": len(rows), "unread": sum(int(row.get("unread") or 0) for row in rows)}
 
 
 def _same_text(value: Optional[str]) -> str:

@@ -104,12 +104,13 @@ class SectionReaderTests(unittest.TestCase):
     def test_messages_section_counts_without_text(self) -> None:
         with patch.object(messages_reader, "chats", return_value={7: {"chat_id": "c7", "name": "Ali"}}), \
                 patch.object(messages_reader, "_query", return_value=[
-                    {"chat_rowid": 7, "last_date": 0, "received": 4, "unread": 2}]) as query:
-            out = db._messages(datetime(2026, 10, 21), 5)
+                    {"chat_rowid": 7, "last_date": 0, "received": 4, "unread": 2},
+                    {"chat_rowid": 8, "last_date": 0, "received": 3, "unread": 3}]) as query:
+            out = db._messages(datetime(2026, 10, 21), 1)
         self.assertNotIn("mm_text", query.call_args.args[0])  # the query reads no message text
         self.assertEqual([{"chat_id": "c7", "name": "Ali", "last_message": None, "received": 4, "unread": 2}],
                          out["conversations"])
-        self.assertEqual(2, out["unread"])
+        self.assertEqual((5, 2, True), (out["unread"], out["with_new_messages"], out["truncated"]))  # all, not just listed
 
     def test_plan_day_can_leave_reminders_unread(self) -> None:
         with patch.object(more, "_busy", return_value={"events": [], "all_day": [], "unexpanded": []}), \
