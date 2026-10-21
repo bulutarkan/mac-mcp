@@ -1996,7 +1996,10 @@ _PRESSABLE_ROLES = frozenset({"AXButton", "AXLink", "AXCheckBox", "AXRadioButton
 # Browsers have their own tools and stay as they are.
 _WEB_WAKE_SKIP_BUNDLES = frozenset({"com.apple.Safari", "com.google.Chrome", "com.google.Chrome.canary",
                                     "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.Browser"})
-_WEB_WAKE_SETTLE_S = 1.5
+# The app turns its full tree on a second or a few after it is asked: read again until it has, within this.
+_WEB_WAKE_SETTLE_S = 1.0
+_WEB_WAKE_MAX_WAIT_S = 5.0
+_WEB_WAKE_POLL_S = 0.75
 _web_woken: Dict[int, float] = {}
 
 
@@ -2546,14 +2549,20 @@ def _observe_ui(
             max_nodes=_QUERY_MAX_NODES if terms else _NATIVE_MAX_NODES,
         )
         if payload.get("ok") and _wake_web_controls(payload):
-            # Read again now that its web controls can be pressed.
-            payload, image_data = _collect_observation(
-                settings, resolved_app, int(window_index), max_depth, max_children, bool(include_screenshot),
-                bool(ocr), deadline=deadline, app_pid=resolved_pid,
-                max_nodes=_QUERY_MAX_NODES if terms else _NATIVE_MAX_NODES,
-            )
+            # Read again until its web controls can be pressed, for a few seconds at most.
+            wake_deadline = time.monotonic() + _WEB_WAKE_MAX_WAIT_S - _WEB_WAKE_SETTLE_S
+            while True:
+                payload, image_data = _collect_observation(
+                    settings, resolved_app, int(window_index), max_depth, max_children, bool(include_screenshot),
+                    bool(ocr), deadline=deadline, app_pid=resolved_pid,
+                    max_nodes=_QUERY_MAX_NODES if terms else _NATIVE_MAX_NODES,
+                )
+                awake = payload.get("ok") and not _web_controls_asleep(list(payload.get("nodes") or []))
+                if awake or not payload.get("ok") or time.monotonic() >= wake_deadline:
+                    break
+                time.sleep(_WEB_WAKE_POLL_S)
             if payload.get("ok"):
-                payload["web_accessibility"] = "full_tree_requested"
+                payload["web_accessibility"] = "full_tree_ready" if awake else "full_tree_requested"
             compatible_previous = False
         if payload.get("ok") and requested_depth != max_depth and not terms:
             # Said, not silent: the depth asked for and the one used (#82).

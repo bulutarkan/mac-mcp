@@ -155,7 +155,7 @@ class ObserveWiringTests(unittest.TestCase):
         reads = []
 
         def collect(settings, app, window_index, max_depth, max_children, *args, **kw):
-            nodes = WebWakeTests.ASLEEP if not reads else WebWakeTests.AWAKE
+            nodes = WebWakeTests.ASLEEP if len(reads) < 2 else WebWakeTests.AWAKE  # awake on the third read
             reads.append(1)
             return {"ok": True, "observation_id": f"obs_{len(reads)}", "app_pid": 4242, "bundle_id": "com.openai.codex",
                     "nodes": list(nodes), "telemetry": {}}, None
@@ -169,8 +169,8 @@ class ObserveWiringTests(unittest.TestCase):
              patch.object(tools_ui.time, "sleep"):
             result = tools_ui._observe_ui(load_settings(), app="ChatGPT", query="New chat")
         payload = json.loads(result[0] if isinstance(result, list) else result)
-        self.assertEqual(2, len(reads))
-        self.assertEqual("full_tree_requested", payload["web_accessibility"])
+        self.assertEqual(3, len(reads))
+        self.assertEqual("full_tree_ready", payload["web_accessibility"])
         self.assertIn("AXPress", payload["nodes"][0]["actions"])
 
     def test_the_tool_offers_query(self) -> None:
