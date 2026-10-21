@@ -190,11 +190,14 @@ func record(_ fields: [String]) { records.append(fields.joined(separator: fieldS
 // A wrapper that only holds one thing (no action, no value) costs no depth: web views and Electron apps nest
 // their content under many of them, and max_depth ran out before the page (#82, the ChatGPT app). Its id path
 // is kept, so element ids stay stable. rawDepth bounds a chain of wrappers.
+// Every web element offers AXShowMenu and AXScrollToVisible; they do not make a wrapper something to act on.
 let passThroughRoles: Set<String> = ["AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXUnknown"]
+let incidentalActions: Set<String> = ["AXShowMenu", "AXScrollToVisible"]
 let maxRawDepth = 64
 
-func passesThrough(role: String, value: String, actions: String, childCount: Int) -> Bool {
-    childCount == 1 && actions.isEmpty && value.isEmpty && passThroughRoles.contains(role)
+func passesThrough(role: String, value: String, actions: [String], childCount: Int) -> Bool {
+    childCount == 1 && value.isEmpty && passThroughRoles.contains(role)
+        && actions.allSatisfy { incidentalActions.contains($0) }
 }
 
 func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDepth: Int, maxChildren: Int, maxNodes: Int,
@@ -211,10 +214,11 @@ func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDep
     let (x, y) = point(a["AXPosition"])
     let (w, h) = size(a["AXSize"])
     var actionNames: CFArray?
-    var actions = ""
+    var actionList: [String] = []
     if AXUIElementCopyActionNames(element, &actionNames) == .success, let names = actionNames as? [String] {
-        actions = names.joined(separator: ", ")
+        actionList = names
     }
+    let actions = actionList.joined(separator: ", ")
     let children = (a["AXChildren"] as? [AXUIElement]) ?? []
     record([
         "__NODE__", clean(id), clean(parent), clean(role), clean(subrole), clean(text(a["AXTitle"])),
@@ -224,7 +228,7 @@ func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDep
         a["AXSelected"] == nil ? "" : bool(a["AXSelected"]),
         clean(text(a["AXPlaceholderValue"])), clean(text(a["AXHelp"])),
     ])
-    let through = passesThrough(role: role, value: value, actions: actions, childCount: children.count)
+    let through = passesThrough(role: role, value: value, actions: actionList, childCount: children.count)
     if (depth >= maxDepth && !through) || rawDepth >= maxRawDepth { return }
     for (index, child) in children.enumerated() {
         if index >= maxChildren { break }

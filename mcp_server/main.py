@@ -1465,7 +1465,9 @@ def create_app():
             "can be uniquely identified. Pass observation_id to mac_act; handles are re-resolved "
             "before each action so window reordering cannot silently retarget an element. "
             "Pass previous_observation_id for conditional observe: unchanged state returns compact "
-            "not_modified without a full AX traversal; small changes return delta and structural changes full refresh."
+            "not_modified without a full AX traversal; small changes return delta and structural changes full refresh. "
+            "query='New chat | text area' reads the whole window (web and Electron apps too) and returns only the "
+            "elements whose label, value or role has those words, with element_ids for mac_act."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True,
@@ -1485,6 +1487,7 @@ def create_app():
         include_screenshot: bool = False,
         ocr: bool = False,
         previous_observation_id: Optional[str] = None,
+        query: Optional[str] = None,
     ) -> Any:
         return _log(
             audit_logger,
@@ -1500,6 +1503,7 @@ def create_app():
                 include_screenshot=include_screenshot,
                 ocr=ocr,
                 previous_observation_id=previous_observation_id,
+                query=query,
             ),
         )
 

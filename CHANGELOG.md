@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Reading web and Electron apps down to their controls (roadmap #82, part 1)
+- `mac_observe` now reads apps built on web views (the ChatGPT app among them) down to their buttons and text boxes. They wrap their page in many containers that hold just one thing; those no longer use up `max_depth`, and element ids keep their full path. Before, "New chat" and the message box of the ChatGPT app never showed at any depth.
+- `max_depth` goes up to 16 (it was silently cut to 8); when a request asks for more, the result says what was used. The hint for a cut-off tree now says what can actually help.
+- `mac_observe(query='New chat | text area')` reads the whole window (with a larger node budget) and returns only the elements whose label, value or role has those words, with element ids for `mac_act`: about 8 KB instead of 176 KB for the ChatGPT app.
+- Not solved yet: the ChatGPT app's buttons do not answer Accessibility presses, so clicking "New chat" or "Send" in the background has no effect; Mac MCP reports that (`ACTION_NO_EFFECT`) instead of claiming it worked. Typing into its message box works.
+
 ### Updating from the menu: you see it start, run and end (roadmap #78)
 - Before it starts, the menu says Mac MCP will close and open again by itself, so the app going away is not taken for a crash. While the update runs the menu shows a spinner, the step it is on (for example "Step 4 of 7") and the same note.
 - The app that opens again keeps following an update still under way, and when it ends says once how it went, in the menu and as a notification: "Mac MCP updated to 2.3.0 r2", or that the update did not finish and Mac MCP went back to the version you had, with where the logs are.

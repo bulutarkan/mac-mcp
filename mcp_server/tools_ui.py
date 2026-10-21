@@ -1990,6 +1990,36 @@ def _native_node_budget(metadata: Dict[str, Any], max_nodes: int = _NATIVE_MAX_N
     }
 
 
+_QUERY_MAX_MATCHES = 25
+# A search reads more of the window than a plain observation, which returns every node it reads.
+_QUERY_MAX_NODES = 2000
+
+
+def _query_terms(query: Optional[str]) -> List[List[str]]:
+    """'New chat | text area' -> [['new', 'chat'], ['text', 'area']]: any alternative, all of its words."""
+    alternatives = [part.strip().lower() for part in str(query or "").split("|")]
+    return [part.split() for part in alternatives if part][:8]
+
+
+def _node_text(node: Dict[str, Any]) -> str:
+    keys = ("title", "description", "value", "placeholder", "help", "identifier", "role", "subrole")
+    return " ".join(str(node.get(key) or "") for key in keys).lower()
+
+
+def _keep_query_matches(payload: Dict[str, Any], terms: List[List[str]]) -> None:
+    """Only the elements that match, each with the element_id mac_act takes; the observation keeps them all."""
+    nodes = list(payload.get("nodes") or [])
+    matches = [node for node in nodes if any(all(word in _node_text(node) for word in words) for words in terms)]
+    payload["nodes"] = matches[:_QUERY_MAX_MATCHES]
+    payload["node_count"] = len(payload["nodes"])
+    payload["query"] = {"alternatives": [" ".join(words) for words in terms], "matched": len(matches),
+                        "searched": len(nodes), "shown": len(payload["nodes"])}
+    if not matches:
+        payload["query"]["hint"] = ("Nothing matched. Try other words from the control's label, or 'button' / "
+                                    "'text area'; do not repeat the same search.")
+    refresh_perception_size(payload)
+
+
 # max_depth an observation may ask for. Wrappers that only hold one thing do not count toward it (the native
 # walker passes through them), so web views and Electron apps are read down to their controls (#82).
 _MAX_OBSERVE_DEPTH = 16
@@ -2160,6 +2190,7 @@ def _collect_observation(
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
     watch_pid: Optional[int] = None,
+    max_nodes: int = _NATIVE_MAX_NODES,
 ) -> Tuple[Dict[str, Any], Optional[bytes]]:
     local_deadline = time.monotonic() + _OBSERVE_BUDGET_S
     if deadline is not None:
@@ -2168,7 +2199,7 @@ def _collect_observation(
     watched_pid = app_pid or watch_pid
     change_token = ax_watch.change_token(watched_pid) if watched_pid else None
     ok, raw, error, observer = _read_native_tree(
-        app, window_index, max_depth, max_children, app_pid=app_pid,
+        app, window_index, max_depth, max_children, app_pid=app_pid, max_nodes=max_nodes,
         timeout_s=_operation_timeout(local_deadline, 20),
     )
     if not ok:
@@ -2343,7 +2374,7 @@ def _collect_observation(
         max_depth=max_depth,
         max_children=max_children,
     )
-    node_budget = _native_node_budget(metadata)
+    node_budget = _native_node_budget(metadata, max_nodes)
     if node_budget is not None and (node_budget["truncated_windows"] or len(node_budget["windows"]) > 1):
         payload["node_budget"] = node_budget
     expand_hint = None
@@ -2394,6 +2425,7 @@ def _observe_ui(
     app_handle: Optional[str] = None,
     window_handle: Optional[str] = None,
     previous_observation_id: Optional[str] = None,
+    query: Optional[str] = None,
 ) -> Any:
     """Read a macOS app/window Accessibility tree with stable native target handles."""
     try:
@@ -2403,6 +2435,11 @@ def _observe_ui(
         requested_depth = int(max_depth)
         max_depth = max(0, min(requested_depth, _MAX_OBSERVE_DEPTH))
         max_children = max(1, min(int(max_children), 100))
+        terms = _query_terms(query)
+        if terms:
+            # A search reads the whole window, then returns only what matches (#82).
+            max_depth, max_children = _MAX_OBSERVE_DEPTH, max(max_children, 60)
+            previous_observation_id = None
         deadline = time.monotonic() + _OBSERVE_BUDGET_S
         resolved_app, resolved_pid, resolved_window_index, _, target_error = _resolve_registered_native_target(
             normalized_app, app_handle, window_handle, deadline
@@ -2475,10 +2512,13 @@ def _observe_ui(
             deadline=deadline,
             app_pid=resolved_pid,
             watch_pid=int(previous.get("app_pid") or 0) if compatible_previous else None,
+            max_nodes=_QUERY_MAX_NODES if terms else _NATIVE_MAX_NODES,
         )
-        if payload.get("ok") and requested_depth != max_depth:
+        if payload.get("ok") and requested_depth != max_depth and not terms:
             # Said, not silent: the depth asked for and the one used (#82).
             payload["depth"] = {"requested": requested_depth, "applied": max_depth, "limit": _MAX_OBSERVE_DEPTH}
+        if payload.get("ok") and terms:
+            _keep_query_matches(payload, terms)
         if not payload.get("ok") or not compatible_previous or include_screenshot or ocr:
             if previous_observation_id:
                 payload["previous_observation_id"] = previous_observation_id

@@ -1030,6 +1030,7 @@ def _api_mac_observe_alias(
         include_screenshot=_payload_value(data, "include_screenshot", False),
         ocr=_payload_value(data, "ocr", False),
         previous_observation_id=data.get("previous_observation_id"),
+        query=data.get("query"),
     )
 
 

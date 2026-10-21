@@ -2589,6 +2589,18 @@
                     "default": null,
                     "title": "Previous Observation Id"
                   },
+                  "query": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Query"
+                  },
                   "description": {
                     "type": "string",
                     "minLength": 3,
