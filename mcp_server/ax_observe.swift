@@ -187,7 +187,18 @@ var budgetHit = false
 
 func record(_ fields: [String]) { records.append(fields.joined(separator: fieldSeparator)) }
 
-func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDepth: Int, maxChildren: Int, maxNodes: Int) {
+// A wrapper that only holds one thing (no action, no value) costs no depth: web views and Electron apps nest
+// their content under many of them, and max_depth ran out before the page (#82, the ChatGPT app). Its id path
+// is kept, so element ids stay stable. rawDepth bounds a chain of wrappers.
+let passThroughRoles: Set<String> = ["AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXUnknown"]
+let maxRawDepth = 64
+
+func passesThrough(role: String, value: String, actions: String, childCount: Int) -> Bool {
+    childCount == 1 && actions.isEmpty && value.isEmpty && passThroughRoles.contains(role)
+}
+
+func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDepth: Int, maxChildren: Int, maxNodes: Int,
+          rawDepth: Int = 0) {
     if counter >= maxNodes { budgetHit = true; return }
     counter += 1
     let a = attributes(element, nodeAttributes)
@@ -213,11 +224,13 @@ func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDep
         a["AXSelected"] == nil ? "" : bool(a["AXSelected"]),
         clean(text(a["AXPlaceholderValue"])), clean(text(a["AXHelp"])),
     ])
-    if depth >= maxDepth { return }
+    let through = passesThrough(role: role, value: value, actions: actions, childCount: children.count)
+    if (depth >= maxDepth && !through) || rawDepth >= maxRawDepth { return }
     for (index, child) in children.enumerated() {
         if index >= maxChildren { break }
         if counter >= maxNodes { budgetHit = true; break }
-        walk(child, id: "\(id)/\(index + 1)", parent: id, depth: depth + 1, maxDepth: maxDepth, maxChildren: maxChildren, maxNodes: maxNodes)
+        walk(child, id: "\(id)/\(index + 1)", parent: id, depth: through ? depth : depth + 1, maxDepth: maxDepth,
+             maxChildren: maxChildren, maxNodes: maxNodes, rawDepth: rawDepth + 1)
     }
 }
 

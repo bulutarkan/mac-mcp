@@ -1990,19 +1990,28 @@ def _native_node_budget(metadata: Dict[str, Any], max_nodes: int = _NATIVE_MAX_N
     }
 
 
+# max_depth an observation may ask for. Wrappers that only hold one thing do not count toward it (the native
+# walker passes through them), so web views and Electron apps are read down to their controls (#82).
+_MAX_OBSERVE_DEPTH = 16
+
+
 def _native_context_truncated(
     nodes: List[Dict[str, Any]],
     *,
     max_depth: int,
     max_children: int,
 ) -> bool:
+    """Whether some node has children the observation does not show (depth, child limit or budget)."""
+    shown: Dict[str, int] = {}
+    for node in nodes:
+        parent = str(node.get("parent_id") or "")
+        if parent:
+            shown[parent] = shown.get(parent, 0) + 1
     for node in nodes:
         child_count = int(node.get("child_count") or 0)
         if child_count > int(max_children):
             return True
-        element_id = str(node.get("element_id") or "")
-        depth = element_id.count("/")
-        if child_count > 0 and depth >= int(max_depth):
+        if child_count > shown.get(str(node.get("element_id") or ""), 0):
             return True
     return False
 
@@ -2347,7 +2356,11 @@ def _collect_observation(
         )
     elif context_truncated:
         expand_hint = (
-            "Target the specific window/element or increase max_depth/max_children within bounded limits."
+            f"Some elements have children not shown. Raise max_depth (up to {_MAX_OBSERVE_DEPTH}; containers that "
+            "only hold one item do not count) or max_children (up to 100), or observe one window with window_index."
+            if max_depth < _MAX_OBSERVE_DEPTH or max_children < 100 else
+            "Some elements have children not shown at the largest max_depth and max_children; observe one window "
+            "with window_index."
         )
     stage = (
         "ocr_full_visual"
@@ -2387,7 +2400,8 @@ def _observe_ui(
         normalized_app = _normalize_app(app)
         if window_index < 0:
             return {"ok": False, "error": "window_index must be 0 (all) or a positive window number."}
-        max_depth = max(0, min(int(max_depth), 8))
+        requested_depth = int(max_depth)
+        max_depth = max(0, min(requested_depth, _MAX_OBSERVE_DEPTH))
         max_children = max(1, min(int(max_children), 100))
         deadline = time.monotonic() + _OBSERVE_BUDGET_S
         resolved_app, resolved_pid, resolved_window_index, _, target_error = _resolve_registered_native_target(
@@ -2462,6 +2476,9 @@ def _observe_ui(
             app_pid=resolved_pid,
             watch_pid=int(previous.get("app_pid") or 0) if compatible_previous else None,
         )
+        if payload.get("ok") and requested_depth != max_depth:
+            # Said, not silent: the depth asked for and the one used (#82).
+            payload["depth"] = {"requested": requested_depth, "applied": max_depth, "limit": _MAX_OBSERVE_DEPTH}
         if not payload.get("ok") or not compatible_previous or include_screenshot or ocr:
             if previous_observation_id:
                 payload["previous_observation_id"] = previous_observation_id
