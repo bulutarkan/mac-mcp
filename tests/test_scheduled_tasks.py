@@ -537,6 +537,48 @@ class SchedulerTests(StoreCase):
         self.assertEqual([], launched)
         self.assertEqual(runner.REASON_BUSY, [r for r in store.list_runs(task["id"]) if r["status"] == "skipped"][0]["reason"])
 
+    def test_run_after_waits_for_the_run_going_and_then_runs_once(self) -> None:
+        # #57: with busy=run_after, times that come due during a long run are not dropped: one run follows it.
+        task = store.create_task({**self.sh(), "busy": "run_after",
+                                  "schedule": {"type": "hours", "every": 1, "start": "00:00"}}, now=ts("2026-10-13T11:30"))
+        self.assertEqual("run_after", store.get_task(task["id"])["busy"])
+        long_run = store.start_run(task["id"], trigger="manual", now=ts("2026-10-13T11:50"))
+        loop, launched = self.make(ts("2026-10-13T11:30"))
+        self.assertEqual([("queued", None)], [(a["action"], a.get("run_id")) for a in loop.tick(ts("2026-10-13T12:00"))])
+        loop.tick(ts("2026-10-13T13:00"))  # another one due while it still runs: still one waiting
+        self.assertEqual([], launched)
+        self.assertEqual([], [r for r in store.list_runs(task["id"]) if r["status"] == "skipped"])
+        store.finish_run(long_run, "done", now=ts("2026-10-13T13:20"))
+        started = loop.tick(ts("2026-10-13T13:21"))
+        self.assertEqual(["started"], [a["action"] for a in started])
+        self.assertEqual(1, len(launched))
+        follow = next(r for r in store.list_runs(task["id"]) if r["status"] == "running")
+        self.assertEqual(("schedule", "2026-10-13T12:00"), (follow["trigger"], local(follow["scheduled_for"])))
+        # Nothing waits any more: a restart (a new loop) does not start it again.
+        store.finish_run(follow["id"], "done", now=ts("2026-10-13T13:30"))
+        again, relaunched = self.make(ts("2026-10-13T13:31"))
+        again.tick(ts("2026-10-13T13:31"))
+        self.assertEqual([], relaunched)
+
+    def test_a_waiting_run_is_dropped_when_the_task_is_paused(self) -> None:
+        task = store.create_task({**self.sh(), "busy": "run_after"}, now=ts("2026-10-13T12:00"))
+        store.start_run(task["id"], trigger="manual", now=ts("2026-10-13T17:00"))
+        loop, launched = self.make(ts("2026-10-13T12:00"))
+        loop.tick(ts("2026-10-13T18:00"))
+        self.assertEqual([task["id"]], [row["id"] for row in store.waiting_after_busy()])
+        store.set_paused(task["id"], True)
+        store.set_paused(task["id"], False)
+        self.assertEqual([], store.waiting_after_busy())
+
+    def test_busy_is_skip_by_default_and_run_after_is_for_timed_tasks(self) -> None:
+        self.assertNotIn("busy", store.get_task(store.create_task(self.sh())["id"]))
+        with self.assertRaises(store.TaskError):
+            store.create_task({**self.sh(), "busy": "later"})
+        with self.assertRaises(store.TaskError) as folder:
+            store.create_task({**self.sh(), "busy": "run_after",
+                               "schedule": {"type": "folder", "folder": str(self.folder)}})
+        self.assertEqual("busy_needs_times", folder.exception.code)
+
     def test_sleep_follows_the_next_run_and_idles_without_tasks(self) -> None:
         loop, _ = self.make(ts("2026-10-13T12:00"))
         self.assertIsNone(loop.sleep_for(ts("2026-10-13T12:00")))

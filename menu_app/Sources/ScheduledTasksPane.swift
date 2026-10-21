@@ -527,6 +527,9 @@ private struct TaskDetailView: View {
             if !task.watchesFolder {
                 factRow("moon.zzz", "If the Mac is asleep", task.catchUp ? "Runs once when it’s back" : "Skipped; Run now is there")
                 Divider()
+                factRow("hourglass", "If the last run is still going",
+                        task.runsAfterBusy ? "Runs once after it" : "Skipped; shown in the history")
+                Divider()
             }
             factRow("bell", "When it finishes", task.notify ? "Notifies you" : "No notification")
         }
@@ -715,6 +718,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     @Published var usageAmount = ""
     @Published var notify = true
     @Published var catchUp = false
+    @Published var runAfterBusy = false
     @Published var timeoutMin = 0
     @Published var showAdvanced = false
     /// The first output check (#198) is edited here; checks an AI app added beyond it are kept as they are.
@@ -754,6 +758,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         }
         notify = task.notify
         catchUp = task.catchUp
+        runAfterBusy = task.runsAfterBusy
         timeoutMin = raw["timeout_min"] as? Int ?? 0
         if let checks = raw["verify"] as? [[String: Any]], let first = checks.first {
             firstCheck = first
@@ -863,6 +868,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
             "name": name, "description": description, "kind": isRecipe ? "recipe" : isAI ? "ai" : "script",
             "schedule": schedule, "notify": notify, "cwd": cwd,
             "missed": catchUp && when != .file ? "run_once" : "skip",
+            "busy": runAfterBusy && when != .file ? "run_after" : "skip",
         ]
         if timeoutMin > 0 { out["timeout_min"] = timeoutMin }
         var checks = otherChecks
@@ -1519,6 +1525,12 @@ private struct TaskEditorSheet: View {
             if model.when != .file {
                 Toggle(isOn: $model.catchUp) {
                     Text("Run it once when the Mac is back if it was asleep or Mac MCP was off")
+                        .font(.callout)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                Toggle(isOn: $model.runAfterBusy) {
+                    Text("If the last run is still going when it’s due, run it once after that run")
                         .font(.callout)
                 }
                 .toggleStyle(.switch)

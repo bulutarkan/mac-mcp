@@ -742,6 +742,11 @@ class Scheduler:
     def tick(self, now: Optional[float] = None) -> List[Dict[str, Any]]:
         now = self.clock() if now is None else now
         actions: List[Dict[str, Any]] = []
+        for task in store.waiting_after_busy():
+            # The run that came due while the previous one still went (#57), once that one has ended.
+            if not store.is_running(task["id"]):
+                actions.append(self.start(task["id"], task["definition"], trigger="schedule",
+                                          scheduled_for=task["queued_after"], now=now, takes_queued=True))
         for task in store.due_tasks(now):
             definition = task["definition"]
             due = float(task["next_run_at"])
@@ -766,15 +771,19 @@ class Scheduler:
 
     def start(self, task_id: str, definition: Dict[str, Any], *, trigger: str,
               scheduled_for: Optional[float] = None, now: Optional[float] = None,
-              resumed_from: Optional[str] = None) -> Dict[str, Any]:
+              resumed_from: Optional[str] = None, takes_queued: bool = False) -> Dict[str, Any]:
         trigger_file = definition.get("trigger_file")
         if trigger_file and privacy_policy.policy(fresh=True)["private_mode"]:
             trigger_file = None  # Private mode keeps that it ran, not which file started it
         run_id = store.start_run(task_id, trigger=trigger, scheduled_for=scheduled_for, now=now,
-                                 trigger_file=trigger_file, resumed_from=resumed_from)
+                                 trigger_file=trigger_file, resumed_from=resumed_from, takes_queued=takes_queued)
         if run_id is None:
             if trigger in ("schedule", "catch_up"):
-                store.record_skip(task_id, scheduled_for=scheduled_for or (now or self.clock()), reason=REASON_BUSY, now=now)
+                when = scheduled_for or (now or self.clock())
+                if definition.get("busy") == "run_after":
+                    store.queue_after_busy(task_id, when)  # runs once after the run in progress (#57)
+                    return {"task_id": task_id, "action": "queued"}
+                store.record_skip(task_id, scheduled_for=when, reason=REASON_BUSY, now=now)
             return {"task_id": task_id, "action": "busy"}
         self._launch(task_id, run_id, definition)
         return {"task_id": task_id, "action": "started", "run_id": run_id}

@@ -34,6 +34,8 @@ struct ScheduledTask: Identifiable, Equatable {
     var notify: Bool { raw["notify"] as? Bool ?? true }
     /// A run missed while the Mac slept or Mac MCP was off runs once when it is back (#256).
     var catchUp: Bool { (raw["missed"] as? String) == "run_once" }
+    /// A run due while the previous one is still going runs once after it (#57).
+    var runsAfterBusy: Bool { (raw["busy"] as? String) == "run_after" }
     /// Runs when a file arrives in a folder (#193) instead of at set times.
     var watchesFolder: Bool { (schedule["type"] as? String) == "folder" }
     /// The optional usage limit of an AI task (#211): max_tokens and/or max_cost_usd.

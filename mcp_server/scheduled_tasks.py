@@ -7,6 +7,8 @@ command line). Its definition is one JSON object:
      "notify": bool, "timeout_min": int,
      "missed": "run_once" (optional, #256: a run missed while the Mac slept or Mac MCP was off
                runs once when it is back; absent: it is skipped),
+     "busy": "run_after" (optional, #57: a run due while the previous one still goes runs once
+             after it; however many came due meanwhile, one run; absent: it is skipped),
      # ai:     "prompt", "provider", "model", "cwd",
      #         "data_step": {"script" or "command", "interpreter", "args"} (optional),
      #         "usage_limit": {"max_tokens", "max_cost_usd"} (optional, run_budget)
@@ -46,6 +48,7 @@ from .runtime_settings import run_detail_privacy
 
 KINDS = ("ai", "script", "recipe")
 MISSED_POLICIES = ("skip", "run_once")
+BUSY_POLICIES = ("skip", "run_after")
 RUN_STATUSES = ("running", "done", "failed", "skipped", "timed_out")
 RUNS_PER_TASK = 50
 RUN_RETENTION_DAYS = 90
@@ -179,12 +182,14 @@ def _db() -> Iterator[sqlite3.Connection]:
                 # Databases from before output checks (#198) and expiring contents (#199). Two
                 # processes may open an old database at once; the second finds the column there.
                 task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-                if "script_pins" not in task_columns:  # #179: script contents an approval covers
-                    try:
-                        conn.execute("ALTER TABLE tasks ADD COLUMN script_pins TEXT")
-                    except sqlite3.OperationalError as exc:
-                        if "duplicate column" not in str(exc).lower():
-                            raise
+                # #179: script contents an approval covers; #57: the time of a run waiting for the one going.
+                for column, kind in (("script_pins", "TEXT"), ("queued_after", "REAL")):
+                    if column not in task_columns:
+                        try:
+                            conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {kind}")
+                        except sqlite3.OperationalError as exc:
+                            if "duplicate column" not in str(exc).lower():
+                                raise
                 for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL"), ("trigger_file", "TEXT"),
                                      ("resumed_from", "TEXT")):
                     if column not in columns:
@@ -473,6 +478,14 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
         if schedule["type"] == "folder":
             raise TaskError("missed_needs_times", "run_once is for tasks that run at set times, not when a file arrives.")
         definition["missed"] = "run_once"  # skip stays implicit, so existing definitions do not change
+    busy = str(raw.get("busy") or "skip").strip().lower()
+    if busy not in BUSY_POLICIES:
+        raise TaskError("busy_invalid", "busy must be skip (the default) or run_after.")
+    if busy == "run_after":
+        if schedule["type"] == "folder":
+            raise TaskError("busy_needs_times", "run_after is for tasks that run at set times; a folder task "
+                                                "already keeps files that arrive during a run for after it.")
+        definition["busy"] = "run_after"
     if raw.get("verify"):
         definition["verify"] = _output_checks(raw["verify"], definition["cwd"])
     if kind == "recipe":
@@ -910,8 +923,10 @@ def set_paused(task_id: str, paused: bool, *, now: Optional[float] = None) -> Di
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if row is None:
             raise TaskError("task_not_found", "That task no longer exists.", 404)
-        conn.execute("UPDATE tasks SET paused=?, updated_at=?, next_run_at=? WHERE id=?",
-                     (int(paused), now, _next_run(_load(row["definition"]), paused, now), task_id))
+        # Pausing also drops a run that waited for the one going (#57): resuming starts from the schedule.
+        conn.execute("UPDATE tasks SET paused=?, updated_at=?, next_run_at=?,"
+                     " queued_after=CASE WHEN ? THEN NULL ELSE queued_after END WHERE id=?",
+                     (int(paused), now, _next_run(_load(row["definition"]), paused, now), int(paused), task_id))
     _changed()
     return get_task(task_id)
 
@@ -998,10 +1013,30 @@ def up_next(limit: int = 1) -> List[Dict[str, Any]]:
 
 # ── Runs ─────────────────────────────────────────────────────────────────────
 
+def queue_after_busy(task_id: str, scheduled_for: float) -> None:
+    """Keep one run waiting for the run in progress (#57): times that come due meanwhile add nothing."""
+    with _db() as conn:
+        conn.execute("UPDATE tasks SET queued_after=COALESCE(queued_after, ?) WHERE id=?", (scheduled_for, task_id))
+    _changed()
+
+
+def waiting_after_busy() -> List[Dict[str, Any]]:
+    """Approved, unpaused tasks with a run waiting for the previous one to end."""
+    with _db() as conn:
+        rows = conn.execute("SELECT id, definition, queued_after FROM tasks WHERE queued_after IS NOT NULL"
+                            " AND paused=0 AND definition IS NOT NULL").fetchall()
+    return [{"id": row["id"], "definition": _load(row["definition"]), "queued_after": row["queued_after"]}
+            for row in rows]
+
+
 def start_run(task_id: str, *, trigger: str, scheduled_for: Optional[float] = None,
               now: Optional[float] = None, trigger_file: Optional[str] = None,
-              resumed_from: Optional[str] = None) -> Optional[str]:
-    """Record a run as started; None when this task already has one in progress."""
+              resumed_from: Optional[str] = None, takes_queued: bool = False) -> Optional[str]:
+    """Record a run as started; None when this task already has one in progress.
+
+    takes_queued: this run is the one that waited (#57); the wait is cleared in the same transaction,
+    so a restart right after can never start it twice.
+    """
     now = time.time() if now is None else now
     run_id = _new_id("run")
     with _db() as conn:
@@ -1013,6 +1048,8 @@ def start_run(task_id: str, *, trigger: str, scheduled_for: Optional[float] = No
         conn.execute("INSERT INTO runs (id, task_id, trigger, scheduled_for, started_at, status, trigger_file,"
                      " resumed_from) VALUES (?,?,?,?,?,?,?,?)",
                      (run_id, task_id, trigger, scheduled_for, now, "running", trigger_file, resumed_from))
+        if takes_queued:
+            conn.execute("UPDATE tasks SET queued_after=NULL WHERE id=?", (task_id,))
     _changed()
     return run_id
 
