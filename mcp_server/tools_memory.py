@@ -299,12 +299,25 @@ def _parse_day_file(root: Path, path: Path) -> List[MemoryEntry]:
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    os.close(fd)
     temp = Path(temp_name)
     try:
-        temp.write_text(text, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            # On disk before it replaces the day file, and the rename with it (#97).
+            handle.flush()
+            os.fsync(handle.fileno())
         temp.chmod(0o600)
         os.replace(temp, path)
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+        finally:
+            os.close(dir_fd)
     finally:
         temp.unlink(missing_ok=True)
 

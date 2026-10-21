@@ -102,7 +102,24 @@ def _write_meta(job_id: str, meta: Dict[str, Any]) -> None:
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True))
+        # On disk before it replaces the last good copy, and the rename with it (#97).
+        handle.flush()
+        os.fsync(handle.fileno())
     tmp.replace(path)
+    _fsync_dir(path.parent)
+
+
+def _fsync_dir(folder: Path) -> None:
+    try:
+        dir_fd = os.open(folder, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
 
 
 def _base_env(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -638,6 +655,8 @@ def prune_jobs(*, force: bool = False) -> Dict[str, Any]:
     finished: List[tuple[float, Path, int]] = []
     kept_bytes = 0
     pruned = 0
+    unreadable_pruned = 0
+    cutoff = now - limits["days"] * 86400
     with _LOCK:
         for path in JOBS_DIR.iterdir():
             if not path.is_dir():
@@ -645,6 +664,15 @@ def prune_jobs(*, force: bool = False) -> Dict[str, Any]:
             try:
                 meta = _normalize_status(path.name, _read_meta(path.name))
             except HTTPException:
+                # Metadata that cannot be read: kept while it may still be being written, then removed
+                # once past the retention age instead of staying forever (#97).
+                try:
+                    changed_at = max(path.stat().st_mtime, *(child.stat().st_mtime for child in path.iterdir()))
+                except (OSError, ValueError):
+                    continue
+                if path.name not in _PROCS and changed_at < cutoff:
+                    _remove_job_dir(path)
+                    unreadable_pruned += 1
                 continue
             size = _job_bytes(path)
             if _is_active(path.name, meta):
@@ -652,7 +680,6 @@ def prune_jobs(*, force: bool = False) -> Dict[str, Any]:
                 continue
             finished.append((float(meta.get("ended_at") or meta.get("updated_at") or 0.0), path, size))
         finished.sort(key=lambda item: item[0], reverse=True)  # newest first
-        cutoff = now - limits["days"] * 86400
         for index, (ended_at, path, size) in enumerate(finished):
             over_count = index >= limits["max_jobs"]
             over_bytes = kept_bytes + size > limits["max_total_bytes"]
@@ -661,7 +688,7 @@ def prune_jobs(*, force: bool = False) -> Dict[str, Any]:
                 pruned += 1
             else:
                 kept_bytes += size
-    return {"pruned": pruned, **limits}
+    return {"pruned": pruned, "unreadable_pruned": unreadable_pruned, **limits}
 
 
 def list_jobs(settings: Settings, status_filter: Optional[str] = None, limit: int = 50,
