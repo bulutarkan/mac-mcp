@@ -25,6 +25,7 @@ from .process_supervision import run_osascript, terminate_process_group as _term
 from .native_action_verification import (
     ACTION_VERIFY_POLL_S as _NATIVE_ACTION_VERIFY_POLL_S,
     ACTION_VERIFY_TIMEOUT_S as _NATIVE_ACTION_VERIFY_TIMEOUT_S,
+    READINESS_FIRST_PROBE_S as _NATIVE_READINESS_FIRST_PROBE_S,
     READINESS_POLL_S as _NATIVE_READINESS_POLL_S,
     READINESS_STABLE_MS as _NATIVE_READINESS_STABLE_MS,
     READINESS_TIMEOUT_S as _NATIVE_READINESS_TIMEOUT_S,
@@ -3771,6 +3772,9 @@ def _wait_for_native_readiness(
     local_deadline = started + timeout_s
     if deadline is not None:
         local_deadline = min(local_deadline, deadline)
+    first_probe_deadline = started + max(timeout_s, _NATIVE_READINESS_FIRST_PROBE_S)
+    if deadline is not None:
+        first_probe_deadline = min(first_probe_deadline, deadline)
     attempts = 0
     last_state: Dict[str, Any] = {}
     last_reason: Optional[str] = None
@@ -3792,7 +3796,7 @@ def _wait_for_native_readiness(
 
     while True:
         state, probe_error = _probe_native_action_state(
-            app, element_id, app_pid=app_pid, deadline=local_deadline,
+            app, element_id, app_pid=app_pid, deadline=local_deadline if attempts else first_probe_deadline,
             label_child_limit=int((observed_node or {}).get("subtree_child_limit") or _NATIVE_SUBTREE_CHILD_LIMIT),
             # Labels settle the target's identity once; later polls only watch readiness.
             label_limit=len((observed_node or {}).get("subtree_labels") or ()) if attempts == 0 else 0,

@@ -256,6 +256,33 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
                 "DemoApp", {"type": "click", "element_id": "w1/1"}, observed, app_pid=4321)
         self.assertEqual(("ELEMENT_OUTSIDE_WINDOW", True), (late["reason_code"], late["timed_out"]))
 
+    def test_the_first_look_may_outlast_the_readiness_budget(self) -> None:
+        # One probe of Calculator's SwiftUI window takes 0.8-1.6 s. Cut at the 1.2 s budget it failed
+        # ready keys with READINESS_PROBE_FAILED, so the click (and its desktop cursor) never happened.
+        deadlines: list = []
+
+        def probe(*_args, deadline=None, **_kwargs):
+            deadlines.append(deadline)
+            return state(), None
+
+        with patch.object(tools_ui, "_probe_native_action_state", side_effect=probe), \
+             patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 1.6, 1.7, 1.8]), \
+             patch.object(tools_ui.time, "sleep"):
+            result = tools_ui._wait_for_native_readiness(
+                "Calculator", {"type": "click", "element_id": "w1/1", "readiness_stable_ms": 0},
+                {"role": "AXButton", "subrole": "", "title": "Continue"}, app_pid=4321)
+        self.assertTrue(result["ready"])
+        self.assertEqual(tools_ui._NATIVE_READINESS_FIRST_PROBE_S, deadlines[0])
+        # The whole action's own deadline still bounds that first look.
+        deadlines.clear()
+        with patch.object(tools_ui, "_probe_native_action_state", side_effect=probe), \
+             patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 1.6, 1.7, 1.8]), \
+             patch.object(tools_ui.time, "sleep"):
+            tools_ui._wait_for_native_readiness(
+                "Calculator", {"type": "click", "element_id": "w1/1", "readiness_stable_ms": 0},
+                {"role": "AXButton", "subrole": "", "title": "Continue"}, app_pid=4321, deadline=2.0)
+        self.assertEqual(2.0, deadlines[0])
+
     def test_effect_wait_accepts_delayed_state_change(self) -> None:
         before = state()
         after = state(sheet_count=1)

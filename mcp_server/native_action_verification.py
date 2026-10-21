@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 READINESS_TIMEOUT_S = 1.2
+# The first look always gets to finish: one AppleScript probe of a big SwiftUI window
+# (Calculator) takes 0.8-1.6 s, so cutting it at the readiness budget failed ready targets.
+READINESS_FIRST_PROBE_S = 4.0
 READINESS_POLL_S = 0.06
 READINESS_STABLE_MS = 120
 ACTION_VERIFY_TIMEOUT_S = 1.2

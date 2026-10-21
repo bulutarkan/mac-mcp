@@ -16,11 +16,10 @@ struct DesktopPointer: Equatable {
 /// The desktop agent cursor: a synthetic arrow showing where an agent acts in another
 /// app's window without moving the real pointer, like the browser companion's cursor.
 ///
-/// It sits in the window stack directly above the window being driven, not above
-/// everything: a window in front of that one (the user's Safari, say) covers the cursor
-/// and its click effects just as it covers the background window itself. It is display
-/// only, ignores the mouse, never activates, and stays out of screen captures, so the
-/// agent's own screenshots never see it.
+/// It floats above every window on whichever desktop (Space) the owner is looking at, so it
+/// shows every time: a window in front of the driven one, or the driven window being on
+/// another desktop, no longer hides it. It is display only, ignores the mouse, never
+/// activates, and stays out of screen captures, so the agent's own screenshots never see it.
 @MainActor
 final class DesktopCursorOverlayController {
     static let shared = DesktopCursorOverlayController()
@@ -34,13 +33,10 @@ final class DesktopCursorOverlayController {
     private var screenFrame: CGRect = .zero
     private var last: CGPoint?
     private var targetPID: Int32?
-    private var targetWindow: CGWindowID = 0
     private var lastEventID: String?
     private var hideTask: Task<Void, Never>?
-    private var restackTask: Task<Void, Never>?
     /// The press planned for when the arrow arrives; the next pointer event cancels it (#27).
     private var pressTask: Task<Void, Never>?
-    private var activationObserver: NSObjectProtocol?
 
     private let idleHideSeconds: Double = 2.4
     private let finishedHideSeconds: Double = 0.9
@@ -63,28 +59,6 @@ final class DesktopCursorOverlayController {
         return (screen, CGPoint(x: appKit.x - screen.minX, y: screen.maxY - appKit.y))
     }
 
-    /// The front-most normal window of `pid` under `point`, from a front-to-back window list.
-    /// CG window bounds use the same top-left desktop space as AX.
-    nonisolated static func targetWindow(
-        pid: Int32, point: CGPoint, windows: [[String: Any]]
-    ) -> (id: CGWindowID, layer: Int)? {
-        for window in windows {
-            guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
-                  let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue, layer == 0,
-                  let id = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
-                  let bounds = window[kCGWindowBounds as String] as? NSDictionary,
-                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
-                  rect.contains(point)
-            else { continue }
-            return (id, layer)
-        }
-        return nil
-    }
-
-    nonisolated static func isOnScreen(_ target: CGWindowID, in windows: [[String: Any]]) -> Bool {
-        windows.contains { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == target }
-    }
-
     // MARK: Presentation
 
     func show(_ pointer: DesktopPointer, agent: String?) {
@@ -98,23 +72,16 @@ final class DesktopCursorOverlayController {
             }
             return
         }
-        guard let pid = pointer.pid,
-              let located = Self.locate(point, screens: NSScreen.screens.map(\.frame)),
-              let windows = Self.windowList(),
-              let window = Self.targetWindow(pid: pid, point: point, windows: windows)
-        else {
-            // No visible window of that app under the point (hidden, minimised, another
-            // Space): there is nothing on screen to point at.
+        guard let located = Self.locate(point, screens: NSScreen.screens.map(\.frame)) else {
             hideImmediately()
             return
         }
 
+        // Above everything, on the desktop being looked at: the driven window may be covered
+        // or on another desktop, and the cursor still shows where the action lands.
         ensurePanel(screen: located.screen)
-        targetPID = pid
-        targetWindow = window.id
-        if panel?.level.rawValue != window.layer { panel?.level = NSWindow.Level(rawValue: window.layer) }
-        restack(windows: windows)
-        startRestacking()
+        targetPID = pointer.pid
+        panel?.orderFrontRegardless()
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let local = located.local
@@ -163,7 +130,6 @@ final class DesktopCursorOverlayController {
         hideTask = nil
         pressTask?.cancel()
         pressTask = nil
-        stopRestacking()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         cursor.opacity = 0
@@ -171,12 +137,10 @@ final class DesktopCursorOverlayController {
         cursor.setLabel(nil)
         last = nil
         lastEventID = nil
-        targetWindow = 0
         panel?.orderOut(nil)
     }
 
     private func fadeOut() {
-        stopRestacking()
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.35)
         CATransaction.setCompletionBlock { [weak self] in
@@ -190,7 +154,6 @@ final class DesktopCursorOverlayController {
         cursor.setLabel(nil)
         last = nil
         lastEventID = nil
-        targetWindow = 0
     }
 
     private func scheduleHide(after seconds: Double) {
@@ -199,53 +162,6 @@ final class DesktopCursorOverlayController {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.fadeOut()
-        }
-    }
-
-    // MARK: Window stack
-
-    private static func windowList() -> [[String: Any]]? {
-        CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
-    }
-
-    /// Re-asserted on every tick rather than when the stack looks changed: the overlay is
-    /// kept out of the window list (like any capture), so it cannot see where it sits, and
-    /// a click raising the target window above it changes nothing else in the stack.
-    private func restack(windows: [[String: Any]]? = nil) {
-        guard let panel, targetWindow != 0 else { return }
-        guard let windows = windows ?? Self.windowList(), Self.isOnScreen(targetWindow, in: windows) else {
-            // The target window left the screen (closed, minimised, Space change).
-            fadeOut()
-            return
-        }
-        panel.order(.above, relativeTo: Int(targetWindow))
-    }
-
-    /// Follows the stack while visible: the user raising another app, or the target one.
-    private func startRestacking() {
-        if activationObserver == nil {
-            activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.restack() }
-            }
-        }
-        guard restackTask == nil else { return }
-        restackTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 150_000_000)
-                guard let self, !Task.isCancelled, self.last != nil else { return }
-                self.restack()
-            }
-        }
-    }
-
-    private func stopRestacking() {
-        restackTask?.cancel()
-        restackTask = nil
-        if let activationObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
-            self.activationObserver = nil
         }
     }
 
@@ -262,8 +178,8 @@ final class DesktopCursorOverlayController {
         p.backgroundColor = .clear
         p.hasShadow = false
         p.ignoresMouseEvents = true
-        p.level = .normal
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        p.level = .statusBar
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         p.isReleasedWhenClosed = false
         p.hidesOnDeactivate = false
         p.animationBehavior = .none

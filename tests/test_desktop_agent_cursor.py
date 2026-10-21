@@ -116,15 +116,6 @@ class AnnounceNativePointerTests(unittest.TestCase):
 HARNESS = r'''
 import AppKit
 
-func window(_ id: UInt32, pid: Int32, layer: Int = 0, _ rect: CGRect) -> [String: Any] {
-    [
-        kCGWindowNumber as String: NSNumber(value: id),
-        kCGWindowOwnerPID as String: NSNumber(value: pid),
-        kCGWindowLayer as String: NSNumber(value: layer),
-        kCGWindowBounds as String: rect.dictionaryRepresentation as NSDictionary,
-    ]
-}
-
 @main
 struct DesktopCursorHarness {
     static func main() {
@@ -141,19 +132,6 @@ struct DesktopCursorHarness {
         hit = C.locate(CGPoint(x: 100, y: -1000), screens: [primary, above])!
         precondition(hit.screen == above && hit.local == CGPoint(x: 100, y: 80))
 
-        // Front to back: the user's Finder over TextEdit (pid 7); a TextEdit palette at another layer.
-        let windows = [
-            window(1, pid: 3, CGRect(x: 470, y: 100, width: 540, height: 330)),
-            window(2, pid: 7, layer: 3, CGRect(x: 150, y: 150, width: 40, height: 40)),
-            window(3, pid: 7, CGRect(x: 140, y: 120, width: 760, height: 520)),
-            window(4, pid: 7, CGRect(x: 0, y: 0, width: 1470, height: 900)),
-        ]
-        precondition(C.targetWindow(pid: 7, point: CGPoint(x: 600, y: 170), windows: windows)! == (3, 0),
-                     "the front-most normal window of that app under the point, even when another app covers it")
-        precondition(C.targetWindow(pid: 7, point: CGPoint(x: 1200, y: 800), windows: windows)! == (4, 0))
-        precondition(C.targetWindow(pid: 7, point: CGPoint(x: 1300, y: 940), windows: windows) == nil)
-        precondition(C.targetWindow(pid: 9, point: CGPoint(x: 600, y: 170), windows: windows) == nil)
-        precondition(C.isOnScreen(3, in: windows) && !C.isOnScreen(42, in: windows))
         print("ok")
     }
 }
@@ -161,7 +139,7 @@ struct DesktopCursorHarness {
 
 
 class DesktopCursorOverlayTests(unittest.TestCase):
-    def test_helpers_place_the_cursor_with_the_driven_window(self) -> None:
+    def test_helpers_place_the_cursor_on_the_right_display(self) -> None:
         import shutil
         import subprocess
 
@@ -229,19 +207,23 @@ import AppKit
         hide = source[source.index("func hideImmediately()"):source.index("private func fadeOut()")]
         self.assertIn("pressTask?.cancel()", hide)
 
-    def test_overlay_is_stacked_with_the_target_and_stays_out_of_captures(self) -> None:
+    def test_overlay_floats_on_every_desktop_and_stays_out_of_captures(self) -> None:
+        # The owner wants the cursor every time and on whichever desktop they look at: stacked just
+        # above the driven window it hid behind any window in front, and vanished for another desktop.
         source = (SOURCES / "DesktopCursorOverlay.swift").read_text(encoding="utf-8")
-        self.assertIn("panel.order(.above, relativeTo: Int(targetWindow))", source)
-        self.assertIn("p.level = .normal", source)
+        show = source[source.index("func show(_ pointer: DesktopPointer"):source.index("func finish(eventID: String)")]
+        self.assertIn("panel?.orderFrontRegardless()", show)
+        self.assertNotIn("CGWindowListCopyWindowInfo", source)
+        self.assertNotIn("relativeTo:", source)
+        self.assertIn("p.level = .statusBar", source)
+        self.assertIn(".canJoinAllSpaces", source)
         self.assertNotIn(".screenSaver", source)
         self.assertIn("p.ignoresMouseEvents = true", source)
         self.assertIn("[.borderless, .nonactivatingPanel]", source)
         self.assertIn("override var canBecomeKey: Bool { false }", source)
         self.assertIn("p.sharingType = capturableForTesting ? .readOnly : .none", source)
         self.assertIn("var capturableForTesting = false", source)
-        self.assertIn("NSWorkspace.didActivateApplicationNotification", source)
         self.assertIn("NSWorkspace.shared.accessibilityDisplayShouldReduceMotion", source)
-        self.assertNotIn("orderFrontRegardless", source)
 
     def test_app_routes_pointer_events_behind_the_setting(self) -> None:
         state = (SOURCES / "AppState.swift").read_text(encoding="utf-8")
