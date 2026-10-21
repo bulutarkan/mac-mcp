@@ -183,10 +183,17 @@ def repair(runtime: Path, *, python: str | None = None, force: bool = False, qui
           f"(Python {'.'.join(map(str, info['version']))}).", flush=True)
     try:
         _run([str(interpreter), "-m", "venv", str(staged)], timeout=300, **quietly)
-        _run([str(staged / "bin" / "python"), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-              "--upgrade", "pip", "setuptools", "wheel"], **quietly)
-        _run([str(staged / "bin" / "python"), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-              "-e", str(runtime)], **quietly)
+        pip = [str(staged / "bin" / "python"), "-m", "pip", "install", "--quiet", "--disable-pip-version-check"]
+        lock = runtime / "requirements.lock"
+        if lock.is_file():
+            # As install.sh and the updater do (#96): every package, build tools included, pinned by
+            # version and hash, then Mac MCP itself without resolving anything again.
+            _run([*pip, "--require-hashes", "-r", str(lock)], **quietly)
+            _run([*pip, "--no-deps", "--no-build-isolation", "-e", str(runtime)], **quietly)
+        else:
+            # A stable release from before requirements.lock existed.
+            _run([*pip, "--upgrade", "pip", "setuptools", "wheel"], **quietly)
+            _run([*pip, "-e", str(runtime)], **quietly)
         _verify(staged, runtime, **quietly)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         shutil.rmtree(staged, ignore_errors=True)

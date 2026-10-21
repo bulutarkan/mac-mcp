@@ -100,6 +100,37 @@ class RepairTransactionTests(unittest.TestCase):
         self.assertEqual(1, len(list(self.runtime.glob(".venv.failed-*"))))
         self.assertEqual(2, len(calls))
 
+    def record(self):
+        commands: list[list[str]] = []
+        inner = self.fake_run()
+
+        def run(cmd, **kwargs):
+            commands.append(list(cmd))
+            return inner(cmd, **kwargs)
+        return commands, run
+
+    def test_a_locked_runtime_is_rebuilt_from_its_hash_lock(self) -> None:
+        # #96: install.sh and the updater install requirements.lock with --require-hashes; repair upgraded
+        # pip/setuptools/wheel and let pip resolve the dependencies of `-e runtime` afresh.
+        lock = self.runtime / "requirements.lock"
+        lock.write_text("fastapi==0.1 --hash=sha256:00\n", encoding="utf-8")
+        commands, run = self.record()
+        self.assertEqual(0, self.repair(run=run))
+        pip = [cmd[cmd.index("install") + 1:] for cmd in commands if "install" in cmd]
+        self.assertEqual([
+            ["--quiet", "--disable-pip-version-check", "--require-hashes", "-r", str(lock)],
+            ["--quiet", "--disable-pip-version-check", "--no-deps", "--no-build-isolation", "-e", str(self.runtime)],
+        ], pip)
+
+    def test_a_runtime_from_before_the_lock_is_rebuilt_as_before(self) -> None:
+        commands, run = self.record()
+        self.assertEqual(0, self.repair(run=run))
+        pip = [cmd[cmd.index("install") + 1:] for cmd in commands if "install" in cmd]
+        self.assertEqual([
+            ["--quiet", "--disable-pip-version-check", "--upgrade", "pip", "setuptools", "wheel"],
+            ["--quiet", "--disable-pip-version-check", "-e", str(self.runtime)],
+        ], pip)
+
     def test_a_healthy_venv_is_left_alone_unless_forced(self) -> None:
         shutil.rmtree(self.runtime / ".venv")
         make_venv(self.runtime / ".venv")
