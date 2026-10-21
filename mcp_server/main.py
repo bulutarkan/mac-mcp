@@ -98,7 +98,7 @@ from .tools_browser import _norm_browser
 from . import browser_checkpoint, browser_tabs
 from .tool_cancellation import cancellable_sleep
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
-from .tools_voice import ask_user_voice
+from .tools_voice import ask_user_voice, voice_capture
 from . import applescript_host, ax_native, ax_watch
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
@@ -2893,6 +2893,59 @@ def create_app():
             reason_code=f"voice_consent_{consent or 'unknown'}",
             profile=None, actor="local_user", agent_id=None,
             target_summary=f"provider=groq; model={event.get('model')}; tts={event.get('tts')}; outcome={event.get('outcome')}",
+        )
+
+    def _voice_title(text: str, limit: int) -> str:
+        words = " ".join(text.split())
+        if len(words) <= limit:
+            return words
+        return (words[:limit].rsplit(" ", 1)[0] or words[:limit]) + "…"
+
+    @mcp.tool(
+        name="voice_capture",
+        title="Capture a spoken note",
+        description=(
+            "Record one short spoken note on this Mac when the person asks to dictate something: a short sound, "
+            "then they speak (recording stops after a short silence), and the words come back as text. "
+            "target=transcript (default) only returns the text; notes saves it as a new note (title optional, "
+            "otherwise its first words; optional folder); reminders as a new reminder (optional title, list_name). "
+            "The saved item is read back and can be undone with mac_app. language: tr, en or auto (default from "
+            "Settings > Voice). Uses the voice switch and consent of ask_user_voice: off until the person turns voice "
+            "on, and before every recording they allow uploading the audio to Groq for transcription; the recording "
+            "is deleted afterwards. Saying 'atla', 'iptal', 'boşver' or 'vazgeç', silence or declining saves nothing. "
+            "It never listens on its own: call it only when the person wants to dictate."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True,
+        ),
+        structured_output=False,
+    )
+    async def _voice_capture(
+        target: str = "transcript",
+        title: Optional[str] = None,
+        folder: Optional[str] = None,
+        list_name: Optional[str] = None,
+        language: Optional[str] = None,
+        sender: str = "AI",
+        timeout_s: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        def save(where: str, text: str) -> Dict[str, Any]:
+            if where == "notes":
+                return mac_app(settings, app="Notes", action="create_note",
+                               title=title or _voice_title(text, 60), body=text, folder=folder)
+            name = title or _voice_title(text, 120)
+            return mac_app(settings, app="Reminders", action="create_reminder", title=name,
+                           notes=None if name == text else text, list_name=list_name)
+
+        return await asyncio.to_thread(
+            _log,
+            audit_logger,
+            "voice_capture",
+            lambda: voice_capture(settings, target=target, sender=sender, timeout_s=timeout_s, language=language,
+                                  on_egress=_record_voice_egress, save=save),
         )
 
     @mcp.tool(

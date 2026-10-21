@@ -123,12 +123,22 @@ _TRANSCRIPT_PLACEHOLDER = "[voice transcript not stored]"
 
 def _omit_private_answers(tool: str, arguments: Any, result: Any) -> Any:
     """Keep voice transcripts out of telemetry; the caller still receives them."""
-    if tool == "tool_invoke" and isinstance(arguments, dict) and arguments.get("tool_name") == "ask_user_voice":
+    if tool == "tool_invoke" and isinstance(arguments, dict) and arguments.get("tool_name") in {"ask_user_voice", "voice_capture"}:
         if isinstance(result, dict) and isinstance(result.get("result"), dict):
-            return {**result, "result": _omit_private_answers("ask_user_voice", {}, result["result"])}
+            return {**result, "result": _omit_private_answers(str(arguments["tool_name"]), {}, result["result"])}
         return result
     if tool == "ask_user_voice" and isinstance(result, dict) and result.get("response"):
         return {**result, "response": _TRANSCRIPT_PLACEHOLDER}
+    if tool == "voice_capture" and isinstance(result, dict):
+        out = {**result, "transcript": _TRANSCRIPT_PLACEHOLDER} if result.get("transcript") else dict(result)
+        saved = out.get("saved")
+        if isinstance(saved, dict):
+            # The saved note's or reminder's title is the transcript's first words.
+            out["saved"] = {key: ({field: _TRANSCRIPT_PLACEHOLDER if field in {"title", "name"} else item
+                                   for field, item in value.items()}
+                                  if key in {"note", "reminder"} and isinstance(value, dict) else value)
+                            for key, value in saved.items()}
+        return out
     return result
 
 

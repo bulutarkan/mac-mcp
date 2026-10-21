@@ -355,7 +355,15 @@ _CONSENT_TIMEOUT_S = 60
 _CONSENT_ALWAYS = "always"
 
 
-def _consent_text(sender: str) -> str:
+def _consent_text(sender: str, purpose: str = "question") -> str:
+    if purpose == "capture":
+        return (
+            f"{sender} wants you to say a note out loud.\n\n"
+            "After a short sound, Mac MCP records what you say and uploads the audio to Groq "
+            f"({_GROQ_TRANSCRIPTION_MODEL}) to turn it into text. Groq's own data retention applies; the recording "
+            "is deleted from this Mac afterwards.\n\n"
+            "Nothing is recorded or sent unless you choose Record."
+        )
     return (
         f"{sender} wants to ask you something out loud.\n\n"
         "To do that, Mac MCP sends the question text to Microsoft's online text-to-speech service, "
@@ -365,13 +373,13 @@ def _consent_text(sender: str) -> str:
     )
 
 
-def _ask_consent(sender: str) -> str:
+def _ask_consent(sender: str, purpose: str = "question") -> str:
     """Return record_once, always, declined or timed_out; nothing is captured before this."""
     if str(voice_setting("transcription_consent", "ask") or "ask") == _CONSENT_ALWAYS:
         return _CONSENT_ALWAYS
     script = f"""
 try
-    set reply to display dialog "{_escape_applescript_text(_consent_text(sender))}" ¬
+    set reply to display dialog "{_escape_applescript_text(_consent_text(sender, purpose))}" ¬
         with title "Mac MCP — Voice question" ¬
         buttons {{"Don't Record", "Always Allow", "Record"}} ¬
         default button "Record" cancel button "Don't Record" ¬
@@ -534,3 +542,115 @@ def ask_user_voice(
             }
     finally:
         _DIALOG_LOCK.release()
+
+
+# ── voice_capture (#71): one spoken note, kept as text, a note or a reminder ──
+
+_CAPTURE_TARGETS = ("transcript", "notes", "reminders")
+# A local sound says "speak now": nothing is sent to an online voice to prompt the person.
+_CAPTURE_START_SOUND = "/System/Library/Sounds/Tink.aiff"
+
+
+def _play_start_sound() -> None:
+    try:
+        subprocess.run(["/usr/bin/afplay", _CAPTURE_START_SOUND], stdin=subprocess.DEVNULL, capture_output=True,
+                       timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # the recording still starts; the sound is only a cue
+
+
+def voice_capture(
+    settings: Settings,
+    target: str = "transcript",
+    sender: str = "AI",
+    timeout_s: Optional[int] = None,
+    language: Optional[str] = None,
+    on_egress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    save: Optional[Callable[[str, str], Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Record one spoken note after the person allows it and turn it into text; `save` keeps it in Notes or
+    Reminders. Same switch, consent and Groq upload as ask_user_voice; nothing listens before or after."""
+    if not tool_enabled("ask_user_voice", default=False):
+        return {
+            "ok": False, "error": "experimental_tool_disabled",
+            "message": "Voice is off on this Mac (Mac MCP Settings > Voice turns it on). Ask in text instead.",
+            "fallback_tool": "ask_user",
+        }
+    where = str(target or "transcript").strip().lower()
+    if where not in _CAPTURE_TARGETS:
+        return {"ok": False, "error": "target must be transcript, notes or reminders"}
+    if where != "transcript" and save is None:
+        return {"ok": False, "error": f"Saving to {where} is not available here."}
+    total_timeout = _normalize_timeout(timeout_s if timeout_s is not None else voice_setting("timeout_s", 45))
+    if total_timeout is None:
+        return {"ok": False, "error": "timeout_s must be a positive integer"}
+    if not isinstance(sender, str) or not sender.strip():
+        return {"ok": False, "error": "sender must be a non-empty string"}
+    sender_display = sender.strip()[:80]
+    api_key = _resolve_groq_api_key()
+    if not api_key:
+        return {"ok": False, "error": "Voice transcription needs a Groq API key (Mac MCP Settings > Voice)."}
+
+    def ledger(consent: str, outcome: str) -> None:
+        # Metadata only: never the audio or the transcript.
+        if on_egress is not None:
+            try:
+                on_egress({"provider": "groq", "model": _GROQ_TRANSCRIPTION_MODEL, "tts": "none",
+                           "consent": consent, "outcome": outcome})
+            except Exception:
+                pass
+
+    consent = _ask_consent(sender_display, purpose="capture")
+    if consent not in {"record_once", _CONSENT_ALWAYS}:
+        ledger(consent, "not_recorded")
+        return {"ok": True, "captured": False, "skipped": True, "timed_out": consent == "timed_out",
+                "consent": consent, "saved": None,
+                "message": "The person did not allow recording; nothing was recorded, sent or saved."}
+    if not _DIALOG_LOCK.acquire(blocking=False):
+        return {"ok": False, "error": "prompt_busy",
+                "message": "Another interactive prompt is already active; answer or close it before asking again."}
+    spoken_language = str(language or voice_setting("language", os.getenv("MAC_MCP_VOICE_LANGUAGE", _DEFAULT_LANGUAGE))
+                          or _DEFAULT_LANGUAGE).strip()[:12] or _DEFAULT_LANGUAGE
+    input_mode = str(voice_setting("input_device", os.getenv("MAC_MCP_VOICE_INPUT_DEVICE", _DEFAULT_INPUT_MODE))
+                     or _DEFAULT_INPUT_MODE).strip() or _DEFAULT_INPUT_MODE
+    try:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-voice-") as temp_root:
+            temp_dir = Path(temp_root)
+            _play_start_sound()
+            recorded = _record_answer(total_timeout, input_mode, temp_dir)
+            if not recorded.get("ok"):
+                return {"ok": False, "error": recorded.get("error", "Voice recording failed")}
+            if recorded.get("timed_out"):
+                ledger(consent, "no_answer")
+                return {"ok": True, "captured": False, "timed_out": True, "saved": None,
+                        "message": "Nothing was said before the time ran out; nothing was saved."}
+            audio_path = Path(recorded.get("audio_path") or "")
+            if not audio_path.exists():
+                return {"ok": False, "error": "Voice helper did not produce an audio file"}
+            try:
+                text = _transcribe_audio(audio_path, spoken_language, api_key).strip()
+            except Exception as exc:
+                if "empty response" in str(exc):
+                    ledger(consent, "transcribed")
+                    return {"ok": True, "captured": False, "no_speech": True, "saved": None,
+                            "message": "No words were heard; nothing was saved."}
+                ledger(consent, "upload_failed")
+                return {"ok": False, "error": str(exc)}
+            ledger(consent, "transcribed")
+        # The temporary folder and the recording in it are gone here.
+    finally:
+        _DIALOG_LOCK.release()
+    if _is_skip_response(text):
+        return {"ok": True, "captured": False, "skipped": True, "saved": None,
+                "message": "The person said to skip; nothing was saved."}
+    out: Dict[str, Any] = {"ok": True, "captured": True, "transcript": text, "target": where,
+                           "stt_backend": _GROQ_TRANSCRIPTION_MODEL, "recording_kept": False}
+    if where == "transcript":
+        out["saved"] = None
+        return out
+    saved = save(where, text) if save else None
+    out["saved"] = saved
+    if not (saved or {}).get("ok"):
+        out["ok"] = False
+        out["error"] = "The transcript could not be saved; it is returned here so it is not lost."
+    return out

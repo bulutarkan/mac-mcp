@@ -792,6 +792,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "skill_update_index": _r("skill_update_index", "skills", _caps(Capability.READ, Capability.LOCAL_WRITE), sensitive=True),
     "ask_user": _r("ask_user", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "ask_user_voice": _r("ask_user_voice", "voice", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NETWORK_ACCESS, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
+    "voice_capture": _r("voice_capture", "voice", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NETWORK_ACCESS, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "ask_choice": _r("ask_choice", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "ask_confirmation": _r("ask_confirmation", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "tool_discover": _r("tool_discover", "meta", _caps(Capability.READ)),
