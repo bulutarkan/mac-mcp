@@ -113,8 +113,12 @@ class MessagesAdapterTests(unittest.TestCase):
         self.assertTrue(limited["truncated"])
 
     def test_reading_never_launches_messages(self) -> None:
-        # Without Messages Reader access a closed Messages stays closed and says so.
-        with patch.object(app_adapters, "_run", return_value=app_adapters._NOT_RUNNING) as run:
+        # Without Messages Reader access a closed Messages stays closed and says so. The reader is
+        # missing here on purpose: on a Mac where it is installed and allowed, the test would read real chats.
+        from mcp_server import messages_reader
+
+        with patch.object(app_adapters, "_run", return_value=app_adapters._NOT_RUNNING) as run, \
+                patch.object(messages_reader, "reader_app", return_value=None):
             result = mac_app(SETTINGS, app="Messages", action="find_chats")
         script = run.call_args.args[0]
         self.assertLess(script.index('if application "Messages" is not running'), script.index('tell application "Messages"'))
