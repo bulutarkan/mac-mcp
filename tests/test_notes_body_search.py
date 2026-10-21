@@ -71,6 +71,8 @@ class NotesBodySearchTests(unittest.TestCase):
             result = mac_app(SETTINGS, app="Notes", action="find_notes", query="Plan")
         self.assertTrue(result["ok"])
         self.assertIn('name contains "Plan"', captured["s"])
+        # `name of container of n as text` coerced the folder itself to text and always failed (folder null).
+        self.assertIn("set noteFolder to container of n", captured["s"])
         self.assertNotIn("plaintext", captured["s"])
 
     def test_same_titles_keep_their_own_ids(self) -> None:

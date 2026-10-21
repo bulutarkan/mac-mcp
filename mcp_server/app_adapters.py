@@ -699,7 +699,8 @@ tell application "Notes"
         if rowCount >= maxRows then exit repeat
         set folderName to "__MAC_MCP_NONE__"
         try
-            set folderName to name of container of n as text
+            set noteFolder to container of n
+            set folderName to (name of noteFolder) as text
         end try
         set rowText to (id of n as text) & us & (name of n as text) & us & folderName
         if outText is not "" then set outText to outText & rs
