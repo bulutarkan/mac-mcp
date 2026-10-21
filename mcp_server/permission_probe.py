@@ -14,6 +14,8 @@ import os
 import platform
 import plistlib
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -203,11 +205,49 @@ def _entry(key: str, state: str, **extra: Any) -> Dict[str, Any]:
     return {"key": key, "state": state, **PERMISSIONS[key], **extra}
 
 
+# An app that is running but not answering (a browser stuck while quitting, say) can hold the macOS
+# automation check indefinitely; doctor and the dashboard then hung with it.
+AUTOMATION_PROBE_TIMEOUT_S = 2.0
+_PROBES: Dict[str, threading.Thread] = {}
+_PROBES_GUARD = threading.Lock()
+
+
+def _automation_states(bundle_ids: list) -> Dict[str, Optional[str]]:
+    """Each app's automation state, asked in parallel and waited for at most AUTOMATION_PROBE_TIMEOUT_S.
+
+    None for an app that did not answer in time. While its check is still stuck, no new one is
+    started for it, so a hung app never piles up threads.
+    """
+    results: Dict[str, str] = {}
+    waiting = []
+    with _PROBES_GUARD:
+        for bundle_id in bundle_ids:
+            running = _PROBES.get(bundle_id)
+            if running is not None and running.is_alive():
+                continue
+
+            def ask(target: str = bundle_id) -> None:
+                results[target] = automation_state(target)
+
+            thread = threading.Thread(target=ask, daemon=True, name=f"mac-mcp-automation-{bundle_id}")
+            _PROBES[bundle_id] = thread
+            thread.start()
+            waiting.append(thread)
+    deadline = time.monotonic() + AUTOMATION_PROBE_TIMEOUT_S
+    for thread in waiting:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    return {bundle_id: results.get(bundle_id) for bundle_id in bundle_ids}
+
+
 def probe_permissions() -> Dict[str, Any]:
-    targets = [
-        {"app": name, "bundle_id": bundle_id, "state": automation_state(bundle_id)}
-        for name, bundle_id in AUTOMATION_TARGETS
-    ]
+    states = _automation_states([bundle_id for _name, bundle_id in AUTOMATION_TARGETS])
+    targets = []
+    for name, bundle_id in AUTOMATION_TARGETS:
+        state = states.get(bundle_id)
+        row = {"app": name, "bundle_id": bundle_id, "state": state or UNKNOWN}
+        if state is None:
+            row["not_answering"] = True
+        targets.append(row)
     known = [row["state"] for row in targets if row["state"] not in {NOT_RUNNING, UNKNOWN}]
     if DENIED in known:
         automation = DENIED
