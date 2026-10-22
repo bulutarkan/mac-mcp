@@ -18,7 +18,8 @@ GROUPS = [
     ("Connect", ["clients", "connect", "connect-config"]),
     ("Troubleshoot", ["doctor", "logs", "repair"]),
 ]
-ADVANCED = ["dashboard", "privacy", "recipe", "logins", "mcp", "catalog", "credential", "autostart", "conformance", "uninstall"]
+ADVANCED = ["dashboard", "privacy", "recipe", "logins", "mcp", "catalog", "credential", "autostart", "conformance",
+            "promote", "uninstall"]
 
 SHORT_HELP = {
     "status": "How Mac MCP is doing", "start": "Start the server", "stop": "Stop the server",
@@ -28,7 +29,8 @@ SHORT_HELP = {
     "logs": "Recent log lines", "repair": "Fix the parts Mac MCP manages",
     "dashboard": "Open the dashboard", "privacy": "Stored data", "recipe": "Saved recipes",
     "logins": "Saved logins", "mcp": "Your own MCP servers", "catalog": "Skill packs", "credential": "Tunnel credentials",
-    "autostart": "Start at login", "conformance": "Computer Use checks", "uninstall": "Remove Mac MCP",
+    "autostart": "Start at login", "conformance": "Computer Use checks",
+    "promote": "Maintainers: run the checkout's HEAD", "uninstall": "Remove Mac MCP",
 }
 
 EXAMPLES = {
@@ -38,7 +40,8 @@ EXAMPLES = {
     "doctor": "mac-mcp doctor --verbose", "logs": "mac-mcp logs server -n 40", "repair": "mac-mcp repair",
     "dashboard": "mac-mcp dashboard", "privacy": "mac-mcp privacy", "recipe": "mac-mcp recipe list",
     "logins": "mac-mcp logins list", "mcp": "mac-mcp mcp list", "catalog": "mac-mcp catalog list", "credential": "mac-mcp credential cloudflare status",
-    "autostart": "mac-mcp autostart on", "conformance": "mac-mcp conformance", "uninstall": "mac-mcp uninstall",
+    "autostart": "mac-mcp autostart on", "conformance": "mac-mcp conformance", "promote": "mac-mcp promote --dry-run",
+    "uninstall": "mac-mcp uninstall",
 }
 
 

@@ -147,6 +147,17 @@ The updater scans the first-parent history of `origin/main` and installs the new
 
 In 2.0, `menu_app/` is part of the managed runtime. If `Mac MCP.app` is already installed, a successful update rebuilds and refreshes it automatically. An update that stops half way is recovered by the next `mac-mcp update`: the previous runtime comes back and, if the app was already being replaced, the app is rebuilt from it, so both stay on the same version.
 
+### For maintainers: `mac-mcp promote`
+
+If you develop Mac MCP in the same checkout your runtime updates from, `mac-mcp promote` puts that checkout's committed HEAD into the runtime between checkpoints, the way an update would:
+
+```bash
+mac-mcp promote --dry-run   # what would change: files, server restart, menu app rebuild
+mac-mcp promote
+```
+
+It takes only committed work on `main` that is already pushed to `origin/main`, and leaves Python dependency changes to `mac-mcp update`. It uses the updater's steps (the runtime merge that keeps your runtime customizations, the backup, the sync, the menu app rebuild, the restart and the health check) and restores the backup if a file does not compile or the health check fails. Only then does the runtime record HEAD as its deployed commit, so the menu stops offering a checkpoint it already runs, and the next signed checkpoint updates from there as usual. It never moves the repository and checks no signature: it is not a replacement for the verified update channel.
+
 ## macOS permissions
 
 Grant only the permissions required by the tools you use:

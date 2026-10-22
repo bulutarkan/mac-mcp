@@ -1,10 +1,10 @@
 usage: mac-mcp [-h] [--version]
-               {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,mcp,catalog,logs,uninstall,repair,autostart,update} ...
+               {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,mcp,catalog,logs,uninstall,repair,autostart,update,promote} ...
 
 Manage the Mac MCP local server.
 
 positional arguments:
-  {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,mcp,catalog,logs,uninstall,repair,autostart,update}
+  {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,mcp,catalog,logs,uninstall,repair,autostart,update,promote}
     start               Start the local server and its configured public endpoint mode.
     stop                Stop the local server and any managed public tunnel.
     restart             Restart the local server and apply the configured public endpoint mode.
@@ -32,6 +32,8 @@ positional arguments:
     repair              Check and fix the parts Mac MCP manages (preview unless --yes).
     autostart           Start Mac MCP when you log in: on, off, or show the setting.
     update              Update Mac MCP to the latest verified stable release checkpoint.
+    promote             Maintainers: put the source repo's committed, pushed HEAD into the
+                        runtime, as an update would.
 
 options:
   -h, --help            show this help message and exit

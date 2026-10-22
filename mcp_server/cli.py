@@ -3095,6 +3095,26 @@ def conformance(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") else 1
 
 
+def promote(args: argparse.Namespace) -> int:
+    """Maintainers: put the source repo's committed, pushed HEAD into the runtime (see dev_promote)."""
+    from . import dev_promote
+
+    if install_kind() == "pkg":
+        print("mac-mcp promote: a package install has no source checkout to promote from.", file=sys.stderr)
+        return 2
+    try:
+        if args.dry_run:
+            repo, runtime = resolve_update_paths(args.repo, args.runtime)
+            print(dev_promote.format_plan(dev_promote.plan_promote(Path(repo), Path(runtime))))
+            return 0
+        dev_promote.promote(args.repo, args.runtime, restart=not args.no_restart, refresh_menu_app=not args.no_app,
+                            launchd_label=os.getenv("MAC_MCP_LAUNCHD_LABEL", "mac-mcp-uvicorn"))
+        return 0
+    except (dev_promote.PromoteError, UpdateError) as exc:
+        print(f"mac-mcp promote failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def update(args: argparse.Namespace) -> int:
     style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
     if style is not None:
@@ -3964,6 +3984,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_update.add_argument("--skip-restart", action="store_true", help=argparse.SUPPRESS)
     p_update.add_argument("--skip-deps", action="store_true", help=argparse.SUPPRESS)
     p_update.set_defaults(func=update)
+
+    p_promote = sub.add_parser(
+        "promote",
+        help="Maintainers: put the source repo's committed, pushed HEAD into the runtime, as an update would.",
+    )
+    p_promote.add_argument("--dry-run", action="store_true", help="Show what would change, and change nothing.")
+    p_promote.add_argument("--no-restart", action="store_true", help="Do not restart the server.")
+    p_promote.add_argument("--no-app", action="store_true", help="Do not rebuild and relaunch the menu bar app.")
+    p_promote.add_argument("--repo", default=None, help="Git repository path. Defaults to ~/Projects/mac-mcp.")
+    p_promote.add_argument("--runtime", default=None, help="Runtime path. Defaults to ~/mac-mcp.")
+    p_promote.set_defaults(func=promote)
 
     _remember_summaries(parser)
     return parser
