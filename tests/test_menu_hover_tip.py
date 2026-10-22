@@ -1,7 +1,8 @@
 """Hover captions on the menu chips and rows.
 
-The system tooltip often never appears in the menu-bar panel. A caption we draw sits above the
-row and must not change the menu's measured height. The chip and the Conversations row share one
+The system tooltip often never appears in the menu-bar panel. One caption is drawn over the whole
+panel, below (or near the bottom, above) the hovered chip or row, kept inside the panel, animated,
+and it must not change the menu's measured height. The chip and the Conversations row share one
 count, so an idle conversation is not labeled ended on one of them.
 """
 from __future__ import annotations
@@ -59,16 +60,36 @@ struct MenuHoverHarness {
 
 
 class MenuHoverTipTests(unittest.TestCase):
-    def test_caption_is_an_overlay_so_the_menu_does_not_grow(self) -> None:
-        self.assertIn(".overlay(alignment: .topLeading)", TIP)
-        self.assertIn("dimensions[.bottom] + 6", TIP)
-        self.assertIn(".allowsHitTesting(false)", TIP)
-        self.assertIn("static let delay: TimeInterval = 0.18", TIP)
-        self.assertNotIn("@State ", TIP)
-        # The measured stack is unchanged: the caption is not a row in it.
+    def test_one_caption_is_drawn_over_the_whole_panel(self) -> None:
+        # Targets only report where they are; the caption is drawn once, over the panel, outside the
+        # scroll view and the measured stack, so it is never clipped, hidden or squeezed to a chip.
+        self.assertIn(".anchorPreference(key: MenuHoverTipKey.self, value: .bounds)", TIP)
+        self.assertNotIn(".overlay(alignment: .topLeading)", TIP)
+        panel = MENU[MENU.index(".frame(width: 400, height: menuHeight, alignment: .top)"):]
+        self.assertIn(".overlayPreferenceValue(MenuHoverTipKey.self) { target in MenuHoverTipLayer(target: target) }",
+                      panel.split(".background(HostWindowReader", 1)[0])
         measured = MENU.split(".background(GeometryReader { box in", 1)[1].split("})", 1)[0]
         self.assertIn("MenuContentHeight.self", measured)
         self.assertNotIn("menuHoverTip", measured)
+        self.assertNotIn("@State ", TIP)
+
+    def test_caption_is_placed_inside_the_panel_and_takes_no_clicks(self) -> None:
+        layer = TIP[TIP.index("struct MenuHoverTipLayer"):TIP.index("struct MenuHoverCaption")]
+        self.assertIn(".allowsHitTesting(false)", layer)
+        self.assertIn("static func placesBelow", layer)
+        self.assertIn("min(max(centred, margin), max(margin, panelWidth - width - margin))", layer)
+        caption = TIP[TIP.index("struct MenuHoverCaption"):]
+        self.assertIn("text.lineLimit(1).fixedSize()", caption)
+        self.assertIn(".frame(width: Self.wrapWidth, alignment: .leading)", caption)
+
+    def test_caption_moves_and_respects_reduce_motion(self) -> None:
+        self.assertIn("static let delay: TimeInterval = 0.3", TIP)
+        self.assertIn("Date().timeIntervalSince(lastHidden) < 0.45 ? 0 : MenuHoverTip.delay", TIP)
+        layer = TIP[TIP.index("struct MenuHoverTipLayer"):TIP.index("struct MenuHoverCaption")]
+        self.assertIn("accessibilityReduceMotion", layer)
+        self.assertIn(".transition(transition(below: below))", layer)
+        self.assertIn("guard !reduceMotion else { return .opacity }", layer)
+        self.assertIn("value: target?.id", layer)
 
     def test_chips_and_rows_say_the_shared_sentences(self) -> None:
         chips = MENU[MENU.index("private var chipsRow"):MENU.index("private var successTint")]

@@ -68,6 +68,8 @@ struct MenuBarView: View {
             }
         }
         .frame(width: 400, height: menuHeight, alignment: .top)
+        // Hover captions are drawn over the whole panel, outside the scroll view and the measured stack.
+        .overlayPreferenceValue(MenuHoverTipKey.self) { target in MenuHoverTipLayer(target: target) }
         .background(HostWindowReader { window in
             host.window = window
             fitWindow(animated: false)
