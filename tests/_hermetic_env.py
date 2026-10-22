@@ -16,6 +16,8 @@ BASELINE = {
     "MCP_API_KEY": "test-only-key-0123456789abcdef0123456789abcdef",  # not a secret: tests only
     "MCP_ALLOW_NO_AUTH": "false",
     "MCP_ALLOW_SHELL": "true",
+    # Tests never read this Mac's provider logins or call the providers' quota endpoints.
+    "MAC_MCP_PROVIDER_QUOTA": "off",
 }
 # Runtime .env and shell settings that would make results depend on this Mac.
 AMBIENT = (

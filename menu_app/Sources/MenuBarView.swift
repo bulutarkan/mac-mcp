@@ -714,24 +714,44 @@ struct MenuBarView: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// One active team in a line: progress through its task graph; opens the dashboard on that team.
+    /// One active team in a line: progress through its task graph and the plan limits its agents
+    /// spend; opens the dashboard on that team. Badges sit beside the title, or under it when the
+    /// line is too narrow for both.
     private func teamRow(_ team: AgentTeamInfo) -> some View {
-        Button { state.openDashboard(focusTeamID: team.teamID) } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.caption2).foregroundStyle(.secondary).frame(width: 18)
-                Text(team.title ?? "Team").font(.caption2.weight(.semibold)).lineLimit(1)
-                Spacer(minLength: 6)
-                Text(team.progressText).font(.caption2).foregroundStyle(
-                    (team.unresolvedConflictCount ?? 0) > 0 ? Color.orange : Color.secondary
-                ).lineLimit(1)
-                Image(systemName: "chevron.right").font(.system(size: 8 * glyphScale, weight: .semibold)).foregroundStyle(.tertiary)
+        let quota = team.quota ?? []
+        return Button { state.openDashboard(focusTeamID: team.teamID) } label: {
+            Group {
+                if quota.isEmpty {
+                    teamLine(team, quota: [])
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        teamLine(team, quota: quota)
+                        VStack(alignment: .leading, spacing: 4) {
+                            teamLine(team, quota: [])
+                            QuotaBadges(quota: quota).padding(.leading, 25)
+                        }
+                    }
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Show this team's tasks in the dashboard")
         .accessibilityLabel("Team \(team.title ?? ""), \(team.progressText)")
+    }
+
+    private func teamLine(_ team: AgentTeamInfo, quota: [ProviderQuota]) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.caption2).foregroundStyle(.secondary).frame(width: 18)
+            Text(team.title ?? "Team").font(.caption2.weight(.semibold)).lineLimit(1)
+            if !quota.isEmpty { QuotaBadges(quota: quota) }
+            Spacer(minLength: 6)
+            Text(team.progressText).font(.caption2).foregroundStyle(
+                (team.unresolvedConflictCount ?? 0) > 0 ? Color.orange : Color.secondary
+            ).lineLimit(1)
+            Image(systemName: "chevron.right").font(.system(size: 8 * glyphScale, weight: .semibold)).foregroundStyle(.tertiary)
+        }
     }
 
     private func agentRow(_ agent: AgentInfo) -> some View {
@@ -1779,6 +1799,95 @@ private struct MenuChip: View {
         .help(help)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(help): \(text)")
+    }
+}
+
+/// A team's plan limits, one badge per provider: its symbol, then 5-hour and weekly use.
+private struct QuotaBadges: View {
+    let quota: [ProviderQuota]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(quota) { QuotaBadge(quota: $0) }
+        }
+        .fixedSize()
+    }
+}
+
+private struct QuotaBadge: View {
+    let quota: ProviderQuota
+
+    var body: some View {
+        let style = ProviderUsageStyle.of(quota.providerID)
+        HStack(spacing: 3) {
+            Image(systemName: style.symbol).foregroundStyle(style.tint)
+            if quota.windows.isEmpty {
+                Text(quota.error ?? "…").foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(quota.windows.enumerated()), id: \.offset) { index, window in
+                    if index > 0 { Text("·").foregroundStyle(.tertiary) }
+                    Text(window.kind).foregroundStyle(.secondary)
+                    Text("\(Int(window.usedPercent.rounded()))%").foregroundStyle(Self.tint(window.usedPercent))
+                }
+                if quota.error != nil {
+                    // The last reading, kept while the provider cannot be read.
+                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .font(.caption2.weight(.semibold))
+        .monospacedDigit()
+        .lineLimit(1)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(style.tint.opacity(0.13), in: Capsule())
+        .help(helpText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(helpText)
+    }
+
+    static func tint(_ used: Double) -> Color {
+        used >= 90 ? .red : used >= 75 ? .orange : .primary
+    }
+
+    private var title: String {
+        let name = quota.label ?? AgentProviders.name(quota.providerID) ?? quota.source.capitalized
+        guard let plan = quota.plan, !plan.isEmpty else { return name }
+        return "\(name) · \(plan.capitalized) plan"
+    }
+
+    private var helpText: String {
+        var lines = [title]
+        for window in quota.windows {
+            var line = "\(window.longLabel): \(Int(window.usedPercent.rounded()))% used"
+            if let resetsAt = window.resetsAt, let left = Self.countdown(until: resetsAt) {
+                line += ", resets in \(left)"
+            }
+            lines.append(line)
+        }
+        if let error = quota.error {
+            lines.append(quota.windows.isEmpty ? Self.explain(error) : "Last reading; now \(Self.explain(error).lowercased())")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func countdown(until timestamp: Double) -> String? {
+        let seconds = Int(timestamp - Date().timeIntervalSince1970)
+        guard seconds > 0 else { return nil }
+        let minutes = seconds / 60, hours = minutes / 60, days = hours / 24
+        if days > 0 { return "\(days)d \(hours % 24)h" }
+        if hours > 0 { return "\(hours)h \(minutes % 60)m" }
+        return "\(max(1, minutes))m"
+    }
+
+    static func explain(_ error: String) -> String {
+        switch error {
+        case "login expired": return "Login expired. Run the provider's CLI to sign in again."
+        case "not signed in": return "Not signed in on this Mac."
+        case "key expired": return "API key expired. Replace it in OpenCode."
+        case "rate limited": return "The provider is limiting usage reads. Mac MCP tries again later."
+        case "offline": return "Could not reach the provider."
+        default: return "Usage unavailable (\(error))."
+        }
     }
 }
 

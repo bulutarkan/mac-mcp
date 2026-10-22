@@ -34,6 +34,7 @@ from .file_transactions import (
 from .observability import TelemetryManager, sanitize_value
 from .permission_probe import probe_permissions, process_identity
 from .permission_request import REQUESTABLE, permission_status, request_permission
+from .provider_quota import teams_quota
 from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,
@@ -1787,6 +1788,13 @@ def create_dashboard_routes(
                 "budget": team.get("budget") or {},
                 "summary_at": team.get("summary_at"),
             })
+        # Plan quota (5-hour and weekly) of the providers each running team spends.
+        try:
+            quotas = teams_quota(public_agents, public_teams)
+        except Exception:
+            quotas = {}
+        for team in public_teams:
+            team["quota"] = quotas.get(str(team.get("team_id") or "")) or []
         return JSONResponse({
             "ok": True, "count": len(public_agents), "agents": public_agents,
             "teams": public_teams,

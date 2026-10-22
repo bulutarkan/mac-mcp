@@ -69,6 +69,12 @@ The instruction lifecycle is intentionally small: `ready → queued → delivere
 
 `acknowledged` is inferred when the same logical agent makes its next top-level tool request after receiving steering; it means the agent continued after the delivery boundary, not that the model sent a separate acknowledgement packet. Daemon/API reachability is a different connection concern and is handled separately by the menu app's connection UX.
 
+### Plan limits of a running team
+
+While an agent team runs, its line under **Active Work** shows one badge per subscription its agents spend: the provider's symbol, then the 5-hour and weekly use (for example `5h 9% · 1w 19%`). Hover a badge for the plan and when each window resets. Percentages turn orange from 75% and red from 90%.
+
+The server reads them the way each CLI does, from the login already on this Mac: Codex (`~/.codex/auth.json`), Claude Code (`~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`) and OpenCode's ChatGPT login or OpenCode Go key (`~/.local/share/opencode/auth.json`). Logins are only read, never refreshed or written, and the Keychain is not touched, so no macOS prompt appears; an expired login shows **login expired** until its CLI signs in again. Reads happen only while a team runs, in the background, at most every minute for Codex and every five minutes for Claude, whose usage endpoint is rate-limited (after a 429 it waits 15 minutes). OpenCode Zen models and other providers have no 5-hour/weekly plan and show no badge. Set `MAC_MCP_PROVIDER_QUOTA=off` in the runtime `.env` to turn the reads off.
+
 ### Agent cursor on the desktop
 
 When an agent clicks, types, scrolls or presses a control in another app's window through `mac_act` with an element from `mac_observe`, the menu app draws a cursor at that element with the step's label (for example "Clicking Button", or "Agent 2 · Clicking Button" while several sessions are open). The real pointer does not move. The server sends the menu app a live-only `native_pointer` event with a verb, a generic control kind and the element's centre; titles and typed text are never in it, and it is not stored.

@@ -109,6 +109,8 @@ struct AgentTeamInfo: Decodable, Identifiable, Equatable {
     let terminalCount: Int?
     let unresolvedConflictCount: Int?
     let tasks: [TeamTaskInfo]?
+    /// Plan quota of each provider the team's running agents spend; empty once it finishes.
+    let quota: [ProviderQuota]?
 
     struct TeamTaskInfo: Decodable, Equatable {
         let id: String?
@@ -138,7 +140,7 @@ struct AgentTeamInfo: Decodable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case teamID = "team_id"
-        case status, success, outcome, title, provider, model, count, tasks
+        case status, success, outcome, title, provider, model, count, tasks, quota
         case unresolvedConflictCount = "unresolved_conflict_count"
         case partialFailure = "partial_failure"
         case successfulCount = "successful_count"
@@ -147,6 +149,46 @@ struct AgentTeamInfo: Decodable, Identifiable, Equatable {
         case workCount = "work_count"
         case terminalCount = "terminal_count"
     }
+}
+
+/// One subscription's 5-hour and weekly limits, as its CLI reports them (provider_quota.py).
+struct ProviderQuota: Decodable, Identifiable, Equatable {
+    struct Window: Decodable, Equatable {
+        let kind: String
+        let usedPercent: Double
+        let resetsAt: Double?
+
+        var longLabel: String { kind == "1w" ? "Weekly" : "5-hour" }
+
+        enum CodingKeys: String, CodingKey {
+            case kind
+            case usedPercent = "used_percent"
+            case resetsAt = "resets_at"
+        }
+    }
+
+    let source: String
+    let label: String?
+    let plan: String?
+    let windows: [Window]
+    let error: String?
+    var id: String { source }
+
+    enum CodingKeys: String, CodingKey { case source, label, plan, windows, error }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        source = try values.decode(String.self, forKey: .source)
+        label = try values.decodeIfPresent(String.self, forKey: .label)
+        plan = try values.decodeIfPresent(String.self, forKey: .plan)
+        // A window the app cannot read drops out rather than failing the whole agents poll.
+        windows = ((try? values.decodeIfPresent([Window].self, forKey: .windows)) ?? nil) ?? []
+        error = try values.decodeIfPresent(String.self, forKey: .error)
+    }
+
+    /// The agent provider whose symbol and tint the badge borrows (opencode-go → opencode).
+    var providerID: String { source.hasPrefix("opencode") ? "opencode" : source }
+    var highestUse: Double { windows.map(\.usedPercent).max() ?? 0 }
 }
 
 struct AgentsEnvelope: Decodable {
