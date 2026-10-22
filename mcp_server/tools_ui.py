@@ -4531,6 +4531,19 @@ def _semantic_text_write(
 ) -> Tuple[bool, str]:
     attribute = "AXValue" if replace else "AXSelectedText"
     operation = "replace" if replace else "insert"
+    if app_pid:
+        # The native helper edits through the field editor, as typing does, so apps that only listen to
+        # typing see the text (a SwiftUI field ignores a plain AXValue write); the write below remains the
+        # fallback when the helper is unavailable or the element cannot be edited that way.
+        answer = ax_native.act(app_pid=int(app_pid), element_id=element_id, op="set_text", text=text, replace=replace,
+                               timeout_s=_operation_timeout(deadline, 10))
+        if answer and answer.get("ok"):
+            return True, f"text {operation} completed via {answer.get('attribute')} without foreground focus"
+        if answer and answer.get("method") == "selection_edit" and answer.get("effect_observed"):
+            raise NativeForegroundRequiredError(  # partly written: writing again would double it
+                f"Background semantic text {operation} did not read back as written.",
+                semantic_reason=str(answer.get("error") or "selection_edit_unverified"),
+            )
     body = f"""
         set attributeNames to name of attributes of targetElement
         if attributeNames does not contain {_apple_string(attribute)} then

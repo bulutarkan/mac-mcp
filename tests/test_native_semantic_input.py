@@ -8,6 +8,12 @@ from mcp_server.security import load_settings
 
 
 class NativeSemanticWriteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These cover the AppleScript write, the path used when the native helper is unavailable.
+        helper = patch.object(tools_ui.ax_native, "act", return_value=None)
+        helper.start()
+        self.addCleanup(helper.stop)
+
     def test_exact_replace_uses_axvalue_without_activation(self) -> None:
         with patch.object(tools_ui, "_run_osascript", return_value=(True, "", None)) as run:
             ok, message = tools_ui._semantic_text_write(
@@ -220,3 +226,50 @@ class NativeSemanticActFailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SelectionEditWriteTests(unittest.TestCase):
+    """A SwiftUI text field ignores an AXValue write: the text shows but its binding never changes, so a
+    filter does not filter. Writes now go first through the native helper, which focuses the field and
+    replaces its selection the way typing does, without bringing the app forward."""
+
+    def test_the_native_selection_edit_is_used_first(self) -> None:
+        answer = {"ok": True, "attribute": "AXSelectedText", "method": "selection_edit", "verified": True}
+        with patch.object(tools_ui.ax_native, "act", return_value=answer) as act, \
+                patch.object(tools_ui, "_run_osascript") as run:
+            ok, message = tools_ui._semantic_text_write("DemoApp", "w1/2", "expo", replace=True, app_pid=4321)
+        self.assertTrue(ok)
+        self.assertIn("AXSelectedText without foreground focus", message)
+        self.assertEqual(("set_text", "w1/2", True), (act.call_args.kwargs["op"], act.call_args.kwargs["element_id"],
+                                                      act.call_args.kwargs["replace"]))
+        run.assert_not_called()
+
+    def test_a_partly_written_insert_is_not_written_twice(self) -> None:
+        answer = {"ok": False, "method": "selection_edit", "effect_observed": True, "error": "did not read back"}
+        with patch.object(tools_ui.ax_native, "act", return_value=answer), \
+                patch.object(tools_ui, "_run_osascript") as run:
+            with self.assertRaises(tools_ui.NativeForegroundRequiredError):
+                tools_ui._semantic_text_write("DemoApp", "w1/2", "more", replace=False, app_pid=4321)
+        run.assert_not_called()
+
+    def test_without_the_helper_the_attribute_write_still_runs(self) -> None:
+        with patch.object(tools_ui.ax_native, "act", return_value={"ok": False, "reason_code": "STALE_ELEMENT_PATH"}), \
+                patch.object(tools_ui, "_run_osascript", return_value=(True, "", None)) as run:
+            ok, message = tools_ui._semantic_text_write("DemoApp", "w1/2", "expo", replace=True, app_pid=4321)
+        self.assertTrue(ok)
+        self.assertIn("AXValue", message)
+        run.assert_called_once()
+
+    def test_the_helper_focuses_then_replaces_the_selection(self) -> None:
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parents[1] / "mcp_server" / "ax_observe.swift").read_text(encoding="utf-8")
+        edit = source[source.index("func editThroughSelection"):source.index("/// --serve")]
+        writes = [edit.index(call) for call in (
+            'AXUIElementSetAttributeValue(element, "AXFocused"',
+            'AXUIElementSetAttributeValue(element, "AXSelectedTextRange"',
+            'AXUIElementSetAttributeValue(element, "AXSelectedText" as CFString, wanted',
+        )]
+        self.assertEqual(sorted(writes), writes)  # focus, select, then replace the selection
+        self.assertIn("location: replace ? 0 : length", edit)  # replace selects all, insert goes to the end
+        self.assertIn("if let edited = editThroughSelection(", source)

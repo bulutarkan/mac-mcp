@@ -466,13 +466,16 @@ func act(_ options: [String: String]) -> (Int32, String, String) {
         return answer(["ok": true, "performed": name, "effect_observed": changed])
     case "set_text":
         let replace = (options["--replace"] ?? "true") == "true"
+        let wanted = options["--text"] ?? ""
+        let before = text(attributes(element, ["AXValue"])["AXValue"])
+        if let edited = editThroughSelection(element, wanted: wanted, replace: replace, before: before) {
+            return answer(edited)
+        }
         let attribute = replace ? "AXValue" : "AXSelectedText"
         var settable = DarwinBoolean(false)
         guard AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success, settable.boolValue else {
             return answer(["ok": false, "reason_code": "SEMANTIC_ATTRIBUTE_UNAVAILABLE", "error": "\(attribute) cannot be set on \(elementID)"])
         }
-        let wanted = options["--text"] ?? ""
-        let before = text(attributes(element, ["AXValue"])["AXValue"])
         let status = AXUIElementSetAttributeValue(element, attribute as CFString, wanted as CFString)
         guard status == .success else {
             return answer(["ok": false, "reason_code": "SEMANTIC_TEXT_WRITE_FAILED", "error": "\(attribute) write failed (\(status.rawValue))"])
@@ -485,6 +488,41 @@ func act(_ options: [String: String]) -> (Int32, String, String) {
     default:
         return (2, "", "unknown op \(op)")
     }
+}
+
+func isSettable(_ element: AXUIElement, _ name: String) -> Bool {
+    var settable = DarwinBoolean(false)
+    return AXUIElementIsAttributeSettable(element, name as CFString, &settable) == .success && settable.boolValue
+}
+
+/// Writes text the way typing does: focus the field, select all it holds (or only its end, to insert),
+/// and replace the selection. The edit goes through the field editor, so apps that only listen to
+/// typing see it (a SwiftUI TextField ignores an AXValue write: its binding never changes). Focusing an
+/// element of an app in the background does not bring that app forward. Returns nil to fall back to the
+/// plain attribute write when the element cannot be edited this way or nothing changed.
+func editThroughSelection(_ element: AXUIElement, wanted: String, replace: Bool, before: String) -> [String: Any]? {
+    guard isSettable(element, "AXSelectedText"), isSettable(element, "AXSelectedTextRange") else { return nil }
+    if isSettable(element, "AXFocused") {
+        AXUIElementSetAttributeValue(element, "AXFocused" as CFString, kCFBooleanTrue)
+    }
+    let length = (text(attributes(element, ["AXValue"])["AXValue"]) as NSString).length
+    var range = CFRange(location: replace ? 0 : length, length: replace ? length : 0)
+    guard let rangeValue = AXValueCreate(.cfRange, &range),
+          AXUIElementSetAttributeValue(element, "AXSelectedTextRange" as CFString, rangeValue) == .success,
+          AXUIElementSetAttributeValue(element, "AXSelectedText" as CFString, wanted as CFString) == .success else {
+        return nil
+    }
+    let after = text(attributes(element, ["AXValue"])["AXValue"])
+    let verified = replace ? after == wanted : (after != before && after.contains(wanted))
+    if verified {
+        return ["ok": true, "attribute": "AXSelectedText", "method": "selection_edit", "effect_observed": after != before,
+                "verified": true]
+    }
+    if after == before || replace {
+        return nil  // nothing landed, or a replace the plain write below can still make exact
+    }
+    return ["ok": false, "attribute": "AXSelectedText", "method": "selection_edit", "effect_observed": true,
+            "verified": false, "reason_code": "ACTION_NO_EFFECT", "error": "the text did not read back as written"]
 }
 
 /// --serve: one JSON request per stdin line, one JSON answer per stdout line, until stdin closes.
