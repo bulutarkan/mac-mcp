@@ -311,13 +311,19 @@ struct MenuBarView: View {
     /// Small facts at a glance; each row below says more.
     private var chipsRow: some View {
         HStack(spacing: 6) {
-            MenuChip(symbol: "bolt.fill", text: "\(state.totalCalls)", tint: nil, help: "Tool calls in the last hour")
+            MenuChip(symbol: "bolt.fill", text: "\(state.totalCalls)", tint: nil,
+                     caption: MenuHoverCopy.toolCalls(count: state.totalCalls))
             MenuChip(symbol: "checkmark.seal.fill",
                      text: state.totalCalls > 0 ? String(format: "%.0f%%", state.successRate) : "—",
-                     tint: successTint, help: "Tool calls in the last hour that succeeded")
+                     tint: successTint,
+                     caption: MenuHoverCopy.success(calls: state.totalCalls, rate: state.successRate))
             MenuChip(symbol: "cpu", text: "\(state.activeAgents) running",
-                     tint: state.activeAgents > 0 ? .accentColor : nil, help: "Agents working now")
-            MenuChip(symbol: "rectangle.stack", text: sessionsChipText, tint: nil, help: "AI app conversations using Mac MCP")
+                     tint: state.activeAgents > 0 ? .accentColor : nil,
+                     caption: MenuHoverCopy.agents(running: state.activeAgents))
+            MenuChip(symbol: "rectangle.stack", text: sessionsChipText, tint: nil,
+                     caption: MenuHoverCopy.conversations(
+                        active: state.sessionActiveCount, idle: state.sessionIdleCount,
+                        ended: state.sessionEndedCount, reliable: state.hasReliableSessionSignal))
             Spacer(minLength: 0)
         }
     }
@@ -330,9 +336,9 @@ struct MenuBarView: View {
 
     private var sessionsChipText: String {
         guard state.hasReliableSessionSignal else { return "—" }
-        if state.sessionActiveCount > 0 { return "\(state.sessionActiveCount) active" }
-        if state.sessionIdleCount > 0 { return "\(state.sessionIdleCount) idle" }
-        return "\(state.sessionEndedCount) ended"
+        return MenuHoverCopy.conversationCount(active: state.sessionActiveCount,
+                                                idle: state.sessionIdleCount,
+                                                ended: state.sessionEndedCount)
     }
 
     /// Problems and progress as tinted callouts; nothing shows while all is well.
@@ -429,24 +435,23 @@ struct MenuBarView: View {
         return VStack(alignment: .leading, spacing: 2) {
             summaryRow(symbol: "cpu", color: failedAgentCount > 0 ? .red : MenuPalette.violet, title: "Agents",
                        value: agentsSummaryValue, valueColor: failedAgentCount > 0 ? .red : .secondary,
-                       hint: state.agents.isEmpty ? "Opens the dashboard" : "Shows the agent list") {
+                       hint: state.agents.isEmpty ? "Opens the dashboard" : "Shows the agent list",
+                       tip: state.agents.isEmpty ? "Opens the dashboard" : "Shows the agent list") {
                 if state.agents.isEmpty { state.openDashboard() } else { revealAgents(proxy) }
             }
             summaryRow(symbol: endpoint.symbol, color: endpoint.tone == .warning ? .orange : MenuPalette.teal,
                        title: "Endpoint", value: endpoint.label,
                        valueColor: endpoint.tone == .warning ? .orange : .secondary,
-                       hint: "Review Connections in Settings") { openSettings(.connections) }
-                .help("Review Connections · \(endpoint.explanation)")
+                       hint: "Review Connections in Settings", tip: endpoint.explanation) { openSettings(.connections) }
             summaryRow(symbol: safety.symbol, color: safety.tone == .warning ? .orange : .gray,
                        title: "Safety", value: safety.label,
                        valueColor: safety.tone == .warning ? .orange : .secondary,
-                       hint: "Review safety in Settings") { openSettings(.permissions) }
-                .help("Review safety · \(safety.explanation)")
+                       hint: "Review safety in Settings", tip: safety.explanation) { openSettings(.permissions) }
         }
     }
 
     private func summaryRow(symbol: String, color: Color, title: String, value: String, valueColor: Color,
-                            hint: String, action: @escaping () -> Void) -> some View {
+                            hint: String, tip: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             MenuRow(symbol: symbol, tint: color, title: title) {
                 Text(value).font(.callout).foregroundStyle(valueColor).lineLimit(1)
@@ -456,6 +461,7 @@ struct MenuBarView: View {
             }
         }
         .buttonStyle(.plain)
+        .menuHoverTip(tip)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title), \(value)")
         .accessibilityHint(hint)
@@ -612,19 +618,18 @@ struct MenuBarView: View {
             HStack {
                 Label("Conversations", systemImage: "rectangle.stack")
                     .labelStyle(MenuTileLabelStyle(tint: MenuPalette.ember))
-                    .help("AI app conversations using Mac MCP (Mac MCP logical sessions, not the app's own chat IDs). Agents you delegate work to are under Agents.")
                     .accessibilityLabel("Conversations")
+                    .accessibilityHint("AI app conversations using Mac MCP (Mac MCP logical sessions, not the app's own chat IDs). Agents you delegate work to are under Agents.")
                 Spacer()
                 if !showSessions && state.hasReliableSessionSignal {
-                    if state.sessionActiveCount > 0 {
-                        Text("\(state.sessionActiveCount) active").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
-                    } else if state.sessionEndedCount > 0 {
-                        Text("\(state.sessionEndedCount) ended").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    } else if state.sessionIdleCount > 0 {
-                        Text("\(state.sessionIdleCount) idle").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    }
+                    Text(sessionsChipText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(state.sessionActiveCount > 0 ? Color.accentColor : .secondary)
                 }
             }
+            .menuHoverTip(MenuHoverCopy.conversations(
+                active: state.sessionActiveCount, idle: state.sessionIdleCount,
+                ended: state.sessionEndedCount, reliable: state.hasReliableSessionSignal))
         }
         .disclosureGroupStyle(MenuDisclosureStyle())
     }
@@ -1786,7 +1791,7 @@ private struct MenuChip: View {
     let symbol: String
     let text: String
     let tint: Color?
-    let help: String
+    let caption: String
 
     var body: some View {
         HStack(spacing: 4) {
@@ -1796,9 +1801,9 @@ private struct MenuChip: View {
         .font(.caption2.weight(.semibold))
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background((tint ?? Color.primary).opacity(tint == nil ? 0.07 : 0.14), in: Capsule())
-        .help(help)
+        .menuHoverTip(caption)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(help): \(text)")
+        .accessibilityLabel(caption)
     }
 }
 

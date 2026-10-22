@@ -94,6 +94,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/AudioDeviceStore.swift"
   "${SCRIPT_DIR}/Sources/SessionDetailPresentation.swift"
   "${SCRIPT_DIR}/Sources/SessionDetailView.swift"
+  "${SCRIPT_DIR}/Sources/MenuHoverTip.swift"
   "${SCRIPT_DIR}/Sources/MenuBarView.swift"
 )
 # Shortcuts and Siri find the app's actions (#195) through App Intents metadata, built from the
