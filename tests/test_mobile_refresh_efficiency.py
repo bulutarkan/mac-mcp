@@ -117,9 +117,27 @@ class SharedVisualSystemTests(unittest.TestCase):
         mobile_html = (ROOT / "mobile" / "index.html").read_text(encoding="utf-8")
         self.assertIn(mark, mobile_html)
         self.assertNotIn('<div class="mark">M</div>', mobile_html)
-        # Dark only, and the old near-black palette is gone from the phone.
-        self.assertNotIn("prefers-color-scheme: light", mobile_css)
+        # The phone follows the device's light or dark look, as the dashboard's Device theme does,
+        # and the old near-black palette is gone from it.
+        self.assertIn("@media (prefers-color-scheme: light)", mobile_css)
         self.assertNotIn("#0a0a0b", mobile_css + mobile_html)
+
+    def test_mobile_uses_the_dashboard_glass_look_without_larger_type(self) -> None:
+        dashboard_css = (ROOT / "dashboard" / "dashboard.css").read_text(encoding="utf-8")
+        mobile_css = (ROOT / "mobile" / "mobile.css").read_text(encoding="utf-8")
+        mobile_html = (ROOT / "mobile" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<div class="wallpaper" aria-hidden="true"><i></i><i></i><i></i><i></i></div>', mobile_html)
+        self.assertIn("-webkit-backdrop-filter:blur(28px) saturate(180%)", mobile_css)
+        for token in ("--wall-1: #5a4526;", "--wall-3: #7a4a12;", "--tint: #0a84ff;", "--font-rounded: ui-rounded"):
+            self.assertIn(token, dashboard_css)
+            self.assertIn(token, mobile_css)
+        self.assertIn("prefers-reduced-motion: reduce", mobile_css)
+        # The compact type sizes stay as they were (the owner keeps the phone dense).
+        sizes = re.findall(r"font-size:\s*([\d.]+)px", mobile_css)
+        self.assertLessEqual(max(float(size) for size in sizes), 46)
+        for rule, size in ((r"\.agent-title strong\{[^}]*", "11.5px"), (r"\.activity-main strong\{[^}]*", "10.5px"),
+                           (r"\.section-head h2\{[^}]*", "13px"), (r"\.hero-meta span\{[^}]*", "8.5px")):
+            self.assertIn(f"font-size:{size}", re.search(rule, mobile_css).group(0))
 
     def test_mobile_secondary_text_keeps_readable_contrast(self) -> None:
         mobile_css = (ROOT / "mobile" / "mobile.css").read_text(encoding="utf-8")
