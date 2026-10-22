@@ -1,5 +1,5 @@
-Copyright (c) 2023, GitHub https://github.com/github/mona-sans
-with Reserved Font Name "Mona Sans"
+Inter: Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+JetBrains Mono: Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

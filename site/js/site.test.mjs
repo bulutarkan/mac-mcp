@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyText } from "./site.js";
+import { copyText, formatStars } from "./site.js";
 
 test("copies the target's text and says so", async () => {
   const button = { dataset: { copy: "pkg-sha" }, textContent: "Copy" };
@@ -22,4 +22,12 @@ test("does nothing without a target", async () => {
   const button = { dataset: { copy: "missing" }, textContent: "Copy" };
   assert.equal(await copyText(button, () => null, async () => {}), false);
   assert.equal(button.textContent, "Copy");
+});
+
+test("shows the star count the way GitHub does", () => {
+  assert.equal(formatStars(88), "88");
+  assert.equal(formatStars(999), "999");
+  assert.equal(formatStars(1000), "1k");
+  assert.equal(formatStars(1450), "1.4k");
+  assert.equal(formatStars(12400), "12k");
 });

@@ -59,6 +59,12 @@ class ReleaseDataTests(unittest.TestCase):
             checked = build_site.check(out)
             self.assertEqual(data["release_id"], checked["release_id"])
             self.assertFalse((out / "js" / "site.test.mjs").exists())
+            # Every local file the page loads is tied to its content, for any CDN in front of a copy.
+            refs = re.findall(r'(?:href|src|poster)="((?:css|js|assets)/[^"]+)"', page)
+            self.assertTrue(refs)
+            for ref in refs:
+                self.assertRegex(ref, r"\?v=[0-9a-f]{12}$", ref)
+            self.assertRegex((out / "css" / "site.css").read_text(), r'url\("\.\./assets/fonts/inter\.woff2\?v=[0-9a-f]{12}"\)')
 
     def test_releases_that_must_not_be_advertised_are_refused(self) -> None:
         release = fixture_release()
@@ -141,6 +147,8 @@ class PageTests(unittest.TestCase):
         self.assertIn("font-src 'self'", self.page)
         self.assertTrue((SITE / "assets" / "fonts" / "OFL.txt").exists())
         self.assertNotIn("fonts.googleapis", (SITE / "css" / "site.css").read_text())
+        # The live star count is the only request that leaves the site.
+        self.assertIn("connect-src https://api.github.com;", self.page)
 
     def test_scenes_follow_the_video(self) -> None:
         # Each scene starts where its caption starts in the demo video, with the caption as its title.
@@ -170,15 +178,16 @@ class PageTests(unittest.TestCase):
             self.assertTrue((SITE / track).exists(), track)
 
     def test_size_budgets(self) -> None:
-        self.assertLessEqual((SITE / "index.html").stat().st_size, 30_000)
+        # The page draws its demo in HTML and CSS instead of loading video: the first load stays small.
+        self.assertLessEqual((SITE / "index.html").stat().st_size, 60_000)
         css = sum(path.stat().st_size for path in (SITE / "css").glob("*.css"))
-        self.assertLessEqual(css, 25_000)
-        self.assertLessEqual((SITE / "js" / "site.js").stat().st_size, 3_000)
-        scripts = sum(path.stat().st_size for path in (SITE / "js").glob("*.js"))
-        self.assertLessEqual(scripts, 8_000)
-        font = (SITE / "assets" / "fonts" / "mona-sans.woff2").stat().st_size
-        self.assertLessEqual(font, 120_000)
-        first_load = css + (SITE / "index.html").stat().st_size + scripts + font
+        self.assertLessEqual(css, 70_000)
+        self.assertLessEqual((SITE / "js" / "site.js").stat().st_size, 12_000)
+        scripts = sum(path.stat().st_size for path in (SITE / "js").glob("*.js") if not path.name.endswith(".test.mjs"))
+        self.assertLessEqual(scripts, 28_000)
+        fonts = sum((SITE / "assets" / "fonts" / name).stat().st_size for name in ("inter.woff2", "jetbrains-mono.woff2"))
+        self.assertLessEqual(fonts, 120_000)
+        first_load = css + (SITE / "index.html").stat().st_size + scripts + fonts
         first_load += sum((SITE / "assets" / "img" / name).stat().st_size for name in ("app-icon-256.png",))
         first_load += (SITE / "assets" / "media" / "demo-poster.jpg").stat().st_size
         self.assertLessEqual(first_load, 350_000)

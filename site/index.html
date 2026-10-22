@@ -1,225 +1,530 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; font-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
   <title>Mac MCP · Let your AI apps use your Mac</title>
   <meta name="description" content="A local server and menu bar app that lets Claude, ChatGPT, Codex and other MCP apps work in your Mac's apps, files, terminal and browser, with approvals you control. Open source, MIT.">
-  <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#e7e9ed" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#131929" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#f4f5f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#07090e" media="(prefers-color-scheme: dark)">
   <link rel="canonical" href="https://bulutarkan.github.io/mac-mcp/">
-  <link rel="icon" type="image/png" href="assets/img/app-icon-256.png?v=2">
-  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png?v=2">
+  <link rel="icon" type="image/png" href="assets/img/app-icon-256.png">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Mac MCP · Let your AI apps use your Mac">
   <meta property="og:description" content="Claude, ChatGPT, Codex and other MCP apps working in your Mac's apps, files, terminal and browser, with approvals you control.">
   <meta property="og:url" content="https://bulutarkan.github.io/mac-mcp/">
   <meta property="og:image" content="https://bulutarkan.github.io/mac-mcp/assets/img/og-image.jpg?v=2">
   <meta name="twitter:card" content="summary_large_image">
-  <link rel="preload" href="assets/fonts/mona-sans.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="preload" href="assets/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="css/site.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mac MCP","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13 or later","softwareVersion":"{{version}}","license":"https://opensource.org/licenses/MIT","url":"https://bulutarkan.github.io/mac-mcp/","downloadUrl":"{{pkg_url}}"}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mac MCP","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13 or later","softwareVersion":"{{version}}","license":"https://opensource.org/licenses/MIT","url":"https://bulutarkan.github.io/mac-mcp/","downloadUrl":"{{pkg_url}}","author":{"@type":"Person","name":"Tarkan Bulut"}}</script>
   <script src="js/theme.js"></script>
   <script type="module" src="js/site.js"></script>
   <script type="module" src="js/demo.js"></script>
 </head>
 <body>
-  <a class="skip" href="#main">Skip to content</a>
-  {{preview_banner}}
-  <header class="top">
-    <a class="brand" href="#top"><img class="on-light" src="assets/img/mark-bronze.svg" alt="" width="26" height="26"><img class="on-dark" src="assets/img/mark.svg" alt="" width="26" height="26"><span translate="no">Mac MCP</span></a>
+  <a class="skip" href="#main">Skip to content</a>{{preview_banner}}
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 2.6a9.6 9.6 0 0 0-3.04 18.7c.48.09 .66-.21.66-.46v-1.87c-2.68 .58-3.25-1.14-3.25-1.14-.44-1.12-1.07-1.42-1.07-1.42-.88-.6.07-.59.07-.59.97 .07 1.48 1 1.48 1 .86 1.48 2.26 1.05 2.81 .8.09-.63.34-1.05 .61-1.29-2.14-.24-4.39-1.07-4.39-4.76 0-1.05 .38-1.91 1-2.59-.1-.24-.43-1.23 .09-2.56 0 0 .81-.26 2.64 .99A9.2 9.2 0 0 1 12 7.08a9.2 9.2 0 0 1 2.4 .32c1.83-1.25 2.64-.99 2.64-.99.52 1.33 .19 2.32 .09 2.56 .62.68 1 1.54 1 2.59 0 3.7-2.25 4.51-4.4 4.75 .35.3 .65.89 .65 1.8v2.73c0 .25.18 .55.66 .46A9.6 9.6 0 0 0 12 2.6Z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.2 2.7 5.5 6 .9-4.35 4.25 1 6L12 17l-5.35 2.85 1-6L3.3 9.6l6-.9Z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2.2"/><path d="M15.5 8.5V6.2a1.7 1.7 0 0 0-1.7-1.7H6.2a1.7 1.7 0 0 0-1.7 1.7v7.6a1.7 1.7 0 0 0 1.7 1.7h2.3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.8A7.8 7.8 0 0 1 9.2 4.5a8 8 0 1 0 10.3 10.3Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+    <symbol id="i-device" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.5v13l10.5-6.5Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
+    <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m10 9.2 4.8 2.8-4.8 2.8Z"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 5H5v14h14v-4M13 5h6v6M19 5l-8.5 8.5"/></symbol>
+    <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8"/></symbol>
+    <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m15.5 8.5-2 5-5 2 2-5Z"/></symbol>
+    <symbol id="i-agents" viewBox="0 0 24 24"><path d="m4 7 4 4-4 4M10.5 17H20M13 7h7M13 12h5"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4V20.5H6Z"/><path d="M14 3.5v4h4M9 12h6M9 15.5h6"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 5.5v13M8.5 5a3 3 0 0 0-3 3 3 3 0 0 0-1 5.5A3.2 3.2 0 0 0 8.5 19 3.5 3.5 0 0 0 12 18.5 3.5 3.5 0 0 0 15.5 19a3.2 3.2 0 0 0 4-5.5 3 3 0 0 0-1-5.5 3 3 0 0 0-3-3A3 3 0 0 0 12 5.5 3 3 0 0 0 8.5 5Z"/></symbol>
+    <symbol id="i-macs" viewBox="0 0 24 24"><rect x="2.5" y="5" width="12" height="8.5" rx="1.5"/><path d="M5.5 16.5h6"/><rect x="15.5" y="8" width="6" height="11.5" rx="1.5"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.6"/><path d="M10.5 5h3"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4.5 9.5 9 5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v4.5h14V15"/></symbol>
+    <symbol id="i-team" viewBox="0 0 24 24"><circle cx="8.5" cy="9" r="3"/><circle cx="16.5" cy="9" r="2.4"/><path d="M3.5 19a5 5 0 0 1 10 0M14 14.6a4.2 4.2 0 0 1 6.5 3.9"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5.2c0 4.5 2.9 8 7 9.8 4.1-1.8 7-5.3 7-9.8V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3.5 12S6.6 6.5 12 6.5c1.5 0 2.8 .4 4 1M20.5 12s-1.2 2.2-3.4 3.8M10 17.2c.6.2 1.3 .3 2 .3"/><path d="m4.5 19.5 15-15"/></symbol>
+    <symbol id="i-pause-o" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M10 9v6M14 9v6"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16.5 6.5l2.5 2.5M14 9l2 2"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3.5v4M15 3.5v4M6.5 7.5h11v3.5a5.5 5.5 0 0 1-11 0ZM12 16.5v4"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></symbol>
+    <symbol id="i-package" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></symbol>
+    <symbol id="i-npm" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M6.5 14.5v-5h3v5M9.5 11.5v3M12 14.5v-5h3v3.5h-1.5M17.5 14.5v-5"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 8h16M4 16h16"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2 2 0 0 1 5 5.5h4.3l2 2H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/></symbol>
+    <symbol id="i-cursor" viewBox="0 0 26 26"><path d="M3.4 3.2 23 11.2 14.6 14.4 11.3 23.2Z"/></symbol>
+  </svg>
 
-    <nav class="island" aria-label="Sections" data-state="idle">
-      <button type="button" class="island-face" aria-expanded="false" aria-controls="island-menu" aria-label="Sections">
-        <img class="island-mark" src="assets/img/mark.svg" alt="" width="18" height="18">
-        <span class="island-label" aria-hidden="true" translate="no">Mac MCP</span>
-        <span class="island-state" aria-hidden="true"></span>
-      </button>
-      <div class="island-menu" id="island-menu">
-        <ul>
-          <li><a href="#demo">The demo</a></li>
-          <li><a href="#safety">Safety</a></li>
-          <li><a href="#install">Install</a></li>
-          <li><a href="https://github.com/bulutarkan/mac-mcp">GitHub</a></li>
-        </ul>
+  <header class="top" id="top-bar">
+    <div class="top-in wrap">
+      <a class="brand" href="#top" aria-label="Mac MCP, back to top">
+        <img class="on-light" src="assets/img/mark-bronze.svg" alt="" width="28" height="28"><img class="on-dark" src="assets/img/mark.svg" alt="" width="28" height="28">
+        <span translate="no">Mac MCP</span>
+      </a>
+      <nav class="nav" aria-label="Sections">
+        <a href="#demo">Demo</a><a href="#features">Features</a><a href="#new">What's new</a><a href="#safety">Safety</a><a href="#install">Install</a>
+      </nav>
+      <div class="top-end">
+        <div class="seg" role="group" aria-label="Appearance" hidden>
+          <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark"><svg aria-hidden="true"><use href="#i-moon"/></svg><span class="seg-l">Dark</span></button>
+          <button type="button" data-theme-choice="light" aria-pressed="false" title="Light"><svg aria-hidden="true"><use href="#i-sun"/></svg><span class="seg-l">Light</span></button>
+          <button type="button" data-theme-choice="system" aria-pressed="true" title="Match this device"><svg aria-hidden="true"><use href="#i-device"/></svg><span class="seg-l">Device</span></button>
+        </div>
+        <a class="star" href="https://github.com/bulutarkan/mac-mcp" aria-label="Mac MCP on GitHub"><svg aria-hidden="true"><use href="#i-github"/></svg><span class="star-l">Star</span><span class="count" data-stars hidden></span></a>
+        <a class="btn primary sm get" href="#install">Get Mac MCP</a>
+        <button type="button" class="menu-btn" aria-expanded="false" aria-controls="sheet" aria-label="Menu" hidden><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
       </div>
-    </nav>
-
-    <div class="top-end">
-      <a class="top-link" href="https://github.com/bulutarkan/mac-mcp">GitHub</a>
-      <button type="button" class="theme" aria-label="Switch theme" hidden>
-        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-          <mask id="moon-bite">
-            <rect width="24" height="24" fill="#fff"/>
-            <circle class="bite" cx="18" cy="6" r="6.5" fill="#000"/>
-          </mask>
-          <circle class="core" cx="12" cy="12" r="5" fill="currentColor" mask="url(#moon-bite)"/>
-          <g class="rays" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <path d="M12 1.5v2M12 20.5v2M22.5 12h-2M3.5 12h-2M19.4 4.6l-1.4 1.4M6 18l-1.4 1.4M19.4 19.4 18 18M6 6 4.6 4.6"/>
-          </g>
-        </svg>
-      </button>
     </div>
+    <div class="progress" aria-hidden="true"><span></span></div>
+    <nav class="sheet" id="sheet" aria-label="Sections" hidden>
+      <a href="#demo">Demo</a><a href="#features">Features</a><a href="#new">What's new</a><a href="#safety">Safety</a><a href="#connect">Connect</a><a href="#install">Install</a><a href="https://github.com/bulutarkan/mac-mcp">GitHub</a>
+    </nav>
   </header>
 
   <main id="main">
-    <section class="hero" id="top" data-island="Mac MCP">
-      <h1>Let your AI apps use your&nbsp;Mac.</h1>
-      <div class="hero-body">
-        <p class="lede">A local server and menu bar app that lets Claude, ChatGPT, Codex and other MCP apps work in your Mac's apps, files, terminal and browser, with approvals you control.</p>
-        <div class="hero-go">
-          <div class="actions">
-            <a class="button primary" href="{{pkg_url}}">Download Mac MCP {{version}}</a>
-            <a class="button" href="https://github.com/bulutarkan/mac-mcp">View on GitHub</a>
+    <section class="hero" id="top" data-reveal>
+      <div class="aura" aria-hidden="true"></div>
+      <div class="wrap hero-in">
+        <a class="pill r" href="#new"><span class="pill-dot" aria-hidden="true"></span>New in {{version}}: your other Macs, your iPhone, and undo in your apps<svg aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        <h1 class="r">Let your AI apps<br><span class="gild">use your Mac.</span></h1>
+        <p class="lede r">Mac MCP is a local server and menu bar app that lets Claude, ChatGPT, Codex, OpenCode and other MCP apps work in your Mac's apps, files, terminal and browser, with approvals you control.</p>
+        <div class="cta r">
+          <a class="btn primary lg magnet" href="{{pkg_url}}"><svg aria-hidden="true"><use href="#i-download"/></svg>Download Mac MCP {{version}}</a>
+          <a class="btn ghost lg" href="https://github.com/bulutarkan/mac-mcp"><svg aria-hidden="true"><use href="#i-star"/></svg>Star on GitHub<span class="count" data-stars hidden></span></a>
+        </div>
+        <p class="fine r">Free and open source (MIT). The package is for Apple Silicon on macOS 14 or later, about {{pkg_size_mb}} MB. The Terminal and npm installers cover any Mac on macOS 13 or later.</p>
+
+        <div class="quick r" data-tabs>
+          <div class="quick-tabs" role="tablist" aria-label="Install from the command line">
+            <button type="button" role="tab" id="qt-sh" aria-controls="qp-sh" aria-selected="true">Terminal</button>
+            <button type="button" role="tab" id="qt-npm" aria-controls="qp-npm" aria-selected="false" tabindex="-1">npm</button>
+            <button type="button" role="tab" id="qt-sum" aria-controls="qp-sum" aria-selected="false" tabindex="-1">Check the .pkg</button>
+            <span class="quick-note">macOS 13+</span>
           </div>
-          <p class="meta">The package is for Apple Silicon on macOS 14 or later; the Terminal installer covers any Mac on macOS 13 or later. Open source under the MIT license, release <span class="nowrap">{{release_id}}</span>.</p>
+          <div class="cmd" role="tabpanel" id="qp-sh" aria-labelledby="qt-sh"><span class="ps" aria-hidden="true">$</span><code id="q-sh">curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash</code><button type="button" class="copy" data-copy="q-sh" hidden><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+          <div class="cmd" role="tabpanel" id="qp-npm" aria-labelledby="qt-npm" hidden><span class="ps" aria-hidden="true">$</span><code id="q-npm">npx @bulutarkan/mac-mcp install</code><button type="button" class="copy" data-copy="q-npm" hidden><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+          <div class="cmd" role="tabpanel" id="qp-sum" aria-labelledby="qt-sum" hidden><span class="ps" aria-hidden="true">$</span><code id="q-sum">shasum -a 256 ~/Downloads/{{pkg_name}}</code><button type="button" class="copy" data-copy="q-sum" hidden><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+        </div>
+
+        <div class="works r">
+          <span>Works with</span>
+          <ul>
+            <li>Claude Desktop</li><li>Claude Code</li><li>ChatGPT</li><li>Codex</li><li>OpenCode</li><li>Cline</li><li>Goose</li><li>and other MCP apps</li>
+          </ul>
         </div>
       </div>
-      <p class="works">Works with Claude Desktop, Claude Code, ChatGPT, Codex, OpenCode and other MCP clients.</p>
     </section>
 
-    <section class="demo" id="demo" aria-labelledby="demo-title">
-      <div class="demo-head">
-        <h2 id="demo-title">Forty seconds, six scenes.</h2>
-        <p>Each scene below is a moment from the demo. Pick a time to play the video from there.</p>
-      </div>
+    <section class="demo" id="demo" aria-labelledby="demo-title" data-reveal>
+      <div class="wrap">
+        <div class="head r">
+          <h2 id="demo-title">Forty seconds, six scenes.</h2>
+          <p>One request, carried through Finder, Safari, a Codex agent and Mail. Pick a scene to jump to it, or watch the screen recording.</p>
+        </div>
 
-      <div class="demo-grid">
-        <figure class="screen">
-          <div class="bezel">
-            <video controls preload="none" playsinline width="1280" height="720" poster="assets/media/demo-poster.jpg">
-              <source src="assets/media/mac-mcp-demo.mp4" type="video/mp4">
-              <track kind="captions" srclang="en" label="English" src="assets/media/demo.en.vtt">
-            </video>
+        <figure class="film r" data-film>
+          <div class="film-device tilt">
+            <div class="film-screen">
+              <img class="film-poster" src="assets/media/demo-poster.jpg" alt="Mac MCP's live island beside the notch, with a list of finished steps: looking through Downloads, running a command, looking at a page." width="1280" height="720">
+              <div class="stage" data-stage aria-hidden="true">
+                <div class="s-wall"></div>
+                <div class="s-menubar">
+                  <span class="s-mb-app">Finder</span><span>File</span><span>Edit</span><span>View</span><span>Go</span><span>Window</span>
+                  <span class="s-mb-end"><img class="s-mb-mark" src="assets/img/mark.svg" alt="" width="16" height="16"><span>Wed 09:41</span></span>
+                </div>
+                <div class="s-island">
+                  <div class="s-isl-row"><span class="s-isl-l"><img src="assets/img/mark.svg" alt="" width="18" height="18"></span><span class="s-isl-r"><span class="s-ring"></span><span class="s-tick"><svg><use href="#i-check"/></svg></span></span></div>
+                  <div class="s-peek">
+                    <span class="s-peek-i s-pi-finder"><svg><use href="#i-folder"/></svg></span><span class="s-peek-i s-pi-safari"><svg><use href="#i-compass"/></svg></span><span class="s-peek-i s-pi-codex"><svg><use href="#i-agents"/></svg></span><span class="s-peek-i s-pi-mail"><svg><use href="#i-mail"/></svg></span>
+                    <span class="s-peek-t"><b class="p1">Looking through Downloads</b><b class="p2">Filling the form</b><b class="p3">Weekly expense report</b><b class="p4">Waiting for you</b><i class="p1">Finder</i><i class="p2">Safari, in the background</i><i class="p3">Codex agent · step 3 of 4</i><i class="p4">Send an email with Mail</i></span>
+                  </div>
+                </div>
+
+                <div class="s-win s-chat">
+                  <div class="s-bar"><span class="s-tl"><i></i><i></i><i></i></span><span class="s-title">Your AI app</span></div>
+                  <div class="s-chat-body">
+                    <p class="s-msg s-me" data-type="Find this month's invoices in Downloads, put them on the expense form in Safari, and email finance a summary."></p>
+                    <p class="s-msg s-ai s-cant">I can't open files on your Mac.</p>
+                    <ul class="s-tools">
+                      <li class="s-tool t1"><code>mac_app</code><span>Finder · 3 invoices found</span><b></b></li>
+                      <li class="s-tool t2"><code>browser_act</code><span>Safari · expense form filled</span><b></b></li>
+                      <li class="s-tool t3"><code>spawn_agents</code><span>Codex · weekly report</span><b></b></li>
+                      <li class="s-tool t4"><code>mac_app</code><span>Mail · send after your answer</span><b></b></li>
+                    </ul>
+                    <p class="s-msg s-ai s-done">Done. Three invoices are on the form as a draft, the report is in Documents, and the email went out after you allowed it.</p>
+                  </div>
+                  <div class="s-compose"><span data-type="Meanwhile I keep writing my own notes here"></span><i class="s-caret"></i></div>
+                </div>
+
+                <div class="s-menu">
+                  <div class="s-menu-h"><img src="assets/img/mark.svg" alt="" width="18" height="18"><b>Mac MCP</b><span class="s-run">Running</span></div>
+                  <p class="s-menu-sub">Connect your AI apps</p>
+                  <ul><li class="c1">Claude Desktop<i></i></li><li class="c2">Claude Code<i></i></li><li class="c3">ChatGPT<i></i></li><li class="c4">Codex<i></i></li><li class="c5">OpenCode<i></i></li></ul>
+                  <span class="s-menu-btn">Connect apps</span>
+                </div>
+
+                <div class="s-win s-finder">
+                  <div class="s-bar"><span class="s-tl"><i></i><i></i><i></i></span><span class="s-title">Downloads</span></div>
+                  <div class="s-finder-in">
+                    <ul class="s-side"><li>Recents</li><li>Applications</li><li>Desktop</li><li>Documents</li><li class="on">Downloads</li></ul>
+                    <ul class="s-files">
+                      <li class="f1 inv"><svg><use href="#i-doc"/></svg>invoice-0914-cloudflare.pdf<em>142 KB</em></li>
+                      <li class="f2"><svg><use href="#i-doc"/></svg>boarding-pass.pdf<em>88 KB</em></li>
+                      <li class="f3 inv"><svg><use href="#i-doc"/></svg>invoice-0921-figma.pdf<em>96 KB</em></li>
+                      <li class="f4"><svg><use href="#i-doc"/></svg>IMG_2231.heic<em>2.1 MB</em></li>
+                      <li class="f5 inv"><svg><use href="#i-doc"/></svg>invoice-1003-hetzner.pdf<em>77 KB</em></li>
+                      <li class="f6"><svg><use href="#i-doc"/></svg>meeting-notes.md<em>4 KB</em></li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div class="s-win s-safari">
+                  <div class="s-bar"><span class="s-tl"><i></i><i></i><i></i></span><span class="s-url"><svg><use href="#i-compass"/></svg>expenses.example.com/new</span></div>
+                  <div class="s-tabs"><span>Inbox</span><span class="s-tab-on">New expense report</span></div>
+                  <div class="s-page">
+                    <div class="s-page-in">
+                      <h4>New expense report</h4>
+                      <label class="s-f ff1"><span>Merchants</span><b data-type="Cloudflare, Figma, Hetzner"></b></label>
+                      <label class="s-f ff2"><span>Total</span><b data-type="€ 412.80"></b></label>
+                      <label class="s-f ff3"><span>Category</span><b class="s-sel"><u>Choose…</u><u>Software</u></b></label>
+                      <div class="s-attach"><span>invoice-0914-cloudflare.pdf</span><span>invoice-0921-figma.pdf</span><span>invoice-1003-hetzner.pdf</span></div>
+                      <div class="s-actions"><span class="s-btn-save">Save draft</span><span class="s-btn-sub">Submit</span></div>
+                    </div>
+                    <div class="s-frame"></div>
+                    <div class="s-toast"><svg><use href="#i-check"/></svg>Draft saved</div>
+                  </div>
+                </div>
+
+                <div class="s-win s-report">
+                  <div class="s-bar"><span class="s-tl"><i></i><i></i><i></i></span><span class="s-title">Run report</span></div>
+                  <div class="s-rep-in">
+                    <h4>Weekly expense report</h4>
+                    <p class="s-rep-meta">Codex agent · read and write in ~/Documents/Expenses</p>
+                    <ol>
+                      <li class="k1">Read three invoices from Downloads</li>
+                      <li class="k2">Matched them to the draft in Safari</li>
+                      <li class="k3">Wrote expense-report-october.md</li>
+                      <li class="k4">Updated budget.csv</li>
+                    </ol>
+                    <p class="s-files-ch"><span>2 files changed</span><code>+48</code><code class="neg">−3</code></p>
+                    <p class="s-sched"><svg><use href="#i-clock"/></svg>Scheduled Task · every weekday at 09:00</p>
+                  </div>
+                </div>
+
+                <div class="s-win s-mail">
+                  <div class="s-bar"><span class="s-tl"><i></i><i></i><i></i></span><span class="s-title">October expenses</span></div>
+                  <div class="s-mail-in"><p><span>To:</span> finance@example.com</p><p><span>Subject:</span> October expenses</p><p class="s-mail-att">expense-report-october.md</p><p class="s-sent"><svg><use href="#i-check"/></svg>Sent</p></div>
+                </div>
+
+                <div class="s-ask">
+                  <div class="s-ask-h"><span class="s-ask-i"><svg><use href="#i-shield"/></svg></span><div><b>Allow once?</b><p>Your AI app wants to send an email with Mail.</p></div></div>
+                  <code>mac_app · Mail · send · finance@example.com</code>
+                  <div class="s-ask-b"><span class="s-block">Block</span><span class="s-allow">Allow Once</span></div>
+                </div>
+
+                <div class="s-end"><img src="assets/img/mark.svg" alt="" width="84" height="84"><b>Let your AI apps use your Mac.</b><span>Open source, MIT.</span></div>
+
+                <div class="s-ripple"></div>
+                <div class="s-cursor"><svg viewBox="0 0 26 26"><use href="#i-cursor" class="halo"/><use href="#i-cursor" class="core"/></svg><span class="s-tip"></span></div>
+                <div class="s-pointer"><svg viewBox="0 0 24 24"><path d="M5 3v17.5l4.6-4.4 3 7 2.9-1.2-3-6.8h6.3Z"/></svg></div>
+              </div>
+              <button type="button" class="film-big" data-film-toggle aria-label="Play the demo" hidden><svg aria-hidden="true"><use href="#i-play"/></svg></button>
+            </div>
+            <div class="film-bar" hidden>
+              <button type="button" class="film-pp" data-film-toggle aria-label="Play the demo"><svg class="ic-play" aria-hidden="true"><use href="#i-play"/></svg><svg class="ic-pause" aria-hidden="true"><use href="#i-pause"/></svg></button>
+              <span class="film-time" data-film-time>0:00 / 0:40</span>
+              <div class="film-scrub" data-film-scrub role="slider" tabindex="0" aria-label="Demo position" aria-valuemin="0" aria-valuemax="40" aria-valuenow="0" aria-valuetext="0 seconds"><span class="film-fill"></span><span class="film-ticks"><i></i><i></i><i></i><i></i><i></i></span></div>
+              <button type="button" class="film-rec" data-video-open><svg aria-hidden="true"><use href="#i-film"/></svg><span>Screen recording</span></button>
+            </div>
           </div>
-          <details class="transcript">
-            <summary>Transcript</summary>
-            <p>Your AI can think. It can't use your Mac. Connect the AI apps you already use. See what it's doing: the live island beside the notch shows the app in use, then a tick (optional, off by default). Visible, non-focus-stealing browser work: a Safari tab fills a form while you keep typing elsewhere. Hand off work and get a report back: a scheduled task runs every weekday and leaves a report. You stay in charge: approvals, Pause observation and Private mode. Let your AI apps use your Mac. Open source, MIT.</p>
-          </details>
+          <figcaption class="film-note">An animated re-creation of the demo with sample files and addresses. Nothing here runs on your Mac.</figcaption>
         </figure>
 
         <ol class="chapters" id="how">
-          <li class="chapter" data-at="0" data-island="Can't open files">
-            <button type="button" class="at" aria-label="Play from 0:00" disabled>0:00</button>
-            <h3>Your AI can think. It can't use your Mac.</h3>
-            <p>Ask a chat app to summarize the PDFs in your Downloads folder and it tells you it can't open files. Mac MCP gives Claude, ChatGPT, Codex and other MCP apps your Mac's apps, files, terminal and browser.</p>
-          </li>
-          <li class="chapter" data-at="4" data-island="Connecting apps">
-            <button type="button" class="at" aria-label="Play from 0:04" disabled>0:04</button>
-            <h3>Connect the AI apps you already use.</h3>
-            <p>Claude Desktop, Claude Code, ChatGPT, Codex and OpenCode connect in one click from the menu bar app. ChatGPT reaches your Mac through a public endpoint you turn on, such as a Cloudflare Tunnel, so you can ask it from your phone too.</p>
-          </li>
-          <li class="chapter" data-at="9" data-island="Looking through Downloads">
-            <button type="button" class="at" aria-label="Play from 0:09" disabled>0:09</button>
-            <h3>See what it's doing.</h3>
-            <p>It works inside your apps: Notes, Finder and Mail through macOS Accessibility, using the same buttons and menus you do. The live island beside the notch shows the app in use, then a tick. It is optional and off by default.</p>
-          </li>
-          <li class="chapter" data-at="16" data-island="Filling the form">
-            <button type="button" class="at" aria-label="Play from 0:16" disabled>0:16</button>
-            <h3>Visible, non-focus-stealing browser work.</h3>
-            <p>Forms, long pages and comment threads are handled in a Safari or Chrome tab while you keep typing elsewhere. The tab is framed so you can see what it touches.</p>
-          </li>
-          <li class="chapter" data-at="23" data-island="Weekly ad report">
-            <button type="button" class="at" aria-label="Play from 0:23" disabled>0:23</button>
-            <h3>Hand off work. Get a report back.</h3>
-            <p>Delegate a task to a Codex, Claude Code or OpenCode agent and read a report of its steps and the files it changed. Scheduled Tasks run AI tasks and scripts on the schedule you set; tasks an AI app suggests wait for your approval.</p>
-          </li>
-          <li class="chapter" data-at="30" data-island="Waiting for you">
-            <button type="button" class="at" aria-label="Play from 0:30" disabled>0:30</button>
-            <h3>You stay in charge.</h3>
-            <p>Permission profiles decide which kinds of tools may run. Turn on Server Approval and risky actions, like sending an email, wait for your Allow Once or Block. Pause observation and Private mode are in Settings › Privacy.</p>
-          </li>
+          <li class="chapter" data-at="0"><button type="button" class="at" aria-label="Jump to 0:00" disabled>0:00</button><h3>Your AI can think. It can't use your Mac.</h3><p>Ask a chat app to work with the files in your Downloads folder and it tells you it can't open them.</p></li>
+          <li class="chapter" data-at="4"><button type="button" class="at" aria-label="Jump to 0:04" disabled>0:04</button><h3>Connect the AI apps you already use.</h3><p>Claude Desktop, Claude Code, ChatGPT, Codex and OpenCode connect from the menu bar app. ChatGPT reaches your Mac through a public address you turn on.</p></li>
+          <li class="chapter" data-at="9"><button type="button" class="at" aria-label="Jump to 0:09" disabled>0:09</button><h3>See what it's doing.</h3><p>It works inside Finder, Notes and Mail through macOS Accessibility. The live island beside the notch shows the app in use, then a tick. It is optional and off by default.</p></li>
+          <li class="chapter" data-at="16"><button type="button" class="at" aria-label="Jump to 0:16" disabled>0:16</button><h3>Visible, non-focus-stealing browser work.</h3><p>The form is filled in a Safari tab while you keep typing in your own window. The tab is framed and the agent's cursor says what it does.</p></li>
+          <li class="chapter" data-at="23"><button type="button" class="at" aria-label="Jump to 0:23" disabled>0:23</button><h3>Hand off work. Get a report back.</h3><p>A Codex, Claude Code or OpenCode agent takes the task and reports its steps and the files it changed. Scheduled Tasks repeat it on your schedule.</p></li>
+          <li class="chapter" data-at="30"><button type="button" class="at" aria-label="Jump to 0:30" disabled>0:30</button><h3>You stay in charge.</h3><p>With Server Approval on, risky actions like sending an email wait for your Allow Once or Block.</p></li>
         </ol>
       </div>
     </section>
 
-    <section class="safety" id="safety" data-island="Safety">
-      <h2>What it promises, and what it doesn't.</h2>
-      <div class="columns">
-        <div>
-          <h3>Rules the server enforces</h3>
-          <ul>
-            <li>Permission profiles decide which kinds of tools may run. An allowed capability is not an approval prompt; Server Approval adds an Allow Once or Block answer for risky actions when you turn it on.</li>
-            <li>Pause observation, Private mode and never-observe lists for apps and sites, in Settings › Privacy.</li>
-            <li>The live island beside the notch is off by default.</li>
-            <li>Updates install only signed stable release checkpoints.</li>
-          </ul>
+    <section class="features" id="features" aria-labelledby="features-title" data-reveal>
+      <span class="anchor" id="product"></span>
+      <div class="wrap">
+        <div class="head r">
+          <h2 id="features-title">Your Mac, in reach of the AI you already use.</h2>
+          <p>Mac MCP gives your AI app the same apps, files, terminal and browser you use, through one local server.</p>
         </div>
-        <div>
-          <h3>What Mac MCP is not</h3>
-          <ul>
-            <li>It is not a sandbox. It acts with your macOS user's permissions.</li>
-            <li>Localhost is machine-local transport, not same-user isolation.</li>
-            <li>What your AI app reads through Mac MCP is sent to that app's provider.</li>
-            <li>Browser work is visible on screen, not hidden.</li>
-            <li>The package is not notarized yet, so macOS asks you to choose Open Anyway the first time.</li>
-          </ul>
+        <div class="bento">
+          <article class="card c-safari glow r" aria-labelledby="f-browser">
+            <div class="card-copy">
+              <span class="ico"><svg aria-hidden="true"><use href="#i-compass"/></svg></span>
+              <h3 id="f-browser">It browses where you can see it.</h3>
+              <p>Visible, non-focus-stealing browser automation in Safari and Chrome. It works in a tab while you keep using your Mac, frames the tab, and its cursor says what it is doing.</p>
+              <ul class="tags"><li>Safari</li><li>Chrome</li><li>Saved logins stay in your Keychain</li></ul>
+            </div>
+            <div class="mini" data-mini aria-hidden="true">
+              <div class="mini-stage" data-stage>
+                <div class="m-bar"><span class="s-tl"><i></i><i></i><i></i></span><span class="m-url"><svg><use href="#i-compass"/></svg>forms.example.com/brief</span></div>
+                <div class="m-page">
+                  <h4>Project brief</h4>
+                  <div class="m-f mf1"><span>Project name</span><b data-type="Website refresh"></b></div>
+                  <div class="m-f mf2 tall"><span>Brief</span><b data-type="Launch the new homepage before the October campaign."></b></div>
+                  <div class="m-more"><i></i><i></i><i></i></div>
+                  <span class="m-save">Save draft</span>
+                  <div class="m-toast"><svg><use href="#i-check"/></svg>Draft saved</div>
+                  <div class="s-frame"></div>
+                  <div class="m-rail"><svg><use href="#i-cursor"/></svg><b data-rail>0</b></div>
+                </div>
+                <div class="s-ripple"></div>
+                <div class="s-cursor"><svg viewBox="0 0 26 26"><use href="#i-cursor" class="halo"/><use href="#i-cursor" class="core"/></svg><span class="s-tip"></span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card c-apps glow r" aria-labelledby="f-apps">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-apps"/></svg></span>
+            <h3 id="f-apps">It works inside your apps.</h3>
+            <p>Your AI app opens Notes, looks through a folder in Finder or drafts a reply in Mail through macOS Accessibility, with the same buttons and menus you use.</p>
+            <ul class="tags"><li>Finder</li><li>Notes</li><li>Mail</li><li>Calendar</li><li>Reminders</li><li>Messages</li><li>Contacts</li><li>Photos</li><li>Preview</li><li>Shortcuts</li><li>System Settings</li><li>Xcode</li></ul>
+          </article>
+
+          <article class="card c-agents glow r" aria-labelledby="f-agents">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-agents"/></svg></span>
+            <h3 id="f-agents">It hands off work and reports back.</h3>
+            <p>Delegate a task to one of ten agent CLIs, or a whole team of them, and read a report of the steps and the files they changed.</p>
+            <ul class="tags mono"><li>Codex</li><li>Claude Code</li><li>OpenCode</li><li>Kimi Code</li><li>Grok Build</li><li>Antigravity</li><li>pi</li><li>Cline</li><li>Kilo Code</li><li>Goose</li></ul>
+          </article>
+
+          <article class="card c-docs glow r" aria-labelledby="f-docs">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-doc"/></svg></span>
+            <h3 id="f-docs">It answers from your documents.</h3>
+            <p>Pick folders in Settings › Privacy and your AI app can ask what your contracts, invoices or notes say, and get the file and page back. The index stays on your Mac.</p>
+            <p class="cite"><svg aria-hidden="true"><use href="#i-doc"/></svg><span>lease-agreement.pdf</span><b>page 4</b></p>
+          </article>
+
+          <article class="card c-auto glow r" aria-labelledby="f-auto">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-clock"/></svg></span>
+            <h3 id="f-auto">It automates the repeat work.</h3>
+            <p>Scheduled Tasks run AI tasks and scripts on their own. Recipes save a job your AI did once and replay it with one click, from Settings, the Shortcuts app or Siri.</p>
+            <p class="cite"><svg aria-hidden="true"><use href="#i-clock"/></svg><span>Weekly ad report</span><b>Mon 09:00</b></p>
+          </article>
+
+          <article class="card c-mem glow r" aria-labelledby="f-mem">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-brain"/></svg></span>
+            <h3 id="f-mem">It remembers, and shares your skills.</h3>
+            <p>Memory and lessons carry what worked into the next session. Agent Skills you installed for your CLI agents are found automatically, with nothing copied.</p>
+            <p class="paths"><code>~/.agents/skills</code><code>~/.claude/skills</code><code>~/.codex/skills</code><code>~/.mac-mcp/skills</code></p>
+          </article>
         </div>
       </div>
-      <ul class="links">
-        <li><a href="https://github.com/bulutarkan/mac-mcp/blob/main/SECURITY.md">Security policy</a></li>
-        <li><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/TERMINOLOGY.md">What the terms mean</a></li>
-        <li><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/LOCAL_API_SECURITY.md">Local API security</a></li>
-      </ul>
     </section>
 
-    <section class="install" id="install" data-island="Install">
-      <h2>Install</h2>
-      <p class="mobile-note">Open this page on your Mac to install.</p>
-
-      <div class="route">
-        <div class="route-name">
-          <h3>Package</h3>
-          <p>Recommended. Apple Silicon, macOS 14 or later.</p>
+    <section class="new" id="new" aria-labelledby="new-title" data-reveal>
+      <div class="wrap">
+        <div class="head split r">
+          <div><p class="kicker">Mac MCP {{version}}</p><h2 id="new-title">Your devices, safer changes, browser work that tells the truth.</h2></div>
+          <a class="more" href="{{release_url}}">Release notes<svg aria-hidden="true"><use href="#i-out"/></svg></a>
         </div>
-        <div class="route-body">
-          <p>Mac MCP {{version}} ({{release_id}}), about {{pkg_size_mb}} MB.</p>
-          <p><a class="button primary" href="{{pkg_url}}">Download for Apple Silicon</a></p>
-          <p class="small">SHA-256, published with the <a href="{{release_url}}">GitHub release</a>:</p>
-          <div class="copyable"><code id="pkg-sha">{{pkg_sha256}}</code><button type="button" class="copy" data-copy="pkg-sha" hidden>Copy</button></div>
-          <p class="small">Check it after downloading:</p>
-          <div class="copyable"><code id="pkg-check">shasum -a 256 ~/Downloads/{{pkg_name}}</code><button type="button" class="copy" data-copy="pkg-check" hidden>Copy</button></div>
-          <p class="small">The package is not notarized yet. If macOS stops it, open System Settings › Privacy &amp; Security and choose Open Anyway.</p>
+        <div class="grid-new">
+          <article class="card glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-macs"/></svg></span>
+            <h3>Your other Macs</h3>
+            <p>Pair them once in Settings › Devices with a one-time code and a 6-digit check on both Macs. An agent on one can then work on the others, under each Mac's own permissions.</p>
+            <ul class="rows"><li><span>Studio</span><b>Full access</b></li><li><span>MacBook Air</span><b class="dim">Read only</b></li><li><span>Mac mini</span><b class="warn">Busy</b></li></ul>
+          </article>
+          <article class="card glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-phone"/></svg></span>
+            <h3>Your iPhone</h3>
+            <p>Agents use it through iPhone Mirroring, with no app on the phone. They see and read the screen; with full access they open apps, tap, type and scroll. Read only by default.</p>
+            <ul class="rows"><li><span>Access</span><b class="dim">Read only</b></li><li><span>Cursor</span><b>Tapping</b></li></ul>
+          </article>
+          <article class="card glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-undo"/></svg></span>
+            <h3>Undo in your apps</h3>
+            <p>What an agent changes in Notes, Reminders, Calendar and Mail can be undone like file changes, and never over an edit you made since.</p>
+          </article>
+          <article class="card glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-upload"/></svg></span>
+            <h3>Uploads ask first</h3>
+            <p>Safari uploads ask you first, naming the file and the site. Every upload is checked for keys and passwords inside the file, not only by its name.</p>
+          </article>
+          <article class="card glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-team"/></svg></span>
+            <h3>Agent teams</h3>
+            <p>Teams take new tasks while they run, give each task its own provider and model, and pick up where they stopped.</p>
+          </article>
+          <article class="card glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-plug"/></svg></span>
+            <h3>Claude Desktop in one step</h3>
+            <p>It keeps its connection after idle time and always uses the key in Mac MCP's <code>.env</code>.</p>
+            <p class="paths"><code>mac-mcp connect --client claude-desktop</code></p>
+          </article>
         </div>
       </div>
+    </section>
 
-      <div class="route">
-        <div class="route-name">
-          <h3>Terminal</h3>
-          <p>Any Mac, Apple Silicon or Intel, macOS 13 or later.</p>
+    <section class="safety" id="safety" aria-labelledby="safety-title" data-reveal>
+      <span class="anchor" id="security"></span>
+      <div class="wrap safety-in">
+        <div class="safety-copy">
+          <div class="head left r">
+            <h2 id="safety-title">You stay in charge.</h2>
+            <p>Permission profiles decide what may run. Server Approval asks before risky actions when you turn it on. Privacy settings keep apps and sites out of reach.</p>
+          </div>
+          <div class="profiles r" data-profiles>
+            <div class="prof-tabs" role="tablist" aria-label="Permission profiles">
+              <button type="button" role="tab" id="pt-ro" aria-controls="pp-ro" aria-selected="false" tabindex="-1">Read Only</button>
+              <button type="button" role="tab" id="pt-std" aria-controls="pp-std" aria-selected="true">Standard</button>
+              <button type="button" role="tab" id="pt-tr" aria-controls="pp-tr" aria-selected="false" tabindex="-1">Trusted</button>
+            </div>
+            <p role="tabpanel" id="pp-ro" aria-labelledby="pt-ro" hidden>Reads, inspects and browses. Tools that change something are refused.</p>
+            <p role="tabpanel" id="pp-std" aria-labelledby="pt-std">The default. Everyday work is allowed; raw command execution and update control are blocked.</p>
+            <p role="tabpanel" id="pp-tr" aria-labelledby="pt-tr" hidden>Every registered capability. A capability that is allowed is not a prompt; turn on Server Approval for that.</p>
+          </div>
+          <ul class="facts">
+            <li class="r"><svg aria-hidden="true"><use href="#i-shield"/></svg><div><b>Server Approval</b><span>Off by default. Set it to Critical or High Risk and those actions wait for Allow Once or Block.</span></div></li>
+            <li class="r"><svg aria-hidden="true"><use href="#i-pause-o"/></svg><div><b>Pause observation and Private mode</b><span>Stop screen, page, clipboard and microphone reads, or keep no record of the work.</span></div></li>
+            <li class="r"><svg aria-hidden="true"><use href="#i-eye-off"/></svg><div><b>Never-observe lists</b><span>Apps and sites you exclude are refused by the server.</span></div></li>
+            <li class="r"><svg aria-hidden="true"><use href="#i-key"/></svg><div><b>Signed updates</b><span>Updates install only signed stable checkpoints, and roll back when the health check fails.</span></div></li>
+          </ul>
         </div>
-        <div class="route-body">
-          <p>Installs the newest cryptographically verified stable release checkpoint.</p>
-          <div class="copyable"><code id="installer">curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash</code><button type="button" class="copy" data-copy="installer" hidden>Copy</button></div>
+        <div class="safety-side">
+          <div class="approve r" data-ask>
+            <div class="ask-h"><span class="ask-i"><svg aria-hidden="true"><use href="#i-shield"/></svg></span><div><b>Allow once?</b><p>Claude Desktop wants to send an email with Mail.</p></div></div>
+            <code>mac_app · Mail · send · finance@example.com</code>
+            <div class="ask-b"><button type="button" class="btn ghost sm" data-answer="block">Block</button><button type="button" class="btn primary sm" data-answer="allow">Allow Once</button></div>
+            <p class="ask-out" role="status" aria-live="polite">Server Approval is waiting for your answer.</p>
+          </div>
+          <aside class="honest r" aria-labelledby="honest-title">
+            <h3 id="honest-title">What Mac MCP is not</h3>
+            <ul>
+              <li>It is not a sandbox. It acts with your macOS user's permissions.</li>
+              <li>Localhost is machine-local transport, not same-user isolation.</li>
+              <li>What your AI app reads through Mac MCP is sent to that app's provider.</li>
+              <li>Browser work is visible on screen, not hidden.</li>
+            </ul>
+            <p class="links"><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/safety.md">Safety and permissions</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/TERMINOLOGY.md">What the terms mean</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/SECURITY.md">Security policy</a></p>
+          </aside>
         </div>
       </div>
+    </section>
 
-      <div class="route">
-        <div class="route-name">
-          <h3>From source</h3>
-          <p>For developers.</p>
+    <section class="connect" id="connect" aria-labelledby="connect-title" data-reveal>
+      <span class="anchor" id="chatgpt"></span>
+      <div class="wrap connect-in">
+        <div class="head left r">
+          <h2 id="connect-title">Connect the apps you already use.</h2>
+          <p>One click in the menu bar app, or one command. Local apps talk to Mac MCP on your Mac. ChatGPT needs a public HTTPS address: Cloudflare Tunnel, ngrok or your own.</p>
+          <a class="more" href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/connect.md">Connection guide<svg aria-hidden="true"><use href="#i-out"/></svg></a>
         </div>
-        <div class="route-body">
-          <p>Clone the repository and run the server from your own checkout. <a href="https://github.com/bulutarkan/mac-mcp#install">Install from source</a></p>
+        <div class="term r" data-clients>
+          <div class="term-bar"><span class="s-tl"><i></i><i></i><i></i></span><span>Terminal</span></div>
+          <div class="term-chips" role="group" aria-label="Choose your AI app">
+            <button type="button" aria-pressed="true" data-client="claude-desktop">Claude Desktop</button><button type="button" aria-pressed="false" data-client="claude-code">Claude Code</button><button type="button" aria-pressed="false" data-client="codex">Codex</button><button type="button" aria-pressed="false" data-client="opencode">OpenCode</button><button type="button" aria-pressed="false" data-client="cline">Cline</button><button type="button" aria-pressed="false" data-client="goose">Goose</button><button type="button" aria-pressed="false" data-client="chatgpt">ChatGPT</button>
+          </div>
+          <div class="term-body">
+            <p class="cmd plain"><span class="ps" aria-hidden="true">$</span><code id="connect-cmd">mac-mcp connect --client claude-desktop</code><button type="button" class="copy" data-copy="connect-cmd" hidden><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></p>
+            <p class="term-out" data-client-note>Adds Mac MCP to Claude Desktop's config and keeps a backup of the old file. Restart Claude Desktop.</p>
+          </div>
         </div>
       </div>
+    </section>
 
-      <p class="after">Then connect your AI app in one click from the menu bar app, and allow Accessibility and Screen Recording for Mac MCP when the first-run tour asks.</p>
+    <section class="install" id="install" aria-labelledby="install-title" data-reveal>
+      <div class="wrap">
+        <div class="head r">
+          <h2 id="install-title">Install in a minute.</h2>
+          <p class="mobile-note">Open this page on your Mac to install.</p>
+          <p>Three ways in, one result: the menu bar app and the local server, started for your account.</p>
+        </div>
+        <div class="routes">
+          <article class="card route glow r featured">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-package"/></svg></span>
+            <h3>Package</h3>
+            <p class="req">Recommended. Apple Silicon, macOS 14 or later.</p>
+            <p>Mac MCP {{version}} ({{release_id}}), about {{pkg_size_mb}} MB. No Terminal, Xcode or Python needed.</p>
+            <a class="btn primary wide" href="{{pkg_url}}"><svg aria-hidden="true"><use href="#i-download"/></svg>Download the .pkg</a>
+            <p class="small">SHA-256, published with the <a href="{{release_url}}">GitHub release</a>:</p>
+            <div class="cmd mini-cmd"><code id="pkg-sha">{{pkg_sha256}}</code><button type="button" class="copy" data-copy="pkg-sha" hidden><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+            <p class="small">The package is not notarized yet. If macOS stops it, open System Settings › Privacy &amp; Security and choose Open Anyway.</p>
+          </article>
+          <article class="card route glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <h3>Terminal</h3>
+            <p class="req">Any Mac, Apple Silicon or Intel, macOS 13 or later.</p>
+            <p>Installs the newest cryptographically verified stable release checkpoint. Needs Python, Git and the Xcode command line tools.</p>
+            <div class="cmd mini-cmd"><code id="installer">curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash</code><button type="button" class="copy" data-copy="installer" hidden><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+            <p class="small">For a stronger check, download <code>install.sh</code> from the release and verify its signer. <a href="https://github.com/bulutarkan/mac-mcp/blob/main/release/README.md">Verification guide</a></p>
+          </article>
+          <article class="card route glow r">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-npm"/></svg></span>
+            <h3>npm</h3>
+            <p class="req">Node.js 18 or later, macOS 13 or later.</p>
+            <p>The same installer, through npm. The package also checks, updates and repairs an install.</p>
+            <div class="cmd mini-cmd"><code id="npx">npx @bulutarkan/mac-mcp install</code><button type="button" class="copy" data-copy="npx" hidden><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+            <p class="small">Already installed? Update with <code>mac-mcp update</code> or from Settings › General.</p>
+          </article>
+        </div>
+        <p class="after r">Then connect your AI app from the menu bar app, and allow Accessibility and Screen Recording for Mac MCP when the first-run tour asks. Prefer to build it yourself? <a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/install.md">Install from source</a>.</p>
+      </div>
+    </section>
+
+    <section class="faq" id="faq" aria-labelledby="faq-title" data-reveal>
+      <div class="wrap faq-in">
+        <h2 id="faq-title" class="r">Questions, answered.</h2>
+        <div class="qa">
+          <details class="r"><summary>Does it need a cloud server?</summary><p>No. The server runs on your Mac. A public address is only needed for ChatGPT or remote access, through Cloudflare Tunnel, ngrok or your own HTTPS endpoint.</p></details>
+          <details class="r"><summary>Will it take over my screen?</summary><p>Browser work happens in a Safari or Chrome tab while you keep using your Mac. Actions that need the foreground are a separate capability, so background work does not quietly take your focus.</p></details>
+          <details class="r"><summary>Which AI apps can use it?</summary><p>Any MCP app. The menu bar app and <code>mac-mcp connect</code> set up Claude Desktop, Claude Code, Codex, OpenCode, Kimi, Grok, Antigravity, pi, Cline, Kilo and Goose; ChatGPT connects through its connector settings.</p></details>
+          <details class="r"><summary>What does my AI app see?</summary><p>What it reads through Mac MCP is sent to that app's provider, like anything else you share with it. Pause observation, Private mode and the never-observe lists in Settings › Privacy limit what can be read.</p></details>
+          <details class="r"><summary>Is it free?</summary><p>Yes. Mac MCP is open source under the MIT license, with no account.</p></details>
+        </div>
+      </div>
     </section>
   </main>
 
-  <footer class="bottom">
-    <nav aria-label="Project">
-      <a href="https://github.com/bulutarkan/mac-mcp">GitHub</a>
-      <a href="https://github.com/bulutarkan/mac-mcp/releases">Releases</a>
-      <a href="https://github.com/bulutarkan/mac-mcp/blob/main/CHANGELOG.md">Changelog</a>
-      <a href="https://github.com/bulutarkan/mac-mcp/blob/main/SECURITY.md">Security</a>
-      <a href="https://github.com/bulutarkan/mac-mcp/blob/main/LICENSE">MIT license</a>
-    </nav>
-    <p class="small">Built from {{release_id}}, released {{published_date}}. Mac MCP is open source and not affiliated with Apple, Anthropic or OpenAI.</p>
+  <footer class="foot">
+    <div class="wrap foot-in">
+      <div class="foot-brand">
+        <a class="brand" href="#top"><img class="on-light" src="assets/img/mark-bronze.svg" alt="" width="28" height="28"><img class="on-dark" src="assets/img/mark.svg" alt="" width="28" height="28"><span translate="no">Mac MCP</span></a>
+        <p>Let your AI apps use your Mac.</p>
+        <a class="star" href="https://github.com/bulutarkan/mac-mcp"><svg aria-hidden="true"><use href="#i-github"/></svg><span class="star-l">bulutarkan/mac-mcp</span><span class="count" data-stars hidden></span></a>
+      </div>
+      <nav class="foot-nav" aria-label="Product">
+        <h3>Product</h3><a href="#demo">Demo</a><a href="#features">Features</a><a href="#safety">Safety</a><a href="#install">Install</a>
+      </nav>
+      <nav class="foot-nav" aria-label="Docs">
+        <h3>Docs</h3><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/connect.md">Connect your AI apps</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/browser.md">Browser work</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/agents-and-tasks.md">Agents and tasks</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/reference.md">Developer reference</a>
+      </nav>
+      <nav class="foot-nav" aria-label="Project">
+        <h3>Project</h3><a href="https://github.com/bulutarkan/mac-mcp/releases">Releases</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/SECURITY.md">Security</a><a href="https://github.com/bulutarkan/mac-mcp/blob/main/LICENSE">MIT license</a>
+      </nav>
+      <p class="foot-legal">Built from {{release_id}}, released {{published_date}}. Made by <a href="https://tarkan.cloud/">Tarkan Bulut</a>. Mac MCP is open source and not affiliated with Apple, Anthropic or OpenAI.</p>
+    </div>
   </footer>
+
+  <dialog class="rec" id="rec" aria-labelledby="rec-title">
+    <div class="rec-h"><h2 id="rec-title">Screen recording, 40 seconds</h2><button type="button" data-video-close aria-label="Close"><svg aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <video controls preload="none" playsinline width="1280" height="720" poster="assets/media/demo-poster.jpg">
+      <source src="assets/media/mac-mcp-demo.mp4" type="video/mp4">
+      <track kind="captions" srclang="en" label="English" src="assets/media/demo.en.vtt">
+    </video>
+  </dialog>
 </body>
 </html>

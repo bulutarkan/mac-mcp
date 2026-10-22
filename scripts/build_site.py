@@ -12,10 +12,14 @@ never describes features that the downloadable release does not have.
   build_site.py --release-json latest.json --sha256-file pkg.sha256 --out _site
   build_site.py --offline --out /tmp/site        # local preview, never deployable
   build_site.py --check _site
+
+The same output is copied to tarkan.cloud/mac-mcp/ and can move to its own domain as it is:
+every local URL is relative and carries a content hash.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -36,6 +40,8 @@ PLACEHOLDERS = ("version", "release_id", "tag", "pkg_name", "pkg_url", "pkg_sha2
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)-r(\d+)$")
+_PAGE_REF = re.compile(r'((?:href|src|poster)=")((?:css|js|assets)/[^"?#]+)(")')
+_CSS_REF = re.compile(r'url\("(\.\./[^"?#)]+)"\)')
 
 
 class SiteBuildError(Exception):
@@ -160,8 +166,27 @@ def render(data: Dict[str, Any], out: Path, site: Path = SITE) -> None:
         if "{{" in text:
             raise SiteBuildError(f"{page.name} still has an unfilled placeholder")
         page.write_text(text, encoding="utf-8")
+    _version_assets(out)
     public = {key: data[key] for key in data}
     (out / "release.json").write_text(json.dumps(public, indent=2) + "\n", encoding="utf-8")
+
+
+def _version_assets(out: Path) -> None:
+    """Tie every local stylesheet, script, image and font URL to its content, so a CDN cache in front of
+    any copy of the site (GitHub Pages, tarkan.cloud) never serves an old file with a new page."""
+    def digest(path: Path) -> str:
+        if not path.is_file():
+            raise SiteBuildError(f"missing site file {path.relative_to(out)}")
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+    for sheet in out.rglob("*.css"):
+        text = sheet.read_text(encoding="utf-8")
+        sheet.write_text(_CSS_REF.sub(lambda m: f'url("{m.group(1)}?v={digest((sheet.parent / m.group(1)).resolve())}")', text),
+                         encoding="utf-8")
+    for page in out.rglob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        page.write_text(_PAGE_REF.sub(lambda m: f"{m.group(1)}{m.group(2)}?v={digest(page.parent / m.group(2))}{m.group(3)}", text),
+                        encoding="utf-8")
 
 
 def check(out: Path) -> Dict[str, Any]:

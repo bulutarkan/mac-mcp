@@ -138,16 +138,17 @@ class SiteBrandTests(unittest.TestCase):
         self.assertIn('<img class="on-light" src="assets/img/mark-bronze.svg"', brand)
         self.assertIn('<img class="on-dark" src="assets/img/mark.svg"', brand)
         css = (ROOT / "site" / "css" / "site.css").read_text(encoding="utf-8")
-        self.assertIn(".on-light { display: var(--show-light); }", css)
-        self.assertIn(".on-dark { display: var(--show-dark); }", css)
+        self.assertIn(':root[data-theme="light"] .on-light { display: block; }', css)
+        self.assertIn(':root[data-theme="light"] .on-dark { display: none; }', css)
 
     def test_the_island_uses_the_champagne_mark(self) -> None:
-        self.assertIn('<img class="island-mark" src="assets/img/mark.svg"', self.page)
+        # The live island in the demo film, beside the notch, as in the app.
+        self.assertIn('<span class="s-isl-l"><img src="assets/img/mark.svg"', self.page)
 
     def test_icons_for_tabs_and_home_screens(self) -> None:
         # The tab icon keeps the obsidian tile: a bare champagne mark vanishes on a light tab bar.
-        self.assertIn('<link rel="icon" type="image/png" href="assets/img/app-icon-256.png?v=2">', self.page)
-        self.assertIn('<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png?v=2">', self.page)
+        self.assertIn('<link rel="icon" type="image/png" href="assets/img/app-icon-256.png">', self.page)
+        self.assertIn('<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">', self.page)
         self.assertTrue((ROOT / "site" / "assets" / "img" / "mark-bronze.svg").is_file())
 
 
@@ -231,9 +232,17 @@ class HomeScreenIcons(unittest.TestCase):
 
 class SiteCacheBusting(unittest.TestCase):
     def test_new_images_get_new_urls(self) -> None:
+        # Local images get a content hash at build time (scripts/build_site.py); the social image is
+        # fetched by its absolute URL, so its version is written by hand.
+        import tempfile
         page = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
-        self.assertIn('href="assets/img/app-icon-256.png?v=2"', page)
         self.assertIn('og-image.jpg?v=2"', page)
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "site"
+            proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "build_site.py"), "--offline", "--out", str(out)],
+                                  capture_output=True, text=True)
+            self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+            self.assertRegex((out / "index.html").read_text(encoding="utf-8"), r'href="assets/img/app-icon-256\.png\?v=[0-9a-f]{12}"')
 
 
 class VideoEndCard(unittest.TestCase):
