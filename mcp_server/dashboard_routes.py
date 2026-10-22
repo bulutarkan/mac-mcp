@@ -166,7 +166,6 @@ REST_TOOL_ALIASES = {
     "/run_parallel": "run_commands_parallel",
     "/http": "http_request",
     "/interactive": "ask_user",
-    "/interactive/choice": "ask_choice",
     "/interactive/confirmation": "ask_confirmation",
 }
 

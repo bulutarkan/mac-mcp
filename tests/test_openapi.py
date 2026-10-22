@@ -29,9 +29,8 @@ class OpenAPICoverageTests(unittest.TestCase):
         self.assertTrue(MEMORY_SKILLS_REST_OPERATION_IDS.issubset(operation_ids))
         self.assertTrue(MEMORY_SKILLS_MCP_ONLY_OPERATION_IDS.isdisjoint(operation_ids))
         self.assertTrue(operation_ids.issubset(RISK_REGISTRY))
-        choice_schema = schema["paths"]["/api/interactive/choice"]["post"]["requestBody"]["content"]["application/json"]["schema"]
-        self.assertEqual(2, choice_schema["properties"]["choices"]["minItems"])
-        self.assertEqual(3, choice_schema["properties"]["choices"]["maxItems"])
+        # ask_user's one-click suggestions replaced ask_choice.
+        self.assertNotIn("/api/interactive/choice", schema["paths"])
         self.assertNotIn("/api/files", schema["paths"])
         self.assertNotIn("/api/macos", schema["paths"])
         self.assertNotIn("/api/browser", schema["paths"])
@@ -71,7 +70,6 @@ class OpenAPICoverageTests(unittest.TestCase):
             "/api/read_file": "ReadFileResult",
             "/api/browser_list_tabs": "BrowserListTabsResult",
             "/api/interactive": "AskUserResult",
-            "/api/interactive/choice": "AskChoiceResult",
             "/api/interactive/confirmation": "AskConfirmationResult",
             "/api/mac_act": "ToolResult",
         }
@@ -115,10 +113,7 @@ class OpenAPICoverageTests(unittest.TestCase):
         self.assertTrue(MEMORY_SKILLS_REST_OPERATION_IDS.issubset(operation_ids))
         self.assertTrue(MEMORY_SKILLS_MCP_ONLY_OPERATION_IDS.isdisjoint(operation_ids))
         self.assertTrue(operation_ids.issubset(RISK_REGISTRY))
-        self.assertEqual(
-            3,
-            schema["components"]["schemas"]["ChoiceRequest"]["properties"]["choices"]["maxItems"],
-        )
+        self.assertNotIn("ChoiceRequest", schema["components"]["schemas"])
 
         published = json.loads(
             (Path(__file__).parents[1] / "openapi" / "custom-gpt-actions.json").read_text()

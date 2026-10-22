@@ -110,11 +110,12 @@ _RESULT_ENVELOPE_FILENAME = "result.envelope.json"
 _CONTROL_DENY_ERROR = "agent_control_denied"
 
 _AGENT_CAPABILITY_PROFILES: Dict[str, Dict[str, Any]] = {
-    "browser_only": {"access_mode": "read_only", "permission_profile": "browser_only", "tool_families": ("browser",)},
+    "browser_only": {"access_mode": "read_only", "permission_profile": "browser_only", "tool_families": ("browser", "interactive")},
     "read_only": {"access_mode": "read_only", "permission_profile": "read_only", "tool_families": None},
     "developer": {
         "access_mode": "workspace_write", "permission_profile": "developer",
-        "tool_families": ("terminal", "jobs", "files", "search", "http", "agents", "memory", "skills", "external_mcp"),
+        "tool_families": ("terminal", "jobs", "files", "search", "http", "agents", "memory", "skills", "external_mcp",
+                          "interactive"),
     },
     "full": {"access_mode": "full", "permission_profile": "trusted", "tool_families": None},
 }

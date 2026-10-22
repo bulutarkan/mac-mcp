@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Asking the owner without stopping the work
+- `ask_user` is described as what it is: a quick question in the middle of the work. The agent waits up to `timeout_s`, then goes on with the answer, or with its own judgment when the owner skips or does not answer in time. It is meant for background agents, scheduled tasks and long jobs, instead of ending a turn to ask in chat.
+- `ask_user` and `ask_confirmation` only show a question, so they are marked read-only: MCP clients no longer ask for approval before the question itself. Read-only and browser-only delegated agents may now use them too; the voice tools still may not.
+- `ask_choice` is gone (MCP tool, `/api/interactive/choice` and `/api/v2/ask_choice`): `ask_user` with `suggestions` gives the same one-click answers, and the owner can still type a different one.
+
 ### Reading web and Electron apps down to their controls (roadmap #82, part 1)
 - `mac_observe` now reads apps built on web views (the ChatGPT app among them) down to their buttons and text boxes. They wrap their page in many containers that hold just one thing; those no longer use up `max_depth`, and element ids keep their full path. Before, "New chat" and the message box of the ChatGPT app never showed at any depth.
 - `max_depth` goes up to 16 (it was silently cut to 8); when a request asks for more, the result says what was used. The hint for a cut-off tree now says what can actually help.

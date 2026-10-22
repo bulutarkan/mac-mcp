@@ -830,11 +830,10 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "skill_get": _r("skill_get", "skills", _caps(Capability.READ), sensitive=True),
     "skill_register": _r("skill_register", "skills", _caps(Capability.READ, Capability.LOCAL_WRITE), sensitive=True),
     "skill_update_index": _r("skill_update_index", "skills", _caps(Capability.READ, Capability.LOCAL_WRITE), sensitive=True),
-    "ask_user": _r("ask_user", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
+    "ask_user": _r("ask_user", "interactive", _caps(Capability.HUMAN_INTERACTION), sensitive=True),
     "ask_user_voice": _r("ask_user_voice", "voice", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NETWORK_ACCESS, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "voice_capture": _r("voice_capture", "voice", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NETWORK_ACCESS, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
-    "ask_choice": _r("ask_choice", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
-    "ask_confirmation": _r("ask_confirmation", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
+    "ask_confirmation": _r("ask_confirmation", "interactive", _caps(Capability.HUMAN_INTERACTION), sensitive=True),
     "tool_discover": _r("tool_discover", "meta", _caps(Capability.READ)),
     "tool_invoke": _r("tool_invoke", "meta", _caps(Capability.RAW_EXECUTION), destructive=True, sensitive=True, resolver=_tool_invoke_risk),
 }
@@ -873,6 +872,7 @@ PROFILES: dict[str, PermissionProfile] = {
             Capability.NETWORK_ACCESS,
             Capability.BROWSER_CONTROL,
             Capability.NATIVE_ACCESSIBILITY,
+            Capability.HUMAN_INTERACTION,  # asking the owner a question changes nothing
         ),
         allow_destructive_families=frozenset(),
         access_mode_ceiling=AccessMode.READ_ONLY,
@@ -889,6 +889,7 @@ PROFILES: dict[str, PermissionProfile] = {
         allowed_capabilities=_caps(
             Capability.READ, Capability.LOCAL_WRITE, Capability.UI_ACTION,
             Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT, Capability.NETWORK_ACCESS,
+            Capability.HUMAN_INTERACTION,
         ),
         allow_destructive_families=frozenset({"browser"}),
         access_mode_ceiling=AccessMode.READ_ONLY,
@@ -1153,7 +1154,6 @@ def annotations_for_tool(tool: str) -> ToolAnnotations:
         Capability.RAW_EXECUTION,
         Capability.UPDATE_CONTROL,
         Capability.AGENT_DELEGATION,
-        Capability.HUMAN_INTERACTION,
     }
     read_only = not bool(risk.capabilities.intersection(mutating))
     open_world = bool(risk.capabilities.intersection({

@@ -97,7 +97,7 @@ from .tools_browser_agent import (
 from .tools_browser import _norm_browser
 from . import browser_checkpoint, browser_tabs
 from .tool_cancellation import cancellable_sleep
-from .tools_interactive import ask_choice, ask_confirmation, ask_user, ask_user_mcp_result
+from .tools_interactive import ask_confirmation, ask_user, ask_user_mcp_result
 from .tools_voice import ask_user_voice, voice_capture
 from . import storage_review as storage_review_tool
 from . import workspaces as workspace_tool
@@ -126,7 +126,7 @@ MCP_AGENT_INSTRUCTIONS = (
     "Routing order: dedicated semantic tool first, then shell/file API, then browser DOM, with native UI only as a fallback. "
     "Use open_app to launch apps. "
     "Shell mode: run_command for a short command you wait on; start_background_job for long builds, servers or watchers, "
-    "then get_job_output/wait_jobs and stop_job (use tool_discover if they are not listed); run_commands_parallel only "
+    "then get_job_output/wait_jobs and stop_job; run_commands_parallel only "
     "for independent commands. "
     "If a dedicated capability is unavailable or policy-denied, do not reproduce the same side effect through Terminal, AppleScript, or generic UI; policy denial is not a fallback reason. "
     "Which tool for what (tool_discover finds any tool not in your list): "
@@ -155,8 +155,8 @@ MCP_AGENT_INSTRUCTIONS = (
     "on a plan change without a restart, and Mac MCP sessions can join a named room; their messages "
     "reach you on their own after your tool calls (how: skill_get name='mac-mcp-team-coordination'). "
     "The owner's other Macs -> fleet; their iPhone -> iphone. "
-    "Missing information or a decision only the person can "
-    "make -> ask_user; a sign-in, 2FA or captcha step -> browser_checkpoint. "
+    "Missing information or a decision mid-task -> ask_user instead of stopping; go on with the answer or your "
+    "judgment; a sign-in, 2FA or captcha step -> browser_checkpoint. "
     "Tools named <server>__<tool> come from MCP servers the owner added and follow the same rules. "
     "An error saying observation is paused or private mode is on is the owner's choice: stop that part and say so, "
     "do not work around it. "
@@ -2971,14 +2971,16 @@ def create_app():
     @mcp.tool(
         name="ask_user",
         description=(
-            "Ask the local user an interactive question or request guidance. "
-            "The question appears in Mac MCP's own window (the notch island or a card at the top right; "
-            "a macOS dialog when the menu app is not running) with an input field for the user's answer. "
-            "suggestions (up to 4 short answers) become one-click replies. The user may also add files: "
-            "attachments lists each with its local path, and pictures come back as images. "
-            "When the user sends an answer, the response is returned to you. "
-            "Skip or timeout returns response=null. "
-            "Use this to get approval, preferences, or missing information without stopping an autonomous task."
+            "Ask the owner a quick question in the middle of your work without stopping it. The question pops up "
+            "on their Mac (the notch island, or a card at the top right; a macOS dialog when the menu app is not "
+            "running), you wait up to timeout_s, then you carry on: with their answer if one came, or with your own "
+            "best judgment if they skip or do not answer in time (response=null). Use it whenever a doubt, a choice "
+            "or a missing detail comes up mid-task, instead of ending your turn to ask in chat or guessing; above all "
+            "when you work in the background (a delegated agent, a scheduled task, a long job) and nobody is "
+            "watching the chat. Example: an agent writing on Medium for the owner finds something in its research "
+            "that changes the angle, asks which way to go, and continues either way. "
+            "suggestions (up to 4 short answers) become one-click replies. The owner may also add files: "
+            "attachments lists each with its local path, and pictures come back as images."
         ),
     )
     async def _ask_user(
@@ -3101,44 +3103,6 @@ def create_app():
             "voice_capture",
             lambda: voice_capture(settings, target=target, sender=sender, timeout_s=timeout_s, language=language,
                                   on_egress=_record_voice_egress, save=save),
-        )
-
-    @mcp.tool(
-        name="ask_choice",
-        title="Ask the user to choose",
-        description=(
-            "Open a native macOS dialog with 2-3 labeled choices and wait for the local user's selection. "
-            "Two-choice dialogs show a Cancel button; three-choice dialogs use all three native buttons, "
-            "and closing the window still cancels. Returns the selected choice and index. Timeout returns no choice. "
-            "Use for preferences and reversible decisions; use ask_confirmation for explicit Yes/No approval."
-        ),
-        annotations=ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
-        ),
-        structured_output=False,
-    )
-    async def _ask_choice(
-        question: str,
-        choices: List[str],
-        sender: str = "AI",
-        timeout_s: int = 60,
-        default_choice: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(
-            _log,
-            audit_logger,
-            "ask_choice",
-            lambda: ask_choice(
-                settings,
-                question=question,
-                choices=choices,
-                sender=sender,
-                timeout_s=timeout_s,
-                default_choice=default_choice,
-            ),
         )
 
     @mcp.tool(

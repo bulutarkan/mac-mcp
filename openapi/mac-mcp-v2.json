@@ -4543,7 +4543,7 @@
       "post": {
         "operationId": "ask_user",
         "summary": "ask_user",
-        "description": "Ask the local user an interactive question or request guidance. The question appears in Mac MCP's own window (the notch island or a card at the top right; a macOS dialog when the menu app is not running) with an input field for the user's answer. suggestions (up to 4 short answers) become one-click ",
+        "description": "Ask the owner a quick question in the middle of your work without stopping it. The question pops up on their Mac (the notch island, or a card at the top right; a macOS dialog when the menu app is not running), you wait up to timeout_s, then you carry on: with their answer if one came, or with your o",
         "requestBody": {
           "required": true,
           "content": {
@@ -4600,83 +4600,6 @@
                 },
                 "required": [
                   "question"
-                ],
-                "type": "object"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/Result"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/api/v2/ask_choice": {
-      "post": {
-        "operationId": "ask_choice",
-        "summary": "ask_choice",
-        "description": "Open a native macOS dialog with 2-3 labeled choices and wait for the local user's selection. Two-choice dialogs show a Cancel button; three-choice dialogs use all three native buttons, and closing the window still cancels. Returns the selected choice and index. Timeout returns no choice. Use for pre",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "question": {
-                    "title": "Question",
-                    "type": "string"
-                  },
-                  "choices": {
-                    "items": {
-                      "type": "string"
-                    },
-                    "title": "Choices",
-                    "type": "array"
-                  },
-                  "sender": {
-                    "default": "AI",
-                    "title": "Sender",
-                    "type": "string"
-                  },
-                  "timeout_s": {
-                    "default": 60,
-                    "title": "Timeout S",
-                    "type": "integer"
-                  },
-                  "default_choice": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "default": null,
-                    "title": "Default Choice"
-                  },
-                  "idempotency_key": {
-                    "type": "string",
-                    "minLength": 8,
-                    "maxLength": 128,
-                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
-                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
-                  },
-                  "description": {
-                    "type": "string",
-                    "minLength": 3,
-                    "maxLength": 80,
-                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
-                  }
-                },
-                "required": [
-                  "question",
-                  "choices"
                 ],
                 "type": "object"
               }

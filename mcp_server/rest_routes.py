@@ -52,7 +52,7 @@ from .tools_browser import (
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
-from .tools_interactive import ask_choice, ask_confirmation, ask_user
+from .tools_interactive import ask_confirmation, ask_user
 from .tools_memory import memory_get, memory_search
 from .tools_skills import skill_get, skill_list, skill_search
 from .tools_ui import act_ui, observe_ui
@@ -483,13 +483,6 @@ class InteractiveRequest(BaseModel):
     suggestions: Optional[List[str]] = Field(default=None, max_length=4)
     allow_attachments: Optional[bool] = True
 
-class ChoiceRequest(BaseModel):
-    question: str
-    choices: List[str] = Field(..., min_length=2, max_length=3)
-    sender: Optional[str] = "AI"
-    timeout_s: Optional[int] = 60
-    default_choice: Optional[str] = None
-
 class ConfirmationRequest(BaseModel):
     question: str
     sender: Optional[str] = "AI"
@@ -888,18 +881,6 @@ def api_interactive(req: InteractiveRequest, settings: Settings = Depends(get_se
         timeout_s=req.timeout_s or 60,
         suggestions=req.suggestions,
         allow_attachments=req.allow_attachments is not False,
-    )
-
-
-@router.post("/interactive/choice", operation_id="ask_choice")
-def api_interactive_choice(req: ChoiceRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return ask_choice(
-        settings,
-        question=req.question,
-        choices=req.choices,
-        sender=req.sender or "AI",
-        timeout_s=req.timeout_s or 60,
-        default_choice=req.default_choice,
     )
 
 

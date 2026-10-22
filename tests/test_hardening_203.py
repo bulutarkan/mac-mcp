@@ -44,7 +44,7 @@ import mcp_server.tools_agents as agents
 class RiskAndScopeTests(unittest.TestCase):
     # ASSURANCE: SEC-AUTHZ-001
     def test_registry_covers_current_tool_surface(self) -> None:
-        self.assertEqual(115, len(RISK_REGISTRY))  # +storage_review (#72), workspace (#69), personal_search (#67), daily_briefing (#68)
+        self.assertEqual(114, len(RISK_REGISTRY))  # +storage_review (#72), workspace (#69), personal_search (#67), daily_briefing (#68), -ask_choice
         for required in ("run_command", "browser_observe", "browser_do", "computer_plan", "mac_app", "tool_discover", "tool_invoke", "spawn_agent", "mac_snapshot", "mac_act", "artifact_pipeline", "context_handoff", "browser_upload_artifact", "read_file", "lesson_search", "lesson_record", "lesson_feedback", "lesson_consolidate", "lesson_delete", "lesson_export", "delete_job", "recipe", "open_mac_mcp_panel", "mac_mcp_panel_state", "mac_mcp_panel_setting", "browser_checkpoint", "browser_sign_in", "scheduled_tasks", "team_messages", "fleet", "iphone", "voice_capture", "storage_review", "workspace", "personal_search", "daily_briefing"):
             self.assertIn(required, RISK_REGISTRY)
 

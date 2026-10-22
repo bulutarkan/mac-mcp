@@ -21,11 +21,6 @@ _MAX_TIMEOUT_S = 300
 _MAX_QUESTION_LENGTH = 800
 _MAX_SENDER_LENGTH = 50
 _MAX_BUTTON_LENGTH = 80
-_MIN_CHOICES = 2
-# macOS display dialog accepts at most three total buttons. Two choices leave
-# one slot for Cancel; three choices use all slots and window-close remains the
-# cancellation path.
-_MAX_CHOICES = 3
 
 _TIMEOUT_SENTINEL = "__MAC_MCP_TIMEOUT__"
 _CANCELLED_SENTINEL = "__MAC_MCP_CANCELLED__"
@@ -87,41 +82,6 @@ def _validate_button_label(label: str, field_name: str) -> str | Dict[str, Any]:
     if any(ord(char) < 32 for char in normalized):
         return {"ok": False, "error": f"{field_name} contains unsupported control characters"}
     return normalized
-
-
-def _validate_choices(
-    choices: List[str],
-    default_choice: Optional[str],
-) -> tuple[List[str], Optional[str]] | Dict[str, Any]:
-    if not isinstance(choices, list):
-        return {"ok": False, "error": "choices must be a list of strings"}
-    if not _MIN_CHOICES <= len(choices) <= _MAX_CHOICES:
-        return {
-            "ok": False,
-            "error": f"choices must contain between {_MIN_CHOICES} and {_MAX_CHOICES} options",
-        }
-
-    normalized: List[str] = []
-    seen = set()
-    for index, choice in enumerate(choices):
-        label = _validate_button_label(choice, f"choices[{index}]")
-        if isinstance(label, dict):
-            return label
-        if label.casefold() == "cancel":
-            return {"ok": False, "error": "choices cannot use the reserved label 'Cancel'"}
-        if label.casefold() in seen:
-            return {"ok": False, "error": "choices must be unique"}
-        seen.add(label.casefold())
-        normalized.append(label)
-
-    if default_choice is None:
-        return normalized, None
-    default_label = _validate_button_label(default_choice, "default_choice")
-    if isinstance(default_label, dict):
-        return default_label
-    if default_label not in normalized:
-        return {"ok": False, "error": "default_choice must match one of choices"}
-    return normalized, default_label
 
 
 def _run_native_script(script: str, total_timeout: int) -> Dict[str, Any]:
@@ -282,81 +242,6 @@ def ask_user_mcp_result(result: Dict[str, Any]) -> Any:
         return result
     text = json.dumps({**result, "attachments": listed}, ensure_ascii=False, separators=(",", ":"))
     return [text, *images]
-
-
-def ask_choice(
-    settings: Settings,
-    question: str,
-    choices: List[str],
-    sender: str = "AI",
-    timeout_s: int = 60,
-    default_choice: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Ask the local user to select one option from native dialog buttons."""
-    total_timeout = _normalize_timeout(timeout_s)
-    if total_timeout is None:
-        return {"ok": False, "error": "timeout_s must be a positive integer"}
-
-    common = _validate_question_and_sender(question, sender)
-    if isinstance(common, dict):
-        return common
-    validated_choices = _validate_choices(choices, default_choice)
-    if isinstance(validated_choices, dict):
-        return validated_choices
-    normalized_choices, default_label = validated_choices
-    question_display, sender_display = common
-
-    has_cancel_button = len(normalized_choices) < _MAX_CHOICES
-    buttons = (["Cancel", *normalized_choices]
-               if has_cancel_button else normalized_choices)
-    default_button = default_label or ("Cancel" if has_cancel_button else normalized_choices[0])
-    script = f"""
-set q_text to "{_escape_applescript_text(question_display)}"
-set s_name to "{_escape_applescript_text(sender_display)}"
-try
-    set answer_dialog to display dialog q_text ¬
-        with title "🤖 " & s_name & " — Choose" ¬
-        buttons {_quoted_button_list(buttons)} ¬
-        default button "{_escape_applescript_text(default_button)}" ¬
-        giving up after {total_timeout}
-    if gave up of answer_dialog then
-        return "{_TIMEOUT_SENTINEL}"
-    end if
-    return button returned of answer_dialog
-on error number -128
-    return "{_CANCELLED_SENTINEL}"
-end try
-"""
-
-    result = _run_native_script(script, total_timeout)
-    if not result.get("ok"):
-        return _result_error(result)
-    output = result.get("output", "")
-    if result.get("timed_out") or output == _TIMEOUT_SENTINEL:
-        return {
-            "ok": True,
-            "choice": None,
-            "choice_index": None,
-            "cancelled": False,
-            "timed_out": True,
-        }
-    if output in {_CANCELLED_SENTINEL, "Cancel", ""}:
-        return {
-            "ok": True,
-            "choice": None,
-            "choice_index": None,
-            "cancelled": True,
-            "timed_out": False,
-        }
-    if output not in normalized_choices:
-        return {"ok": False, "error": "Native dialog returned an unknown choice"}
-    return {
-        "ok": True,
-        "choice": output,
-        "choice_index": normalized_choices.index(output),
-        "cancelled": False,
-        "timed_out": False,
-    }
 
 
 # Questions Mac MCP itself has put in front of the owner (an upload in Safari, say), listed while their dialog

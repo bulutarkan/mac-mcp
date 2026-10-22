@@ -105,14 +105,14 @@ class ToolInvokeCoherenceTests(unittest.TestCase):
                     policy_context_provider=lambda: PolicyContext(profile="trusted"),
                 )
 
-                @mcp.tool(name="ask_choice")
-                def ask_choice(question: str, choices: list[str]) -> dict:
-                    return {"ok": False, "error": "invalid_choice"}
+                @mcp.tool(name="ask_confirmation")
+                def ask_confirmation(question: str) -> dict:
+                    return {"ok": False, "error": "prompt_busy"}
 
                 result = await _invoke_registered_tool(
                     mcp,
-                    "ask_choice",
-                    {"question": "x", "choices": ["a", "b"]},
+                    "ask_confirmation",
+                    {"question": "x"},
                 )
                 self.assertFalse(result["ok"])
                 self.assertTrue(result["invocation_ok"])

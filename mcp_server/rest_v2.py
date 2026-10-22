@@ -44,7 +44,7 @@ V2_TOOLS = (
     "browser_list_tabs", "browser_observe", "browser_find", "browser_act", "browser_do",
     "browser_open_url", "browser_activate_tab", "browser_close_tab", "browser_wait_for_download",
     "browser_upload_artifact", "browser_screenshot", "browser_get_snapshot",
-    "ask_user", "ask_choice", "ask_confirmation",
+    "ask_user", "ask_confirmation",
     "memory_search", "memory_get", "skill_list", "skill_search", "skill_get",
 )
 

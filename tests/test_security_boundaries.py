@@ -776,8 +776,10 @@ class DelegatedCapabilityProfileTests(unittest.TestCase):
             self.assertEqual("browser_only", capability_profile)
             self.assertEqual("browser_only", permission_profile)
             self.assertEqual("read_only", scope.access_mode.value)
-            self.assertEqual(("browser",), scope.tool_families)
+            self.assertEqual(("browser", "interactive"), scope.tool_families)
             self.assertTrue(evaluate_tool_scope(scope, "browser_open_url", {"url": "https://example.com"}).allowed)
+            # A browser agent may still ask the owner a question mid-task.
+            self.assertTrue(evaluate_tool_scope(scope, "ask_user", {"question": "Which angle?"}).allowed)
             self.assertFalse(evaluate_tool_scope(scope, "run_command", {"command": "pwd"}).allowed)
 
     # ASSURANCE: SEC-AUTHZ-001

@@ -3237,73 +3237,6 @@
         }
       }
     },
-    "/api/interactive/choice": {
-      "post": {
-        "operationId": "ask_choice",
-        "x-openai-isConsequential": false,
-        "summary": "Ask the user to choose from native buttons",
-        "description": "Cancel and timeout return a bounded result without leaving a background process.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "question": {
-                    "type": "string",
-                    "description": "Question shown in the native dialog."
-                  },
-                  "choices": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "description": "Button label."
-                    },
-                    "description": "Two to three native button labels.",
-                    "minItems": 2,
-                    "maxItems": 3
-                  },
-                  "sender": {
-                    "type": "string",
-                    "description": "Dialog sender label.",
-                    "default": "AI"
-                  },
-                  "timeout_s": {
-                    "type": "integer",
-                    "description": "Maximum wait in seconds.",
-                    "minimum": 1,
-                    "maximum": 300,
-                    "default": 60
-                  },
-                  "default_choice": {
-                    "type": "string",
-                    "description": "Optional initially selected choice."
-                  }
-                },
-                "required": [
-                  "question",
-                  "choices"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Tool result returned as JSON.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AskChoiceResult"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/interactive/confirmation": {
       "post": {
         "operationId": "ask_confirmation",
@@ -3824,39 +3757,6 @@
             "type": "boolean"
           },
           "skipped": {
-            "type": "boolean"
-          },
-          "error": {
-            "type": "string"
-          }
-        }
-      },
-      "AskChoiceResult": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": [
-          "ok"
-        ],
-        "properties": {
-          "ok": {
-            "type": "boolean"
-          },
-          "choice": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "choice_index": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cancelled": {
-            "type": "boolean"
-          },
-          "timed_out": {
             "type": "boolean"
           },
           "error": {
