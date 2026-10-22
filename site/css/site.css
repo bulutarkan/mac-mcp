@@ -135,13 +135,26 @@ body::after {
 .star:hover { border-color: var(--rim); }
 .star svg { width: 18px; height: 18px; }
 .star .star-l { padding-right: 4px; }
-.menu-btn { display: none; width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
-.menu-btn svg { width: 20px; height: 20px; margin: auto; }
+.menu-btn { display: none; width: 40px; height: 40px; padding: 0; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; transition: border-color .2s, background .2s; }
+.menu-btn[aria-expanded="true"] { border-color: var(--rim); background: var(--panel-2); }
+.burger { position: relative; display: block; width: 18px; height: 14px; margin: auto; }
+.burger i { position: absolute; left: 0; right: 0; height: 2px; border-radius: 2px; background: currentColor; transition: top .3s var(--ease) .12s, transform .3s var(--ease), opacity .2s ease; }
+.burger i:nth-child(1) { top: 0; }
+.burger i:nth-child(2) { top: 6px; }
+.burger i:nth-child(3) { top: 12px; }
+[aria-expanded="true"] .burger i { transition: top .3s var(--ease), transform .3s var(--ease) .12s, opacity .2s ease; }
+[aria-expanded="true"] .burger i:nth-child(1) { top: 6px; transform: rotate(45deg); }
+[aria-expanded="true"] .burger i:nth-child(2) { opacity: 0; transform: scaleX(.2); }
+[aria-expanded="true"] .burger i:nth-child(3) { top: 6px; transform: rotate(-45deg); }
 .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; pointer-events: none; }
 .progress span { display: block; height: 100%; transform-origin: 0 50%; transform: scaleX(var(--p, 0)); background: linear-gradient(90deg, var(--gold-2), var(--gold), var(--mint)); }
-.sheet { display: grid; gap: 2px; padding: 8px 16px 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.top.menu-open { background: var(--bg); border-bottom-color: var(--line); backdrop-filter: blur(20px) saturate(170%); -webkit-backdrop-filter: blur(20px) saturate(170%); }
+/* The small-screen menu floats over the page: it never pushes the content down. */
+.sheet { position: absolute; left: 0; right: 0; top: 100%; display: grid; gap: 2px; padding: 8px 16px 18px; border-bottom: 1px solid var(--line); background: var(--bg); box-shadow: 0 30px 50px rgba(0, 0, 0, .28); opacity: 0; visibility: hidden; transform: translateY(-8px); clip-path: inset(0 0 100% 0); transition: opacity .25s ease, transform .45s var(--ease), clip-path .45s var(--ease), visibility 0s linear .45s; }
+.sheet.open { opacity: 1; visibility: visible; transform: none; clip-path: inset(0 0 -60px 0); transition-delay: 0s; }
 .sheet[hidden] { display: none; }
-.sheet a { padding: 12px 8px; border-radius: 10px; text-decoration: none; font-size: 17px; font-weight: 500; }
+.sheet a { padding: 12px 8px; border-radius: 10px; text-decoration: none; font-size: 17px; font-weight: 500; opacity: 0; transform: translateY(-6px); transition: opacity .25s ease, transform .4s var(--ease), background .2s; }
+.sheet.open a { opacity: 1; transform: none; transition-delay: calc(var(--i, 0) * 35ms + 60ms), calc(var(--i, 0) * 35ms + 60ms), 0s; }
 .sheet a:hover { background: var(--panel-2); }
 
 /* Shared section rhythm */
@@ -558,6 +571,7 @@ h2 { font-size: clamp(2.1rem, 4.4vw, 3.4rem); font-weight: 300; line-height: 1.1
 .qa summary::-webkit-details-marker { display: none; }
 .qa summary::after { content: "+"; font-weight: 400; font-size: 24px; line-height: 1; color: var(--gold-text); transition: transform .3s var(--ease); }
 .qa details[open] summary::after { transform: rotate(45deg); }
+.qa details.closing summary::after { transform: none; }
 .qa details p { padding: 0 0 22px; color: var(--muted); font-size: 16px; max-width: 40em; }
 
 /* Footer */

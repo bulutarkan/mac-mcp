@@ -55,14 +55,55 @@ if (typeof document !== "undefined") {
   addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(onScroll); } }, { passive: true });
   onScroll();
 
-  // Small screens: the sections live in a sheet under the header.
+  // Small screens: the sections live in a sheet that slides open over the page, under the header.
   const menuButton = $(".menu-btn");
   const sheet = $("#sheet");
   menuButton.hidden = false;
-  const setSheet = (open) => { sheet.hidden = !open; menuButton.setAttribute("aria-expanded", String(open)); };
-  menuButton.addEventListener("click", () => setSheet(sheet.hidden));
+  sheet.hidden = false;
+  sheet.inert = true;
+  $$("a", sheet).forEach((link, index) => link.style.setProperty("--i", String(index)));
+  const setSheet = (open) => {
+    sheet.classList.toggle("open", open);
+    sheet.inert = !open;
+    top.classList.toggle("menu-open", open);
+    menuButton.setAttribute("aria-expanded", String(open));
+    menuButton.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+  };
+  const sheetOpen = () => sheet.classList.contains("open");
+  menuButton.addEventListener("click", () => setSheet(!sheetOpen()));
   sheet.addEventListener("click", (event) => { if (event.target.closest("a")) setSheet(false); });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !sheet.hidden) { setSheet(false); menuButton.focus(); } });
+  document.addEventListener("click", (event) => { if (sheetOpen() && !top.contains(event.target)) setSheet(false); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && sheetOpen()) { setSheet(false); menuButton.focus(); } });
+  matchMedia("(min-width: 1081px)").addEventListener("change", (event) => { if (event.matches) setSheet(false); });
+
+  // Questions: one answer open at a time, opening and closing with a slide.
+  const answers = $$(".qa details");
+  const slide = (item, open) => {
+    const body = item.querySelector("p");
+    item.animation?.cancel();
+    item.classList.toggle("closing", !open);
+    if (open) item.open = true;
+    if (still) { item.open = open; item.classList.remove("closing"); return; }
+    const full = `${body.scrollHeight}px`;
+    const shut = { height: "0px", paddingBottom: "0px", opacity: 0 };
+    const shown = { height: full, paddingBottom: getComputedStyle(body).paddingBottom, opacity: 1 };
+    body.style.overflow = "hidden";
+    item.animation = body.animate(open ? [shut, shown] : [{ ...shown, height: `${body.offsetHeight}px` }, shut],
+      { duration: open ? 380 : 280, easing: "cubic-bezier(0.22, 0.8, 0.24, 1)" });
+    item.animation.onfinish = () => {
+      body.style.overflow = "";
+      item.animation = null;
+      if (!open) { item.open = false; item.classList.remove("closing"); }
+    };
+  };
+  for (const item of answers) {
+    item.querySelector("summary").addEventListener("click", (event) => {
+      event.preventDefault();
+      const opening = !item.open || item.classList.contains("closing");
+      if (opening) for (const other of answers) if (other !== item && other.open && !other.classList.contains("closing")) slide(other, false);
+      slide(item, opening);
+    });
+  }
 
   // Each section reveals its own parts, in order, the first time it comes into view.
   const reveal = new IntersectionObserver((entries) => {
