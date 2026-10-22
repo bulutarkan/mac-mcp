@@ -726,6 +726,10 @@ pre { margin: 0; max-width: 100%; max-height: 46vh; max-height: 46dvh; padding: 
 ::view-transition-new(root) { animation: theme-sweep .6s var(--ease); }
 @keyframes theme-sweep { from { clip-path: circle(0 at var(--sweep-x, 0) var(--sweep-y, 100%)); } to { clip-path: circle(var(--sweep-r, 150vmax) at var(--sweep-x, 0) var(--sweep-y, 100%)); } }
 
+/* A sidebar or tab-bar click outlines the section it opened, even when the page did not move. */
+.nav-flash { animation: nav-flash 1.2s var(--ease); }
+@keyframes nav-flash { 0%, 45% { outline: 2px solid color-mix(in srgb, var(--tint) 60%, transparent); outline-offset: 3px; } 100% { outline: 2px solid transparent; outline-offset: 3px; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .wallpaper i { animation: none; }

@@ -74,5 +74,28 @@ class MotionTests(unittest.TestCase):
         self.assertIn("state.restoreFocus !== document.body", JS)
 
 
+
+class NavigationAndLiveCallTests(unittest.TestCase):
+    """The owner saw Activity never marked (Changes shares its row, and the later one won) and running
+    calls blink every second (the strip was rebuilt each tick, replaying its arrive animation)."""
+
+    def test_activity_is_marked_beside_changes_and_a_click_wins_until_the_reader_scrolls(self) -> None:
+        spy = JS[JS.index("function markSection()"):JS.index("markSection();", JS.index("animationend"))]
+        self.assertIn("const beside = panel && section !== activityPanel && rect.left >= panel.right - 1;", spy)
+        self.assertIn("if (beside && rect.top > panel.top - 8) continue;", spy)
+        self.assertIn("navChosen = link.dataset.nav;", spy)
+        self.assertIn('["wheel", "touchstart", "keydown"]', spy)
+        self.assertIn('target.classList.add("nav-flash")', spy)
+        self.assertIn("@keyframes nav-flash", CSS)
+
+    def test_running_calls_are_updated_in_place(self) -> None:
+        strip = JS[JS.index("function renderActiveStrip()"):JS.index("function renderActiveCount()")]
+        self.assertNotIn("els.activeStrip.innerHTML = calls.map", strip)
+        self.assertIn("let node = shown.get(id);", strip)
+        self.assertIn("clock.textContent = duration(", strip)
+        self.assertIn("shown.forEach((node) => node.remove());", strip)
+        self.assertIn("window.setInterval(() => { if (state.active.size) renderActiveStrip(); }, 1000);", JS)
+
+
 if __name__ == "__main__":
     unittest.main()

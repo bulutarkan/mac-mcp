@@ -137,18 +137,32 @@
   renderThemeSwitch();
 
   // The sidebar and the phone tab bar mark the section in view: the last one whose top has passed
-  // the upper third of the window (the activity panel is sticky, so its top never leaves).
+  // the upper third of the window. The activity panel is sticky and starts level with Changes in the
+  // column beside it, so at the top of that row Activity is the one in view; a card beside it counts
+  // once it has scrolled above the panel's top. A clicked link stays marked until the reader scrolls.
   const navLinks = Array.from(document.querySelectorAll("[data-nav]"));
   const navSections = [...new Set(navLinks.map((link) => link.dataset.nav))]
     .map((id) => document.getElementById(id)).filter(Boolean);
+  const activityPanel = document.getElementById("activity");
   let navFrame = 0;
+  let navChosen = null;
   function markSection() {
     navFrame = 0;
-    const line = window.innerHeight * 0.32;
-    const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
-    let current = navSections[0];
-    for (const section of navSections) if (section.getBoundingClientRect().top <= line) current = section;
-    if (atEnd && window.scrollY > 0) current = navSections[navSections.length - 1];
+    let current = navChosen ? document.getElementById(navChosen) : null;
+    if (!current) {
+      const line = window.innerHeight * 0.32;
+      const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+      const panel = activityPanel?.getBoundingClientRect();
+      current = navSections[0];
+      for (const section of navSections) {
+        const rect = section.getBoundingClientRect();
+        if (rect.top > line) continue;
+        const beside = panel && section !== activityPanel && rect.left >= panel.right - 1;
+        if (beside && rect.top > panel.top - 8) continue;
+        current = section;
+      }
+      if (atEnd && window.scrollY > 0) current = navSections[navSections.length - 1];
+    }
     navLinks.forEach((link) => {
       if (link.dataset.nav === current?.id) link.setAttribute("aria-current", "true");
       else link.removeAttribute("aria-current");
@@ -156,6 +170,21 @@
   }
   window.addEventListener("scroll", () => { if (!navFrame) navFrame = window.requestAnimationFrame(markSection); }, {passive: true});
   window.addEventListener("resize", markSection);
+  navLinks.forEach((link) => link.addEventListener("click", () => {
+    navChosen = link.dataset.nav;
+    markSection();
+    // The section answers even when the page is already there (Activity and Changes share a row).
+    const target = document.getElementById(navChosen);
+    if (target) {
+      target.classList.remove("nav-flash");
+      void target.offsetWidth;
+      target.classList.add("nav-flash");
+    }
+  }));
+  ["wheel", "touchstart", "keydown"].forEach((type) => window.addEventListener(type, () => { navChosen = null; }, {passive: true}));
+  document.addEventListener("animationend", (event) => {
+    if (event.animationName === "nav-flash") event.target.classList.remove("nav-flash");
+  });
   markSection();
 
   // Metric values count to their new number; a change of unit just ticks in.
@@ -1104,6 +1133,8 @@
     }).join("");
   }
 
+  // Running calls are updated in place: the clock ticks every second, and only a call that just
+  // started plays the arrive animation (rebuilding the cards replayed it each second, a blink).
   function renderActiveStrip() {
     const calls = Array.from(state.active.values())
       .sort((a, b) => Number(b.started_at || b.timestamp) - Number(a.started_at || a.timestamp))
@@ -1117,16 +1148,29 @@
     }
     const now = Date.now() / 1000;
     els.activeStrip.closest(".active-zone")?.classList.remove("is-empty");
-    els.activeStrip.innerHTML = calls.map((event) => {
+    els.activeStrip.querySelector(".active-empty")?.remove();
+    const shown = new Map(Array.from(els.activeStrip.querySelectorAll(".active-call")).map((node) => [node.dataset.eventId, node]));
+    calls.forEach((event, index) => {
+      const id = String(event.event_id);
+      let node = shown.get(id);
+      shown.delete(id);
+      if (!node) {
+        node = document.createElement("button");
+        node.className = "active-call";
+        node.type = "button";
+        node.dataset.eventId = id;
+        node.append(document.createElement("strong"), document.createElement("small"), document.createElement("time"));
+        node.addEventListener("click", () => openDrawer(node.dataset.eventId));
+      }
       const started = Number(event.started_at || event.timestamp || now);
-      const elapsed = Math.max(0, (now - started) * 1000);
-      return `<button class="active-call" type="button" data-event-id="${esc(event.event_id)}" aria-label="Inspect running ${esc(event.tool)} call">
-        <strong>${esc(event.tool || "Tool call")}</strong>
-        <small>${esc(compactToolDetail(event))}</small>
-        <time>${duration(elapsed)}</time>
-      </button>`;
-    }).join("");
-    els.activeStrip.querySelectorAll(".active-call").forEach((item) => item.addEventListener("click", () => openDrawer(item.dataset.eventId)));
+      const [name, detail, clock] = node.children;
+      name.textContent = event.tool || "Tool call";
+      detail.textContent = compactToolDetail(event);
+      clock.textContent = duration(Math.max(0, (now - started) * 1000));
+      node.setAttribute("aria-label", `Inspect running ${event.tool || "tool"} call`);
+      if (els.activeStrip.children[index] !== node) els.activeStrip.insertBefore(node, els.activeStrip.children[index] || null);
+    });
+    shown.forEach((node) => node.remove());
   }
 
   function renderActiveCount() {
