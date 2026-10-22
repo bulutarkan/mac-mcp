@@ -149,13 +149,15 @@ if (typeof document !== "undefined") {
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        root.style.setProperty("--mx", `${last.clientX}px`);
-        root.style.setProperty("--my", `${last.clientY}px`);
+        // The page may be zoomed (90 % on desktop): pointer and box positions come in screen pixels.
+        const zoom = parseFloat(getComputedStyle(root).zoom) || 1;
+        root.style.setProperty("--mx", `${last.clientX / zoom}px`);
+        root.style.setProperty("--my", `${last.clientY / zoom}px`);
         const card = last.target.closest?.(".glow");
         if (card) {
           const box = card.getBoundingClientRect();
-          card.style.setProperty("--x", `${last.clientX - box.left}px`);
-          card.style.setProperty("--y", `${last.clientY - box.top}px`);
+          card.style.setProperty("--x", `${(last.clientX - box.left) / zoom}px`);
+          card.style.setProperty("--y", `${(last.clientY - box.top) / zoom}px`);
         }
       });
     }, { passive: true });
