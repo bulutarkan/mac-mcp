@@ -21,6 +21,8 @@ class PrivacySettings(unittest.TestCase):
         env = patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(self.settings)})
         env.start()
         self.addCleanup(env.stop)
+        # The rules are cached for a moment; later tests must not inherit a pause or an exclusion.
+        self.addCleanup(privacy_policy._cache.update, {"at": -1.0, "value": None})
         self.rules()
 
     def rules(self, **privacy) -> None:
@@ -462,3 +464,34 @@ class BackupStoreTests(unittest.TestCase):
         self.assertEqual(["promote-1"], [Path(row["path"]).name for row in result["moved"]])
         self.assertTrue((state / "backups" / "pkg-123").exists())
         self.assertTrue((trash / "Mac MCP data t" / "backups" / "promote-1" / "cli.py").exists())
+
+
+class AppAdapterExclusionTests(PrivacySettings):
+    """An app excluded in Settings › Privacy is not read or operated through mac_app either. Notes, Messages
+    and Photos checked this themselves; Mail, Calendar, Reminders, Contacts and the rest did not."""
+
+    def test_every_adapter_refuses_an_excluded_app_before_running_anything(self) -> None:
+        from mcp_server import app_adapters
+        from mcp_server.security import load_settings
+
+        cases = [("Mail", "find_messages", {"query": "invoice"}), ("Calendar", "find_events", {"query": "standup"}),
+                 ("Reminders", "list_reminders", {}), ("Contacts", "find_contacts", {"query": "Ali"}),
+                 ("Mail", "create_draft", {"title": "Hi", "body": "x"}), ("Finder", "selection", {})]
+        self.rules(excluded_apps=["com.apple.mail", "Calendar", "com.apple.reminders", "Contacts", "Finder"])
+        with patch.object(app_adapters, "_run", side_effect=AssertionError("the app must not be scripted")):
+            for app, action, args in cases:
+                with self.subTest(app=app, action=action):
+                    result = app_adapters.mac_app(load_settings(), app=app, action=action, **args)
+                    self.assertEqual(("privacy_excluded_app", False, True),  # as Notes and Messages answered
+                                     (result["reason_code"], result["ok"], result["privacy_blocked"]))
+        # Capabilities still answer, and an app that is not excluded still runs.
+        self.assertTrue(app_adapters.mac_app(load_settings(), app="Mail", action="capabilities")["ok"])
+        with patch.object(app_adapters, "_run", return_value="") as ran:
+            notes = app_adapters.mac_app(load_settings(), app="Notes", action="find_notes", query="plan")
+        self.assertTrue(ran.called)
+        self.assertNotEqual("privacy_excluded_app", notes.get("reason_code"))
+
+    def test_every_adapter_app_is_mapped_to_its_bundle(self) -> None:
+        from mcp_server import app_adapters
+
+        self.assertEqual(set(app_adapters._ACTIONS) - {"Mission Control"}, set(app_adapters._BUNDLE_IDS))

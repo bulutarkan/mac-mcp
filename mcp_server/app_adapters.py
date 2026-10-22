@@ -118,6 +118,15 @@ _SEND_ACTIONS = {"send_mail", "send_message"}
 _DESKTOP_ACTIONS = {"create_desktop", "remove_desktop", "open_on_desktop", "move_to_desktop"}
 
 
+# Each adapter's app, so the owner's exclusions (Settings › Privacy) match by name or bundle id.
+_BUNDLE_IDS = {
+    "Finder": "com.apple.finder", "Notes": "com.apple.Notes", "Mail": "com.apple.mail", "Calendar": "com.apple.iCal",
+    "Reminders": "com.apple.reminders", "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences",
+    "Messages": "com.apple.MobileSMS", "Xcode": "com.apple.dt.Xcode", "Contacts": "com.apple.AddressBook",
+    "Shortcuts": "com.apple.shortcuts", "Photos": "com.apple.Photos",
+}
+
+
 # Apps people ask for that have no first-party adapter yet (#129). Each entry
 # says why and which path is reliable today, so capability discovery never
 # implies support that does not exist. Generic AX means mac_observe + mac_act.
@@ -2617,6 +2626,17 @@ def mac_app(
             normalized_action,
             f"{canonical} adapter does not support action '{normalized_action}'.",
         )
+
+    # An app the owner excluded in Settings › Privacy is never read or operated through its adapter either,
+    # as it is never observed on screen. Mission Control is a system feature, not an app's data.
+    if canonical in _BUNDLE_IDS:
+        from . import privacy_policy
+
+        try:
+            privacy_policy.check_app(canonical, _BUNDLE_IDS[canonical])
+        except privacy_policy.PrivacyBlocked as exc:
+            return {**_base(canonical, normalized_action), "ok": False, "reason_code": exc.code,
+                    "error": str(exc.detail), "retryable": False, "privacy_blocked": True}
 
     # With running commands off, only shortcuts the owner listed in Settings › Apps can run (#195).
     if normalized_action in _RUN_ACTIONS and not settings.allow_shell and not more.owner_allowed_shortcuts():
