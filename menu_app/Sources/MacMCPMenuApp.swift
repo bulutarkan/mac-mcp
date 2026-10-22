@@ -24,6 +24,7 @@ struct MacMCPMenuApp: App {
         appState.syncLoginItem = { enabled in LoginItem.sync(enabled: enabled) }
         LoginItem.sync(enabled: appState.settings.startAtLogin)
         LiveIslandController.shared.attach(appState)
+        OwnerPromptController.shared.attach(appState)
         MenuAppDelegate.openSettings = { [weak appState] pane in
             let aliases: [String: SettingsSection] = ["scheduled-tasks": .scheduled, "automation": .scheduled,
                                                       "recipes": .scheduled, "mcp-servers": .mcpServers,

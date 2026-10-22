@@ -4543,7 +4543,7 @@
       "post": {
         "operationId": "ask_user",
         "summary": "ask_user",
-        "description": "Ask the local user an interactive question or request guidance. A native macOS dialog opens with your question/message at the top, and an input field for the user's answer. When the user sends an answer, the response is returned to you. Skip or timeout returns response=null. Use this to get approval",
+        "description": "Ask the local user an interactive question or request guidance. The question appears in Mac MCP's own window (the notch island or a card at the top right; a macOS dialog when the menu app is not running) with an input field for the user's answer. suggestions (up to 4 short answers) become one-click ",
         "requestBody": {
           "required": true,
           "content": {
@@ -4563,6 +4563,26 @@
                     "default": 60,
                     "title": "Timeout S",
                     "type": "integer"
+                  },
+                  "suggestions": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Suggestions"
+                  },
+                  "allow_attachments": {
+                    "default": true,
+                    "title": "Allow Attachments",
+                    "type": "boolean"
                   },
                   "idempotency_key": {
                     "type": "string",

@@ -59,6 +59,8 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/RunReportView.swift"
   "${SCRIPT_DIR}/Sources/LiveIsland.swift"
   "${SCRIPT_DIR}/Sources/IslandHitArea.swift"
+  "${SCRIPT_DIR}/Sources/OwnerPromptPlacement.swift"
+  "${SCRIPT_DIR}/Sources/OwnerPrompt.swift"
   "${SCRIPT_DIR}/Sources/ConnectAppsBox.swift"
   "${SCRIPT_DIR}/Sources/AgentNotificationController.swift"
   "${SCRIPT_DIR}/Sources/AppState.swift"

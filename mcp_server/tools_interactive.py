@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import base64
+import json
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
+from mcp.server.fastmcp.utilities.types import Image
+
+from . import owner_prompts
+from .policy import current_policy_context
 from .process_supervision import run_osascript
 from .tool_cancellation import ToolCancelledError
 from .security import Settings
@@ -153,13 +159,37 @@ def _result_error(result: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": False, "error": result.get("error", "Interactive dialog failed")}
 
 
+def _ask_in_menu_app(question: str, sender: str, timeout_s: int,
+                     suggestions: Optional[List[str]], allow_attachments: bool) -> Optional[Dict[str, Any]]:
+    """The question in the menu app's own window; None when the app cannot show it."""
+    try:
+        agent_id = current_policy_context().agent_id
+    except Exception:
+        agent_id = None
+    payload = {"kind": "text", "question": question, "sender": sender, "agent_id": agent_id,
+               "suggestions": owner_prompts.clean_suggestions(suggestions or []),
+               "allow_attachments": bool(allow_attachments)}
+    answer = owner_prompts.ask(payload, timeout_s, allow_attachments=allow_attachments)
+    if answer is None:
+        return None
+    base = {"ok": True, "ui": "menu_app"}
+    if answer.get("action") == "timeout":
+        return {**base, "response": None, "timed_out": True, "skipped": False, "attachments": []}
+    if answer.get("action") == "skip":
+        return {**base, "response": None, "timed_out": False, "skipped": True, "attachments": []}
+    return {**base, "response": answer.get("text") or "", "timed_out": False, "skipped": False,
+            "attachments": answer.get("attachments") or []}
+
+
 def ask_user(
     settings: Settings,
     question: str,
     sender: str = "AI",
     timeout_s: int = 60,
+    suggestions: Optional[List[str]] = None,
+    allow_attachments: bool = True,
 ) -> Dict[str, Any]:
-    """Ask the local user a free-form question with a native macOS dialog."""
+    """Ask the local user a free-form question: in the menu app when it runs, else a macOS dialog."""
     total_timeout = _normalize_timeout(timeout_s)
     if total_timeout is None:
         return {"ok": False, "error": "timeout_s must be a positive integer"}
@@ -168,6 +198,11 @@ def ask_user(
     if isinstance(common, dict):
         return common
     question_display, sender_display = common
+
+    in_app = _ask_in_menu_app(question_display, sender_display, total_timeout, suggestions, allow_attachments)
+    if in_app is not None:
+        return in_app
+
     q_display = _escape_applescript_text(question_display)
     s_display = _escape_applescript_text(sender_display)
 
@@ -224,6 +259,29 @@ end try
     if output == _SKIP_SENTINEL or output == _CANCELLED_SENTINEL:
         return {"ok": True, "response": None, "timed_out": False, "skipped": True}
     return {"ok": True, "response": output, "timed_out": False, "skipped": False}
+
+
+def ask_user_mcp_result(result: Dict[str, Any]) -> Any:
+    """ask_user for an MCP client: each picture the owner added becomes an image block (its base64
+    leaves the JSON text, which keeps the file's name, path and size)."""
+    attachments = result.get("attachments") if isinstance(result, dict) else None
+    if not attachments:
+        return result
+    images: List[Image] = []
+    listed: List[Dict[str, Any]] = []
+    for item in attachments:
+        item = dict(item)
+        data = item.pop("data_base64", None)
+        mime = item.pop("data_mime_type", None)
+        item.pop("encoding", None)
+        if data:
+            images.append(Image(data=base64.b64decode(data), format="png" if mime == "image/png" else "jpeg"))
+            item["shown_below"] = True
+        listed.append(item)
+    if not images:
+        return result
+    text = json.dumps({**result, "attachments": listed}, ensure_ascii=False, separators=(",", ":"))
+    return [text, *images]
 
 
 def ask_choice(

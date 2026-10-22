@@ -43,7 +43,7 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
-from . import app_undo, privacy_inventory, privacy_policy, schedule_rules
+from . import app_undo, owner_prompts, privacy_inventory, privacy_policy, schedule_rules
 from . import scheduled_tasks as task_store
 from . import run_budget, run_diagnosis, scheduled_task_runner
 from .runtime_settings import (
@@ -201,6 +201,14 @@ def _dashboard_guard(request: Request, dashboard_token: str) -> Optional[Respons
         status_code=401,
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+async def _owner_prompt_body(request: Request) -> Optional[Dict[str, Any]]:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def _float_query(request: Request, key: str, default: float) -> float:
@@ -542,6 +550,38 @@ def create_dashboard_routes(
             "blocked_24h": blocked_count,
             "blocked_recent": blocked_recent,
         }))
+
+    async def owner_prompts_list(request: Request) -> Response:
+        """Questions an agent asked the owner (ask_user), for the menu app to show."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        return JSONResponse({"ok": True, "prompts": owner_prompts.pending()})
+
+    async def owner_prompt_claim(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _owner_prompt_body(request)
+        if body is None:
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        if not owner_prompts.claim(str(body.get("prompt_id") or "")):
+            return JSONResponse({"ok": False, "error": "prompt_not_found"}, status_code=404)
+        return JSONResponse({"ok": True})
+
+    async def owner_prompt_answer(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _owner_prompt_body(request)
+        if body is None:
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        result = await asyncio.to_thread(
+            owner_prompts.submit, str(body.get("prompt_id") or ""), str(body.get("action") or ""),
+            body.get("text"), body.get("attachments"),
+        )
+        status_code = 200 if result.get("ok") else 404 if result.get("error") == "prompt_not_found" else 400
+        return JSONResponse(result, status_code=status_code)
 
     async def security_escalate(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -1924,6 +1964,10 @@ def create_dashboard_routes(
         if denied:
             return denied
         queue = telemetry.subscribe()
+        # The menu app names itself, so a question can go to its window instead of a dialog.
+        menu_app = request.query_params.get("client") == "menu-app"
+        if menu_app:
+            owner_prompts.menu_app_stream_opened()
 
         async def generator():
             try:
@@ -1944,6 +1988,8 @@ def create_dashboard_routes(
                     yield "event: telemetry\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n"
             finally:
                 telemetry.unsubscribe(queue)
+                if menu_app:
+                    owner_prompts.menu_app_stream_closed()
 
         return StreamingResponse(
             generator(),
@@ -1972,6 +2018,9 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/events", security_events, methods=["GET"]),
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/attention", attention, methods=["GET"]),
+        Route("/dashboard/api/owner-prompts", owner_prompts_list, methods=["GET"]),
+        Route("/dashboard/api/owner-prompts/claim", owner_prompt_claim, methods=["POST"]),
+        Route("/dashboard/api/owner-prompts/answer", owner_prompt_answer, methods=["POST"]),
         Route("/dashboard/api/apps/support", apps_support, methods=["GET"]),
         Route("/dashboard/api/apps/messages-access", messages_access, methods=["GET"]),
         Route("/dashboard/api/events", events, methods=["GET"]),

@@ -294,6 +294,8 @@ final class AppState: ObservableObject {
     var onLiveToolCallStarted: ((LiveToolCall) -> Void)?
     var onLiveToolCallFinished: ((String, Bool) -> Void)?
     var onScheduledRunFinished: ((TaskRun, String) -> Void)?
+    /// A question to the owner opened or closed (ask_user); the prompt window listens here.
+    var onOwnerPromptsChanged: (() -> Void)?
     private var lastPublicProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
     private static let idlePollIntervalSeconds = 12.0
@@ -1083,7 +1085,8 @@ final class AppState: ObservableObject {
     private func consumeToolActivityStream() async {
         while !Task.isCancelled {
             guard let url = URL(
-                string: "http://127.0.0.1:\(settings.serverPort)/dashboard/events"
+                // Named, so the server knows a window here can show questions to the owner (ask_user).
+                string: "http://127.0.0.1:\(settings.serverPort)/dashboard/events?client=menu-app"
             ) else { return }
 
             var request = URLRequest(url: url)
@@ -1143,9 +1146,15 @@ final class AppState: ObservableObject {
             return
         }
 
+        if kind == "owner_prompt" || kind == "owner_prompt_closed" {
+            onOwnerPromptsChanged?()
+            return
+        }
+
         if kind == "connected" {
             // Also catches a Mac that asked while the stream was down.
             Task { await checkFleetRequests() }
+            onOwnerPromptsChanged?()
             ToolActivityBubbleController.shared.hideImmediately()
             guard let active = payload.active else { return }
             setIfChanged(\.activeEvents, active.compactMap(\.toolEvent))
@@ -1253,6 +1262,8 @@ final class AppState: ObservableObject {
         ))
         // The bubble is one style of live activity; the island is the other.
         guard settings.requireToolDescriptions, settings.showToolActivity, !settings.showLiveIsland else { return }
+        // A question shows in its own card in the same corner (OwnerPrompt); a bubble would sit under it.
+        guard payload.tool != "ask_user" else { return }
 
         ToolActivityBubbleController.shared.begin(
             eventID: eventID,

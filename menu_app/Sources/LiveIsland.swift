@@ -228,6 +228,8 @@ final class LiveIslandModel: ObservableObject {
     @Published var expandedHeight: CGFloat = 220
     @Published var working = false
     var hovering = false
+    /// A question to the owner has grown out of the island (OwnerPrompt): stay at rest beneath it.
+    var promptCovering = false
 
     init(notch: NotchGeometry) { self.notch = notch }
 
@@ -269,7 +271,7 @@ final class LiveIslandModel: ObservableObject {
     }
 
     func settle() {
-        if hovering { go(.expanded) } else if peek != nil { go(.peek) } else { go(.rest) }
+        if promptCovering { go(.rest) } else if hovering { go(.expanded) } else if peek != nil { go(.peek) } else { go(.rest) }
     }
 }
 
@@ -761,6 +763,12 @@ final class LiveIslandController {
         case nil:
             break
         }
+    }
+
+    func setPromptCovering(_ covering: Bool) {
+        guard model.promptCovering != covering else { return }
+        model.promptCovering = covering
+        model.settle()
     }
 
     func togglePause() {

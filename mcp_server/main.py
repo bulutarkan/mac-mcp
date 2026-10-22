@@ -97,7 +97,7 @@ from .tools_browser_agent import (
 from .tools_browser import _norm_browser
 from . import browser_checkpoint, browser_tabs
 from .tool_cancellation import cancellable_sleep
-from .tools_interactive import ask_choice, ask_confirmation, ask_user
+from .tools_interactive import ask_choice, ask_confirmation, ask_user, ask_user_mcp_result
 from .tools_voice import ask_user_voice, voice_capture
 from . import storage_review as storage_review_tool
 from . import workspaces as workspace_tool
@@ -2972,8 +2972,10 @@ def create_app():
         name="ask_user",
         description=(
             "Ask the local user an interactive question or request guidance. "
-            "A native macOS dialog opens with your question/message at the top, "
-            "and an input field for the user's answer. "
+            "The question appears in Mac MCP's own window (the notch island or a card at the top right; "
+            "a macOS dialog when the menu app is not running) with an input field for the user's answer. "
+            "suggestions (up to 4 short answers) become one-click replies. The user may also add files: "
+            "attachments lists each with its local path, and pictures come back as images. "
             "When the user sends an answer, the response is returned to you. "
             "Skip or timeout returns response=null. "
             "Use this to get approval, preferences, or missing information without stopping an autonomous task."
@@ -2983,13 +2985,17 @@ def create_app():
         question: str,
         sender: str = "AI",
         timeout_s: int = 60,
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(
+        suggestions: Optional[List[str]] = None,
+        allow_attachments: bool = True,
+    ) -> Any:
+        result = await asyncio.to_thread(
             _log,
             audit_logger,
             "ask_user",
-            lambda: ask_user(settings, question=question, sender=sender, timeout_s=timeout_s),
+            lambda: ask_user(settings, question=question, sender=sender, timeout_s=timeout_s,
+                             suggestions=suggestions, allow_attachments=allow_attachments),
         )
+        return ask_user_mcp_result(result)
 
     @mcp.tool(
         name="ask_user_voice",

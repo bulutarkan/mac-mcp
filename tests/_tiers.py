@@ -24,6 +24,7 @@ SWIFT_ONLY = (
     "test_native_accessibility",
     "test_onboarding_bridge",
     "test_onboarding_checklist",
+    "test_owner_prompt_placement",
     "test_provider_usage_section",
     "test_scheduled_task_checks_native",
     "test_scheduler_watchdog_native",

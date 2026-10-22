@@ -480,6 +480,8 @@ class InteractiveRequest(BaseModel):
     question: str
     sender: Optional[str] = "AI"
     timeout_s: Optional[int] = 60
+    suggestions: Optional[List[str]] = Field(default=None, max_length=4)
+    allow_attachments: Optional[bool] = True
 
 class ChoiceRequest(BaseModel):
     question: str
@@ -884,6 +886,8 @@ def api_interactive(req: InteractiveRequest, settings: Settings = Depends(get_se
         question=req.question,
         sender=req.sender or "AI",
         timeout_s=req.timeout_s or 60,
+        suggestions=req.suggestions,
+        allow_attachments=req.allow_attachments is not False,
     )
 
 

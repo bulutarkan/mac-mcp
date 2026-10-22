@@ -133,7 +133,7 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "Search the owner's chosen folders (PDFs, scans, Word, notes) locally in any language. Results give file, page, snippet and SHA-256: answer from them and cite file and page. path narrows to one folder."
     ),
     "ask_user": (
-        "Ask the local user a question in a native macOS dialog and return their typed answer; skip or timeout returns "
-        "response=null. Use it for approval, preferences or missing information."
+        "Ask the local user a question in Mac MCP's window; returns their answer and any files they add (pictures as "
+        "images). suggestions are one-click replies. Skip or timeout returns response=null."
     ),
 }
