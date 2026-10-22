@@ -665,7 +665,7 @@ final class LiveIslandController {
         let agentIDs = Set(agents.map(\.agentID))
         var waitingTools: [LiveItem] = []
         for call in tools.values.sorted(by: { $0.startedAt < $1.startedAt }) where call.agentID.map({ !agentIDs.contains($0) }) ?? true {
-            let asking = ["browser_checkpoint", "ask_user", "ask_choice", "ask_confirmation"].contains(call.tool)
+            let asking = ["browser_checkpoint", "ask_user", "ask_confirmation"].contains(call.tool)
             // `symbol` carries the tool name here; the row turns it into the tool's icon.
             let item = LiveItem(id: "tool-\(call.eventID)", symbol: call.tool, title: call.description,
                                 detail: [call.client, Self.toolWords(call.tool)].compactMap { $0 }.joined(separator: " · "),

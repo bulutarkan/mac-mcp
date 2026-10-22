@@ -242,5 +242,86 @@ class OwnerPromptRouteTests(unittest.TestCase):
         self.assertEqual("Yes", box["result"]["text"])
 
 
+class OwnerPromptQueueAndConfirmTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="mac-mcp-owner-prompts-")
+        self.env = patch.dict(os.environ, {"MAC_MCP_STATE_DIR": self.temp.name})
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        self.temp.cleanup()
+
+    def _claim_all(self, count: int, timeout: float = 3.0) -> list:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rows = owner_prompts.pending()
+            if len(rows) >= count:
+                for row in rows:
+                    owner_prompts.claim(row["prompt_id"])
+                return rows
+            time.sleep(0.02)
+        raise AssertionError("the questions did not reach the menu app")
+
+    def test_a_queued_question_starts_its_time_when_it_comes_to_the_front(self) -> None:
+        with _MenuApp(self):
+            first, first_box = _run(owner_prompts.ask, {"question": "First"}, 1, allow_attachments=False)
+            time.sleep(0.05)
+            second, second_box = _run(owner_prompts.ask, {"question": "Second"}, 1, allow_attachments=False)
+            rows = self._claim_all(2)
+            self.assertEqual(["First", "Second"], [row["question"] for row in rows])
+            # The second waits behind the first: its time has not started, so it outlasts its own second.
+            self.assertGreater(rows[1]["expires_at"] - time.time(), 60)
+            time.sleep(1.4)  # the first runs out; the second comes to the front
+            first.join(timeout=3)
+            self.assertEqual({"action": "timeout"}, first_box["result"])
+            front = owner_prompts.pending()[0]
+            self.assertEqual("Second", front["question"])
+            self.assertLessEqual(front["expires_at"] - time.time(), 1.0)
+            owner_prompts.submit(front["prompt_id"], "send", "Yes")
+            second.join(timeout=3)
+        self.assertEqual("Yes", second_box["result"]["text"])
+
+    def test_a_question_waits_behind_others_only_so_long(self) -> None:
+        with _MenuApp(self), patch.object(owner_prompts, "QUEUE_WAIT_LIMIT_S", 0.3):
+            first, _ = _run(owner_prompts.ask, {"question": "First"}, 30, allow_attachments=False)
+            time.sleep(0.05)
+            second, second_box = _run(owner_prompts.ask, {"question": "Second"}, 1, allow_attachments=False)
+            rows = self._claim_all(2)
+            second.join(timeout=4)
+            self.assertEqual({"action": "timeout"}, second_box["result"])
+            owner_prompts.submit(rows[0]["prompt_id"], "skip")
+            first.join(timeout=3)
+
+    def test_a_confirmation_takes_only_confirm_deny_or_skip(self) -> None:
+        with _MenuApp(self):
+            thread, box = _run(tools_interactive.ask_confirmation, None, "Send the mail?", "Mac MCP", 30, "Send", "Keep")
+            row = self._claim_all(1)[0]
+            self.assertEqual("confirm", row["kind"])
+            self.assertEqual(("Send", "Keep"), (row["confirm_label"], row["deny_label"]))
+            self.assertIsNone(row["upload_dir"])
+            self.assertEqual({"ok": False, "error": "invalid_action"}, owner_prompts.submit(row["prompt_id"], "send", "Send"))
+            self.assertEqual({"ok": True}, owner_prompts.submit(row["prompt_id"], "confirm"))
+            thread.join(timeout=3)
+        self.assertEqual({"ok": True, "ui": "menu_app", "confirmed": True, "decision": "confirmed",
+                          "cancelled": False, "timed_out": False}, box["result"])
+
+    def test_a_confirmation_is_no_unless_confirmed(self) -> None:
+        for action, decision in (("deny", "denied"), ("skip", "cancelled")):
+            with self.subTest(action=action), _MenuApp(self):
+                thread, box = _run(tools_interactive.ask_confirmation, None, "Upload the file?")
+                row = self._claim_all(1)[0]
+                owner_prompts.submit(row["prompt_id"], action)
+                thread.join(timeout=3)
+                self.assertFalse(box["result"]["confirmed"])
+                self.assertEqual(decision, box["result"]["decision"])
+        with _MenuApp(self):
+            thread, box = _run(tools_interactive.ask_confirmation, None, "Upload the file?", timeout_s=1)
+            self._claim_all(1)
+            thread.join(timeout=4)
+        self.assertFalse(box["result"]["confirmed"])
+        self.assertEqual("timed_out", box["result"]["decision"])
+
+
 if __name__ == "__main__":
     unittest.main()

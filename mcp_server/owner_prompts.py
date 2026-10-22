@@ -6,6 +6,11 @@ claims it once it is on screen: the notch island when that is the chosen live-ac
 style, otherwise a card at the top right. The owner answers there, with text and any
 files they add; the app copies those files into the question's upload folder first.
 
+Questions from several agents wait in a queue, oldest first, and a question's time starts
+when it comes to the front, so one the owner has not seen yet does not run out behind
+another; a question still waits at most QUEUE_WAIT_LIMIT_S beyond its own time. A
+confirmation (kind "confirm") has two buttons and takes only an explicit confirm or deny.
+
 If no menu app is listening, or none claims the question within a few seconds, the
 caller falls back to the plain macOS dialog, so a question is never lost.
 """
@@ -38,6 +43,8 @@ INLINE_IMAGE_EDGE = 1600
 INLINE_IMAGE_MAX_BYTES = 3 * 1024 * 1024
 MAX_INLINE_IMAGES = 4
 UPLOAD_RETENTION_S = 7 * 24 * 3600
+# How long a question may wait behind others before its own time starts anyway.
+QUEUE_WAIT_LIMIT_S = 600
 
 _LOCK = threading.Lock()
 _MENU_APP_STREAMS = 0
@@ -50,6 +57,9 @@ class _Prompt:
     created_at: float
     expires_at: float
     upload_dir: Optional[Path]
+    timeout_s: int = 60
+    latest_end: float = 0.0
+    started: bool = False
     claimed: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
     answer: Optional[Dict[str, Any]] = None
@@ -95,6 +105,17 @@ def clean_suggestions(suggestions: Any) -> List[str]:
     return cleaned
 
 
+def _start_front_locked(now: float) -> None:
+    """Start the time of the oldest open question once it comes to the front (call with _LOCK)."""
+    open_prompts = [prompt for prompt in _PROMPTS.values() if not prompt.done.is_set()]
+    if not open_prompts:
+        return
+    front = min(open_prompts, key=lambda prompt: prompt.created_at)
+    if not front.started:
+        front.started = True
+        front.expires_at = min(now + front.timeout_s, front.latest_end)
+
+
 def pending() -> List[Dict[str, Any]]:
     """Open questions, oldest first, as the menu app shows them."""
     now = time.time()
@@ -134,10 +155,11 @@ def submit(prompt_id: str, action: str, text: Any = None, attachments: Any = Non
         prompt = _PROMPTS.get(str(prompt_id or ""))
     if prompt is None or prompt.done.is_set():
         return {"ok": False, "error": "prompt_not_found"}
-    if action not in {"send", "skip"}:
+    confirmation = prompt.payload.get("kind") == "confirm"
+    if action not in ({"confirm", "deny", "skip"} if confirmation else {"send", "skip"}):
         return {"ok": False, "error": "invalid_action"}
-    if action == "skip":
-        prompt.answer = {"action": "skip"}
+    if action in {"skip", "confirm", "deny"}:
+        prompt.answer = {"action": action}
         prompt.claimed.set()
         prompt.done.set()
         return {"ok": True}
@@ -231,9 +253,11 @@ def _prune_uploads(now: float) -> None:
             continue
 
 
-def _wait(event: threading.Event, deadline: float) -> bool:
+def _wait(event: threading.Event, deadline: Any) -> bool:
+    """Wait for event until deadline: a time, or a callable read again on each turn (a queued
+    question's time moves when it comes to the front)."""
     while True:
-        remaining = deadline - time.time()
+        remaining = (deadline() if callable(deadline) else deadline) - time.time()
         if remaining <= 0:
             return event.is_set()
         if event.wait(timeout=min(0.25, remaining)):
@@ -245,8 +269,9 @@ def ask(payload: Dict[str, Any], timeout_s: int, *, allow_attachments: bool = Tr
     """Show one question in the menu app and wait for the owner.
 
     None means the app could not show it (not running, or did not claim it in time); the
-    caller then uses the macOS dialog. Otherwise {"action": "send"|"skip"|"timeout", ...};
-    a send carries "text" and "attachments" (each image with its base64).
+    caller then uses the macOS dialog. Otherwise {"action": "send"|"skip"|"timeout", ...}, or
+    "confirm"|"deny" for a confirmation; a send carries "text" and "attachments" (each image with
+    its base64).
     """
     if not menu_app_listening():
         return None
@@ -257,26 +282,29 @@ def ask(payload: Dict[str, Any], timeout_s: int, *, allow_attachments: bool = Tr
         _prune_uploads(now)
         upload_dir = uploads_root() / prompt_id
         upload_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    latest_end = now + int(timeout_s) + QUEUE_WAIT_LIMIT_S
     prompt = _Prompt(id=prompt_id, payload={**payload, "timeout_s": int(timeout_s)}, created_at=now,
-                     expires_at=now + int(timeout_s), upload_dir=upload_dir)
+                     expires_at=latest_end, upload_dir=upload_dir, timeout_s=int(timeout_s), latest_end=latest_end)
     with _LOCK:
         _PROMPTS[prompt_id] = prompt
+        _start_front_locked(now)
     publish_live_event("owner_prompt")
     try:
-        if not _wait(prompt.claimed, min(prompt.expires_at, now + CLAIM_TIMEOUT_S)):
+        if not _wait(prompt.claimed, now + CLAIM_TIMEOUT_S):
             if upload_dir is not None:
                 shutil.rmtree(upload_dir, ignore_errors=True)
             return None
-        if not _wait(prompt.done, prompt.expires_at) or prompt.answer is None:
+        if not _wait(prompt.done, lambda: prompt.expires_at) or prompt.answer is None:
             return {"action": "timeout"}
         answer = dict(prompt.answer)
         if answer.get("action") == "send":
             answer["attachments"] = _describe(answer.pop("files", []))
         return answer
     finally:
+        prompt.done.set()
         with _LOCK:
             _PROMPTS.pop(prompt_id, None)
-        prompt.done.set()
+            _start_front_locked(time.time())
         # Files stay only when they were sent; the agent may read them by path.
         sent = prompt.answer is not None and prompt.answer.get("action") == "send"
         if upload_dir is not None and not sent:

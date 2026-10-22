@@ -9,8 +9,11 @@ import UniformTypeIdentifiers
 /// and shows it where live activity lives: grown out of the notch island when the island is the
 /// chosen style, otherwise as a card at the top right (also when live activity is off). The owner
 /// types an answer or picks a suggestion, and may add files; those are copied into the question's
-/// upload folder, and the server hands pictures to the agent as base64. Questions from several
-/// agents wait in a queue, oldest first. It never takes focus by itself: a click on it does.
+/// upload folder, and the server hands pictures to the agent as base64. A confirmation (ask_confirmation,
+/// and Mac MCP's own approvals for sending or uploading) shows only its two buttons, and nothing is
+/// confirmed unless its confirm button is pressed. Questions from several agents wait in a queue,
+/// oldest first; a question's time starts when it comes to the front. It never takes focus by itself:
+/// a click on it does.
 
 // MARK: - Data
 
@@ -24,6 +27,10 @@ struct OwnerPrompt: Identifiable, Equatable {
     let uploadDir: URL?
     let expiresAt: Date
     let timeoutSeconds: Int
+    /// A Yes/No question: only its two buttons, no text field and no files.
+    let isConfirmation: Bool
+    let confirmLabel: String
+    let denyLabel: String
 
     init?(_ row: [String: Any]) {
         guard let id = row["prompt_id"] as? String, !id.isEmpty,
@@ -39,6 +46,9 @@ struct OwnerPrompt: Identifiable, Equatable {
         allowAttachments = (row["allow_attachments"] as? Bool ?? false) && uploadDir != nil
         expiresAt = Date(timeIntervalSince1970: expires)
         timeoutSeconds = max(1, row["timeout_s"] as? Int ?? 60)
+        isConfirmation = row["kind"] as? String == "confirm"
+        confirmLabel = (row["confirm_label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Yes"
+        denyLabel = (row["deny_label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "No"
     }
 }
 
@@ -156,6 +166,24 @@ final class OwnerPromptController {
                 finish(prompt.id)
             } else {
                 model.problem = Self.problemText(error)
+            }
+        }
+    }
+
+    /// The answer to a confirmation: only `confirm: true` approves.
+    func decide(confirm: Bool) {
+        guard let state, let prompt = model.current, prompt.isConfirmation, !model.sending else { return }
+        model.sending = true
+        model.problem = nil
+        Task {
+            let result = await state.taskAPI("dashboard/api/owner-prompts/answer", body: [
+                "prompt_id": prompt.id, "action": confirm ? "confirm" : "deny",
+            ])
+            model.sending = false
+            if result.ok || result.object["error"] as? String == "prompt_not_found" {
+                finish(prompt.id)
+            } else {
+                model.problem = Self.problemText(result.object["error"] as? String)
             }
         }
     }
@@ -518,9 +546,13 @@ private struct OwnerPromptContent: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             question
-            if !prompt.suggestions.isEmpty { suggestions }
-            if !model.attachments.isEmpty { attachmentList }
-            input
+            if prompt.isConfirmation {
+                decisionButtons
+            } else {
+                if !prompt.suggestions.isEmpty { suggestions }
+                if !model.attachments.isEmpty { attachmentList }
+                input
+            }
             if let problem = model.problem {
                 Text(problem).font(.system(size: 11.5)).foregroundStyle(Color(red: 1, green: 0.42, blue: 0.42))
             }
@@ -547,6 +579,12 @@ private struct OwnerPromptContent: View {
             Spacer(minLength: 8)
             CountdownRing(prompt: prompt, now: model.now, dark: dark)
         }
+    }
+
+    private var footerHint: String {
+        if prompt.isConfirmation { return "Nothing happens unless you choose “\(prompt.confirmLabel)”" }
+        return prompt.allowAttachments ? "Return to send · ⌥Return for a new line · drop files to attach"
+                                       : "Return to send · ⌥Return for a new line"
     }
 
     private var waitingLine: String {
@@ -593,6 +631,36 @@ private struct OwnerPromptContent: View {
                 .disabled(model.sending)
                 .help("Send “\(suggestion)”")
             }
+        }
+    }
+
+    /// Deny on the left, confirm on the right in gold; neither is pressed by Return, so a stray key never approves.
+    private var decisionButtons: some View {
+        HStack(spacing: 8) {
+            Button { controller.decide(confirm: false) } label: {
+                Text(prompt.denyLabel).font(.system(size: 13, weight: .semibold)).foregroundStyle(primary)
+                    .lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(fieldFill))
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(fieldStroke))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.sending)
+            .help(prompt.denyLabel)
+            Button { controller.decide(confirm: true) } label: {
+                ZStack {
+                    if model.sending {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                    } else {
+                        Text(prompt.confirmLabel).font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(PromptPalette.goldInk).lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(PromptPalette.gold))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.sending)
+            .help(prompt.confirmLabel)
         }
     }
 
@@ -661,8 +729,7 @@ private struct OwnerPromptContent: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            Text(prompt.allowAttachments ? "Return to send · ⌥Return for a new line · drop files to attach"
-                                         : "Return to send · ⌥Return for a new line")
+            Text(footerHint)
                 .font(.system(size: 11)).foregroundStyle(secondary.opacity(0.85)).lineLimit(1)
             Spacer(minLength: 6)
             Button("Skip") { controller.skip() }

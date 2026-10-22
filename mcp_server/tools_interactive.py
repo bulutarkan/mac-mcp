@@ -119,14 +119,17 @@ def _result_error(result: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": False, "error": result.get("error", "Interactive dialog failed")}
 
 
+def _calling_agent_id() -> Optional[str]:
+    try:
+        return current_policy_context().agent_id
+    except Exception:
+        return None
+
+
 def _ask_in_menu_app(question: str, sender: str, timeout_s: int,
                      suggestions: Optional[List[str]], allow_attachments: bool) -> Optional[Dict[str, Any]]:
     """The question in the menu app's own window; None when the app cannot show it."""
-    try:
-        agent_id = current_policy_context().agent_id
-    except Exception:
-        agent_id = None
-    payload = {"kind": "text", "question": question, "sender": sender, "agent_id": agent_id,
+    payload = {"kind": "text", "question": question, "sender": sender, "agent_id": _calling_agent_id(),
                "suggestions": owner_prompts.clean_suggestions(suggestions or []),
                "allow_attachments": bool(allow_attachments)}
     answer = owner_prompts.ask(payload, timeout_s, allow_attachments=allow_attachments)
@@ -274,6 +277,20 @@ def pending_owner_questions() -> List[Dict[str, Any]]:
     return sorted(rows, key=lambda row: row["created_at"], reverse=True)
 
 
+def _confirm_in_menu_app(question: str, sender: str, timeout_s: int, confirm: str, deny: str) -> Optional[Dict[str, Any]]:
+    """A Yes/No question in the menu app's window, with only its two buttons; None when the app cannot
+    show it. Only the confirm button confirms: deny, skip and timeout are all a no."""
+    payload = {"kind": "confirm", "question": question, "sender": sender, "agent_id": _calling_agent_id(),
+               "confirm_label": confirm, "deny_label": deny, "suggestions": [], "allow_attachments": False}
+    answer = owner_prompts.ask(payload, timeout_s, allow_attachments=False)
+    if answer is None:
+        return None
+    action = answer.get("action")
+    decision = {"confirm": "confirmed", "deny": "denied", "timeout": "timed_out"}.get(str(action), "cancelled")
+    return {"ok": True, "ui": "menu_app", "confirmed": decision == "confirmed", "decision": decision,
+            "cancelled": decision == "cancelled", "timed_out": decision == "timed_out"}
+
+
 def ask_confirmation(
     settings: Settings,
     question: str,
@@ -302,6 +319,10 @@ def ask_confirmation(
         return {"ok": False, "error": "confirm_label and deny_label cannot use the reserved label 'Cancel'"}
 
     question_display, sender_display = common
+    in_app = _confirm_in_menu_app(question_display, sender_display, total_timeout, confirm, deny)
+    if in_app is not None:
+        return in_app
+
     buttons = [deny, confirm]
     script = f"""
 set q_text to "{_escape_applescript_text(question_display)}"
