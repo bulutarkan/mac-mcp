@@ -64,7 +64,7 @@ class ReleaseDataTests(unittest.TestCase):
             self.assertTrue(refs)
             for ref in refs:
                 self.assertRegex(ref, r"\?v=[0-9a-f]{12}$", ref)
-            self.assertRegex((out / "css" / "site.css").read_text(), r'url\("\.\./assets/fonts/inter\.woff2\?v=[0-9a-f]{12}"\)')
+            self.assertRegex((out / "css" / "site.css").read_text(), r'url\("\.\./assets/fonts/sora\.woff2\?v=[0-9a-f]{12}"\)')
 
     def test_releases_that_must_not_be_advertised_are_refused(self) -> None:
         release = fixture_release()
@@ -185,7 +185,7 @@ class PageTests(unittest.TestCase):
         self.assertLessEqual((SITE / "js" / "site.js").stat().st_size, 12_000)
         scripts = sum(path.stat().st_size for path in (SITE / "js").glob("*.js") if not path.name.endswith(".test.mjs"))
         self.assertLessEqual(scripts, 28_000)
-        fonts = sum((SITE / "assets" / "fonts" / name).stat().st_size for name in ("inter.woff2", "jetbrains-mono.woff2"))
+        fonts = sum((SITE / "assets" / "fonts" / name).stat().st_size for name in ("sora.woff2", "geist.woff2", "jetbrains-mono.woff2"))
         self.assertLessEqual(fonts, 120_000)
         first_load = css + (SITE / "index.html").stat().st_size + scripts + fonts
         first_load += sum((SITE / "assets" / "img" / name).stat().st_size for name in ("app-icon-256.png",))
