@@ -1,4 +1,6 @@
-## Unreleased
+## 2.3.0 r3 - 2026-10-22
+
+**In short:** a signed checkpoint on the 2.3.0 line; the version stays 2.3.0. Agents can ask you a quick question in Mac MCP's own window (with one-click answers, files and pictures) and keep working whatever you answer, and the approvals before sending a mail or uploading a file open there too. Agents find your skills and memories and use them quietly. `personal_search` and `daily_briefing` read across your apps; the Photos, Contacts, Notes and Calendar adapters grow; web and Electron apps can be read and pressed down to their controls. Settings let you review memories, lessons and skills; the dashboard and phone get a new look; a running team shows its plan limits; your other Macs can get full access for a while. Update with `mac-mcp update` or the new package.
 
 ### Memory and skills where agents look for them (roadmap #110, part 1)
 - `skill_search` and `skill_get` are in the default tool list, so agents see them without `tool_discover` (about 255 more tokens, 2.4% of the list).
