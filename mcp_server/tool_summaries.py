@@ -23,6 +23,7 @@ CORE_TOOL_NAMES = frozenset({
     "browser_checkpoint",
     "spawn_agents", "wait_agents", "team_messages",
     "memory_search", "memory_add", "memory_update", "knowledge_search", "lesson_search", "lesson_feedback", "ask_user",
+    "skill_search", "skill_get",
     "tool_discover", "tool_invoke",
 })
 
@@ -121,13 +122,25 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "Find which tool to use, including less-common ones the profile allows: plain-word query, ranked results with why, "
         "short description, required fields and bounds; next_cursor pages more; include_schema=true: full schema."
     ),
+    "memory_search": (
+        "Recall what the owner told you before: call it when a request touches earlier work, a preference, decision, "
+        "person, project or account, and before asking them. Skip self-contained tasks."
+    ),
     "memory_add": (
-        "Remember on your own initiative a lasting preference, correction, decision or stable fact, as one short "
-        "sentence with tags; memory_search first, memory_update instead of duplicating. Secrets are refused."
+        "Save on your own what the owner will expect you to remember: a lasting preference, correction, decision or "
+        "stable fact. One short sentence; memory_search first, update instead of duplicating. No secrets."
     ),
     "memory_update": (
-        "Update a memory by memory_id when the user corrects or changes it (find it with memory_search). Without "
-        "memory_id, date filters list candidates and change nothing. Secrets are refused."
+        "When the owner corrects or changes something you remembered: find it with memory_search, then update it by "
+        "memory_id so the old version does not stay beside the new one. No secrets."
+    ),
+    "skill_search": (
+        "Find a written procedure before a task that has one (Swift, Expo, frontend/design, Remotion, Office/PDF files, "
+        "ads/SEO, debugging, code review); load the best match with skill_get and follow it."
+    ),
+    "skill_get": (
+        "Load one Agent Skill by name (from skill_search) or SKILL.md path and follow it for the task; its scripts and "
+        "references come as paths, read them only when the skill says to."
     ),
     "knowledge_search": (
         "Search the owner's chosen folders (PDFs, scans, Word, notes) locally in any language. Results give file, page, snippet and SHA-256: answer from them and cite file and page. path narrows to one folder."

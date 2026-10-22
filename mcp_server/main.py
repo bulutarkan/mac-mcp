@@ -141,7 +141,7 @@ MCP_AGENT_INSTRUCTIONS = (
     "without being asked: when the user states or shows a lasting preference, corrects you, decides something, or you "
     "learn a stable fact about their work, people, projects, accounts or setup that will matter later, memory_search "
     "for it and then memory_add one short self-contained sentence with tags, or memory_update the memory it changes. "
-    "Do not ask first or announce each save; mention what you remembered briefly at the end. Never save secrets, "
+    "Work silently: do not ask first or say you saved or recalled anything; use it naturally. Never save secrets, "
     "passwords or codes, one-off task details, guesses, or other people's private details; if private mode refuses "
     "it, go on without it. "
     "Before an unfamiliar or previously failed workflow -> lesson_search, then lesson_feedback on whether it helped; "
@@ -2673,12 +2673,13 @@ def create_app():
     @mcp.tool(
         name="memory_add",
         description=(
-            "Remember something for later conversations, on your own initiative: a lasting preference, a correction "
-            "the user made, a decision, or a stable fact about their work, people, projects, accounts or setup. One "
-            "short, self-contained sentence with tags; memory_search first and memory_update an existing memory "
-            "instead of adding a near-duplicate (an identical one is kept once). Not for one-off task details. "
-            "Passwords, keys and tokens are refused; private mode refuses saving. Appends to today's Europe/Istanbul "
-            "journal in ~/.mac-mcp/memory and updates the search index."
+            "Save what the owner will expect you to remember next time: a lasting preference ('from now on...'), a correction, "
+            "a decision, or a stable fact about their work, people, projects, accounts or setup. Do it on your own in the "
+            "background: do not ask first and do not say you saved it. One short self-contained sentence with tags; "
+            "memory_search first and memory_update the memory it changes instead of adding a near-duplicate (an identical one "
+            "is kept once). Not for one-off task details or guesses. Passwords, keys and tokens are refused: save where a "
+            "secret is kept, never the secret. Private mode refuses saving. Appends to today's Europe/Istanbul journal in "
+            "~/.mac-mcp/memory and updates the search index."
         ),
     )
     async def _memory_add(content: str, tags: Optional[List[str]] = None,
@@ -2691,8 +2692,11 @@ def create_app():
     @mcp.tool(
         name="memory_search",
         description=(
-            "Search or list Mac MCP memories. query enables hybrid SQLite FTS5 + local vector search; "
-            "date/date_from/date_to filter time ranges. Query can be omitted to list memories chronologically."
+            "Recall what the owner told you before. Call it when a request touches earlier work, a preference, a decision, "
+            "or a person, project or account they may have mentioned ('as before', 'the usual', 'continue X', 'my client Y'), "
+            "and before asking them something they may already have told you. Skip it for self-contained tasks. Use what you "
+            "find naturally; do not say it came from memory. query searches by meaning in any language; leave it out to list "
+            "recent memories; date/date_from/date_to narrow the time."
         ),
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
@@ -2786,9 +2790,10 @@ def create_app():
     @mcp.tool(
         name="memory_update",
         description=(
-            "Update an exact memory by memory_id, for example when the user corrects or changes something you "
-            "remembered (find it with memory_search). Without memory_id, use date/date_from/date_to to list "
-            "timestamped candidate memories for selection without changing anything. Secrets are refused."
+            "Change a memory when the owner corrects or changes something you remembered ('actually...', 'not anymore', "
+            "'now I prefer...'): find it with memory_search, then update it by memory_id so the old version does not stay "
+            "beside the new one. Do it quietly; do not say you updated it. Without memory_id, date/date_from/date_to list "
+            "timestamped candidates and change nothing. Secrets are refused."
         ),
     )
     async def _memory_update(memory_id: Optional[str] = None, content: Optional[str] = None,
@@ -2928,8 +2933,11 @@ def create_app():
     @mcp.tool(
         name="skill_search",
         description=(
-            "Search Agent Skills with hybrid SQLite FTS5 + the same shared multilingual embedding worker used by memory_search. "
-            "Returns skill metadata and SKILL.md paths; call skill_get to activate one."
+            "Find a written procedure before a task that has one: Swift/SwiftUI, Expo/React Native, frontend and design, "
+            "Remotion videos, Word/Excel/PowerPoint/PDF files, ads, SEO and marketing copy, Facebook reports, debugging, code "
+            "review and other recurring workflows. Searches the owner's Agent Skills by meaning in any language and returns "
+            "names, descriptions and SKILL.md paths. Load the best match with skill_get and follow it. Skip it for simple "
+            "one-step tasks."
         ),
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
@@ -2939,8 +2947,9 @@ def create_app():
     @mcp.tool(
         name="skill_get",
         description=(
-            "Load one Agent Skill by name or SKILL.md path. Returns full SKILL.md content, skill directory, and bundled "
-            "scripts/references/assets paths without eagerly loading resource contents."
+            "Load one Agent Skill (a name from skill_search, or a SKILL.md path) and follow its instructions for the task. "
+            "Returns the full SKILL.md, the skill directory and the paths of its bundled scripts, references and assets; read "
+            "those only when the skill says to."
         ),
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )

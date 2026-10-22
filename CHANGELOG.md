@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Memory and skills where agents look for them (roadmap #110, part 1)
+- `skill_search` and `skill_get` are in the default tool list, so agents see them without `tool_discover` (about 255 more tokens, 2.4% of the list).
+- The memory and skill tools now say when to use them: `memory_search` when a request touches earlier work, a preference or a person or project the owner may have mentioned, and before asking them; `skill_search` before a task that has a written procedure (Swift, Expo, frontend and design, Remotion, Office and PDF files, ads and SEO, debugging, code review); `memory_update` when the owner corrects something remembered.
+- Agents save and recall without saying so: they no longer announce "I saved this" or "from memory" and simply use what they know.
+- A read-only agent may save what it learned with `memory_add` and `memory_update`; secrets and private mode are refused as before, and nothing else opens for it.
+
 ### Asking the owner without stopping the work
 - `ask_user` is described as what it is: a quick question in the middle of the work. The agent waits up to `timeout_s`, then goes on with the answer, or with its own judgment when the owner skips or does not answer in time. It is meant for background agents, scheduled tasks and long jobs, instead of ending a turn to ask in chat.
 - `ask_user` and `ask_confirmation` only show a question, so they are marked read-only: MCP clients no longer ask for approval before the question itself. Read-only and browser-only delegated agents may now use them too; the voice tools still may not.

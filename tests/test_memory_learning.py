@@ -94,12 +94,12 @@ class MemoryLearningTests(unittest.TestCase):
 
     def test_the_tools_are_listed_and_say_to_save_on_their_own(self) -> None:
         self.assertTrue({"memory_add", "memory_update", "memory_search"} <= CORE_TOOL_NAMES)
-        self.assertIn("own initiative", CORE_TOOL_SUMMARIES["memory_add"])
-        self.assertIn("Secrets are refused", CORE_TOOL_SUMMARIES["memory_update"])
+        self.assertIn("Save on your own", CORE_TOOL_SUMMARIES["memory_add"])
+        self.assertIn("No secrets", CORE_TOOL_SUMMARIES["memory_update"])
 
     def test_the_instructions_say_what_to_learn_and_what_never(self) -> None:
         for phrase in ("Learn as you work, without being asked", "corrects you", "memory_update the memory it changes",
-                       "Do not ask first or announce each save", "Never save secrets", "one-off task details",
+                       "do not ask first or say you saved or recalled anything", "Never save secrets", "one-off task details",
                        "other people's private details", "lesson_record it"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, MCP_AGENT_INSTRUCTIONS)

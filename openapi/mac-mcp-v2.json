@@ -4687,7 +4687,7 @@
       "post": {
         "operationId": "memory_search",
         "summary": "memory_search",
-        "description": "Search or list Mac MCP memories. query enables hybrid SQLite FTS5 + local vector search; date/date_from/date_to filter time ranges. Query can be omitted to list memories chronologically.",
+        "description": "Recall what the owner told you before. Call it when a request touches earlier work, a preference, a decision, or a person, project or account they may have mentioned ('as before', 'the usual', 'continue X', 'my client Y'), and before asking them something they may already have told you. Skip it for ",
         "requestBody": {
           "required": true,
           "content": {
@@ -4883,7 +4883,7 @@
       "post": {
         "operationId": "skill_search",
         "summary": "skill_search",
-        "description": "Search Agent Skills with hybrid SQLite FTS5 + the same shared multilingual embedding worker used by memory_search. Returns skill metadata and SKILL.md paths; call skill_get to activate one.",
+        "description": "Find a written procedure before a task that has one: Swift/SwiftUI, Expo/React Native, frontend and design, Remotion videos, Word/Excel/PowerPoint/PDF files, ads, SEO and marketing copy, Facebook reports, debugging, code review and other recurring workflows. Searches the owner's Agent Skills by mean",
         "requestBody": {
           "required": true,
           "content": {
@@ -4928,7 +4928,7 @@
       "post": {
         "operationId": "skill_get",
         "summary": "skill_get",
-        "description": "Load one Agent Skill by name or SKILL.md path. Returns full SKILL.md content, skill directory, and bundled scripts/references/assets paths without eagerly loading resource contents.",
+        "description": "Load one Agent Skill (a name from skill_search, or a SKILL.md path) and follow its instructions for the task. Returns the full SKILL.md, the skill directory and the paths of its bundled scripts, references and assets; read those only when the skill says to.",
         "requestBody": {
           "required": true,
           "content": {
