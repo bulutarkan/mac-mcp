@@ -166,7 +166,7 @@ struct HelpDiagnosticsPane: View {
                 let warnings = report.problems.count
                 if report.ok && warnings == 0 { return ("Everything looks good", "checkmark.seal.fill", .green) }
                 if report.ok { return ("Works, with \(warnings) warning\(warnings == 1 ? "" : "s")", "exclamationmark.triangle.fill", .orange) }
-                if report.health == "degraded" { return ("Mac MCP works locally; the public endpoint needs attention", "exclamationmark.triangle.fill", .orange) }
+                if report.health == "degraded" { return ("Mac MCP works on this Mac; remote access needs a look", "exclamationmark.triangle.fill", .orange) }
                 return ("\(report.problems.count) issue\(report.problems.count == 1 ? "" : "s") found", "exclamationmark.octagon.fill", .red)
             }()
             VStack(alignment: .leading, spacing: 2) {

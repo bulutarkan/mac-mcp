@@ -5,15 +5,15 @@ import SwiftUI
 enum MenuHoverCopy {
     static func toolCalls(count: Int) -> String {
         switch count {
-        case 0: return "No tool calls in the last hour"
-        case 1: return "1 tool call in the last hour"
-        default: return "\(count) tool calls in the last hour"
+        case 0: return "No actions in the last hour"
+        case 1: return "1 action in the last hour"
+        default: return "\(count) actions in the last hour"
         }
     }
 
     /// Agrees with the percent the chip draws (`rounded()`), so 99.6% still reads as all succeeded.
     static func success(calls: Int, rate: Double) -> String {
-        guard calls > 0 else { return "No tool calls in the last hour" }
+        guard calls > 0 else { return "No actions in the last hour" }
         if Int(rate.rounded()) >= 100 {
             return calls == 1 ? "The call succeeded" : "All \(calls) succeeded"
         }

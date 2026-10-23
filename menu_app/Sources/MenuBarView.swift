@@ -248,7 +248,7 @@ struct MenuBarView: View {
         if state.activeAgents > 0 {
             return "\(state.activeAgents) agent\(state.activeAgents == 1 ? "" : "s") working"
         }
-        guard state.serverRunning else { return "Server stopped" }
+        guard state.serverRunning else { return "Not running" }
         return state.totalCalls > 0 ? "Ready · your AI apps are using it" : "Ready for your AI apps"
     }
 
@@ -450,7 +450,7 @@ struct MenuBarView: View {
                 if state.agents.isEmpty { state.openDashboard() } else { revealAgents(proxy) }
             }
             summaryRow(symbol: endpoint.symbol, color: endpoint.tone == .warning ? VisualTokens.warning : MenuPalette.neutral,
-                       title: "Endpoint", value: endpoint.label,
+                       title: "Remote access", value: endpoint.label,
                        valueColor: endpoint.tone == .warning ? VisualTokens.warning : .secondary,
                        hint: "Review Connections in Settings", tip: endpoint.explanation) { openSettings(.connections) }
             summaryRow(symbol: safety.symbol, color: safety.tone == .warning ? VisualTokens.warning : MenuPalette.neutral,
@@ -1237,7 +1237,7 @@ struct MenuBarView: View {
                     HStack {
                         Text("Public endpoint")
                         Spacer()
-                        Text(settings.publicEndpointMode == "none" ? "Local only" : settings.publicEndpointMode.capitalized)
+                        Text(settings.publicEndpointMode == "none" ? "This Mac only" : settings.publicEndpointMode.capitalized)
                             .foregroundStyle(.secondary)
                         Button("Configure…") { SettingsWindowController.shared.show(state: state, settings: settings) }
                     }

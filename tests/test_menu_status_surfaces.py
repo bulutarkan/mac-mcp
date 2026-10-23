@@ -30,23 +30,26 @@ func semantics(_ active: String, known: Bool = true, normalized: Bool = false) -
 struct StatusDisplayHarness {
     static func main() {
         let labels = [DashboardConnectionState.connected, .degraded, .disconnected, .connecting].map(\.display.label)
-        precondition(labels == ["Connected", "Degraded", "Disconnected", "Connecting"], "\(labels)")
+        precondition(labels == ["Connected", "Partly working", "Not connected", "Connecting"], "\(labels)")
         precondition(DashboardConnectionState.degraded.display.tone == .warning)
 
         let local = EndpointDisplay.make(mode: "none", cloudflareRunning: false, ngrokRunning: false)
-        precondition(local.label == "Local only")
-        precondition(EndpointDisplay.make(mode: "cloudflare", cloudflareRunning: true, ngrokRunning: false).label == "Cloudflare · tunnel process detected")
-        precondition(EndpointDisplay.make(mode: "cloudflare", cloudflareRunning: false, ngrokRunning: false).label == "Cloudflare · tunnel not detected")
-        precondition(EndpointDisplay.make(mode: "ngrok", cloudflareRunning: false, ngrokRunning: true).label == "ngrok · tunnel process detected")
-        precondition(EndpointDisplay.make(mode: "ngrok", cloudflareRunning: true, ngrokRunning: false).label == "ngrok · tunnel not detected")
-        precondition(EndpointDisplay.make(mode: "custom", cloudflareRunning: true, ngrokRunning: true).label == "Custom URL configured · not checked")
+        // Plain words in the primary UI; the provider is named in the explanation.
+        precondition(local.label == "This Mac only")
+        let cloudflare = EndpointDisplay.make(mode: "cloudflare", cloudflareRunning: true, ngrokRunning: false)
+        precondition(cloudflare.label == "On" && cloudflare.explanation.contains("Cloudflare"))
+        precondition(EndpointDisplay.make(mode: "cloudflare", cloudflareRunning: false, ngrokRunning: false).label == "On, but stopped")
+        let ngrok = EndpointDisplay.make(mode: "ngrok", cloudflareRunning: false, ngrokRunning: true)
+        precondition(ngrok.label == "On" && ngrok.explanation.contains("ngrok"))
+        precondition(EndpointDisplay.make(mode: "ngrok", cloudflareRunning: true, ngrokRunning: false).label == "On, but stopped")
+        precondition(EndpointDisplay.make(mode: "custom", cloudflareRunning: true, ngrokRunning: true).label == "Your own address")
         precondition(EndpointDisplay.needsReview(mode: "cloudflare", cloudflareRunning: false, ngrokRunning: false))
         precondition(!EndpointDisplay.needsReview(mode: "custom", cloudflareRunning: false, ngrokRunning: false))
         for mode in ["none", "cloudflare", "ngrok", "custom"] {
             for running in [true, false] {
                 let text = EndpointDisplay.make(mode: mode, cloudflareRunning: running, ngrokRunning: running)
                 let words = (text.label + " " + text.explanation).lowercased()
-                precondition(!words.contains("online") && !words.contains("reachable"), "no reachability claims: \(words)")
+                precondition(!["online", "reachable", "reach", "anywhere"].contains { words.contains($0) }, "no reachability claims: \(words)")
             }
         }
 
@@ -101,7 +104,7 @@ class MenuPopoverStructureTests(unittest.TestCase):
 
     def test_summary_rows_route_to_settings_and_never_count_approvals(self) -> None:
         summary = self.menu[self.menu.index("private func summaryCard"):self.menu.index("private var agentsSummaryValue")]
-        for title in ('title: "Agents"', 'title: "Endpoint"', 'title: "Safety"'):
+        for title in ('title: "Agents"', 'title: "Remote access"', 'title: "Safety"'):
             self.assertIn(title, summary)
         # Sessions are a chip and a section of their own (#201), not a fourth summary row.
         self.assertNotIn('title: "Sessions"', summary)

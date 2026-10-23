@@ -82,7 +82,7 @@ struct MacMCPMenuApp: App {
         if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
             return "Mac MCP, active work"
         }
-        if state.connectionState == .degraded { return "Mac MCP, degraded" }
+        if state.connectionState == .degraded { return "Mac MCP, partly working" }
         return "Mac MCP"
     }
 }

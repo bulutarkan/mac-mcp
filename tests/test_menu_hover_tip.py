@@ -25,11 +25,11 @@ import Foundation
 @main
 struct MenuHoverHarness {
     static func main() {
-        precondition(MenuHoverCopy.toolCalls(count: 0) == "No tool calls in the last hour")
-        precondition(MenuHoverCopy.toolCalls(count: 1) == "1 tool call in the last hour")
-        precondition(MenuHoverCopy.toolCalls(count: 13) == "13 tool calls in the last hour")
+        precondition(MenuHoverCopy.toolCalls(count: 0) == "No actions in the last hour")
+        precondition(MenuHoverCopy.toolCalls(count: 1) == "1 action in the last hour")
+        precondition(MenuHoverCopy.toolCalls(count: 13) == "13 actions in the last hour")
 
-        precondition(MenuHoverCopy.success(calls: 0, rate: 100) == "No tool calls in the last hour")
+        precondition(MenuHoverCopy.success(calls: 0, rate: 100) == "No actions in the last hour")
         precondition(MenuHoverCopy.success(calls: 1, rate: 100) == "The call succeeded")
         precondition(MenuHoverCopy.success(calls: 13, rate: 100) == "All 13 succeeded")
         precondition(MenuHoverCopy.success(calls: 13, rate: 99.6) == "All 13 succeeded", "rounded percent is 100")

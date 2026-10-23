@@ -906,8 +906,8 @@ final class AppState: ObservableObject {
         switch connectionState {
         case .connecting: return "Connecting…"
         case .connected: return "Server running · v\(version)"
-        case .degraded: return "Server running · degraded"
-        case .disconnected: return "Disconnected"
+        case .degraded: return "Running · some information is missing"
+        case .disconnected: return "Not connected"
         }
     }
 
@@ -916,8 +916,8 @@ final class AppState: ObservableObject {
         switch connectionState {
         case .connecting: return "Connecting to Mac MCP…"
         case .connected: return "Connected"
-        case .degraded: return "Some dashboard data is unavailable"
-        case .disconnected: return "Mac MCP server is unreachable"
+        case .degraded: return "Some information is missing"
+        case .disconnected: return "Mac MCP is not answering"
         }
     }
 

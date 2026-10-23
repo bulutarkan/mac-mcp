@@ -32,43 +32,43 @@ extension DashboardConnectionState {
         switch self {
         case .connected:
             return StatusDisplay(label: "Connected", symbol: "checkmark.circle.fill",
-                                 explanation: "The local server is running and answering.", tone: .ok)
+                                 explanation: "Mac MCP is running, and your AI apps can use this Mac.", tone: .ok)
         case .degraded:
-            return StatusDisplay(label: "Degraded", symbol: "exclamationmark.triangle.fill",
-                                 explanation: "The server answers, but some data is unavailable.", tone: .warning)
+            return StatusDisplay(label: "Partly working", symbol: "exclamationmark.triangle.fill",
+                                 explanation: "Mac MCP answers, but some of its information is missing.", tone: .warning)
         case .disconnected:
-            return StatusDisplay(label: "Disconnected", symbol: "xmark.circle.fill",
-                                 explanation: "The local server is not answering.", tone: .error)
+            return StatusDisplay(label: "Not connected", symbol: "xmark.circle.fill",
+                                 explanation: "Mac MCP is not answering.", tone: .error)
         case .connecting:
             return StatusDisplay(label: "Connecting", symbol: "arrow.triangle.2.circlepath",
-                                 explanation: "Checking the local server.", tone: .neutral)
+                                 explanation: "Checking Mac MCP.", tone: .neutral)
         }
     }
 }
 
 enum EndpointDisplay {
-    /// Public endpoint state that keeps what is configured apart from what was observed.
-    /// "Detected" only reflects the local process check; nothing here checks reachability.
+    /// Remote access in plain words, keeping what is set up apart from what was seen running.
+    /// The running check is the local connection process; nothing here checks reachability.
     static func make(mode: String, cloudflareRunning: Bool, ngrokRunning: Bool) -> StatusDisplay {
         switch mode {
         case "cloudflare":
             return cloudflareRunning
-                ? StatusDisplay(label: "Cloudflare · tunnel process detected", symbol: "network",
-                                explanation: "Remote access is configured and the tunnel process is running on this Mac.", tone: .ok)
-                : StatusDisplay(label: "Cloudflare · tunnel not detected", symbol: "network.slash",
-                                explanation: "Remote access is configured, but no tunnel process was found on this Mac.", tone: .warning)
+                ? StatusDisplay(label: "On", symbol: "network",
+                                explanation: "Remote access through Cloudflare is on, and its connection is running on this Mac.", tone: .ok)
+                : StatusDisplay(label: "On, but stopped", symbol: "network.slash",
+                                explanation: "Remote access through Cloudflare is set up, but its connection is not running on this Mac.", tone: .warning)
         case "ngrok":
             return ngrokRunning
-                ? StatusDisplay(label: "ngrok · tunnel process detected", symbol: "network",
-                                explanation: "Remote access is configured and the ngrok process is running on this Mac.", tone: .ok)
-                : StatusDisplay(label: "ngrok · tunnel not detected", symbol: "network.slash",
-                                explanation: "Remote access is configured, but no ngrok process was found on this Mac.", tone: .warning)
+                ? StatusDisplay(label: "On", symbol: "network",
+                                explanation: "Remote access through ngrok is on, and its connection is running on this Mac.", tone: .ok)
+                : StatusDisplay(label: "On, but stopped", symbol: "network.slash",
+                                explanation: "Remote access through ngrok is set up, but its connection is not running on this Mac.", tone: .warning)
         case "custom":
-            return StatusDisplay(label: "Custom URL configured · not checked", symbol: "link",
-                                 explanation: "Mac MCP does not check whether this URL answers.", tone: .neutral)
+            return StatusDisplay(label: "Your own address", symbol: "link",
+                                 explanation: "Remote access goes through your own address. Mac MCP does not check whether it answers.", tone: .neutral)
         default:
-            return StatusDisplay(label: "Local only", symbol: "lock.laptopcomputer",
-                                 explanation: "Only apps on this Mac can connect.", tone: .neutral)
+            return StatusDisplay(label: "This Mac only", symbol: "lock.laptopcomputer",
+                                 explanation: "Only AI apps on this Mac can connect.", tone: .neutral)
         }
     }
 
