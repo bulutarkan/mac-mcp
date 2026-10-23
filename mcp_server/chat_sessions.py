@@ -1,9 +1,11 @@
 """Mac MCP Chat: the owner's own conversations with a coding agent in a project folder.
 
-Each chat runs its agent (GitHub Copilot today) as an Agent Client Protocol subprocess with Mac MCP as its
-only MCP server, reached with a scoped credential. The agent's own permission prompts come to the owner in
-the chat window. Chats live in <state>/chats/<chat_id>/ (chat.json + transcript.json); the agent keeps its
-own session in a private home, so a chat reopened later continues where it stopped (session/load).
+Each chat runs one of the owner's own agent CLIs (Claude, Codex, OpenCode, GitHub Copilot) as an Agent Client
+Protocol subprocess, signed in as the owner, with Mac MCP added as an MCP server on a scoped credential. The
+agent says which models, thinking levels and modes it offers (ACP configOptions); the owner picks them in
+the chat. The agent's permission prompts come to the owner in the chat window. Chats live in
+<state>/chats/<chat_id>/ (chat.json + transcript.json); the agent keeps its own session, so a chat reopened
+later continues where it stopped (session/load).
 
 The transcript is a list of items (user, assistant, thought, tool, permission, plan, notice). Every change
 gives the item a new `rev`; the app asks for items with rev > its cursor, so a streaming answer is read
@@ -26,7 +28,7 @@ from typing import Any, Dict, List, Optional
 from . import extra_harness_providers as harness
 from . import paths
 from .acp_client import PROTOCOL_VERSION, AcpClosed, AcpConnection, AcpError
-from .agent_timeline import _cut, _inputs, _readable_output
+from .agent_timeline import _TOOL_WORDS, _cut, _humanize, _inputs, _readable_output
 from .policy_scope import ResourceScope
 from .runtime_settings import provider_enabled, provider_setting
 from .scoped_auth import get_scoped_credential_store
@@ -39,17 +41,32 @@ CREDENTIAL_TTL_S = 24 * 3600
 MAX_TEXT = 200_000
 MAX_TITLE = 120
 
+# Claude Code and Codex speak ACP through their official adapters; the others have it built in.
 AGENTS: Dict[str, Dict[str, Any]] = {
+    "claude": {
+        "label": "Claude", "cli": "claude", "login": "claude",
+        "command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.94.0"],
+    },
+    "codex": {
+        "label": "Codex", "cli": "codex", "login": "codex login",
+        "command": ["npx", "-y", "@agentclientprotocol/codex-acp@2.2.2"],
+    },
+    "opencode": {
+        "label": "OpenCode", "cli": "opencode", "login": "opencode auth login",
+        "command": ["{cli}", "acp"],
+    },
     "copilot": {
-        "label": "GitHub Copilot",
+        "label": "GitHub Copilot", "cli": "copilot", "login": "copilot login",
         # Copilot's own subagents and workflows are left out, as for delegated agents; Mac MCP is the only MCP.
         # Copilot sends its own status lines ("Info: Disabled tools: …") as whole message chunks.
         "status_line": re.compile(r"^(Info|Warning): "),
-        "args": ["--acp", "--no-auto-update", "--disable-builtin-mcps", "--disable-client-telemetry",
-                 "--secret-env-vars=COPILOT_PROVIDER_API_KEY,COPILOT_GITHUB_TOKEN",
-                 "--excluded-tools", *harness.COPILOT_EXCLUDED_TOOLS],
+        "command": ["{cli}", "--acp", "--no-auto-update", "--disable-builtin-mcps", "--disable-client-telemetry",
+                    "--secret-env-vars=COPILOT_PROVIDER_API_KEY,COPILOT_GITHUB_TOKEN",
+                    "--excluded-tools", *harness.COPILOT_EXCLUDED_TOOLS],
     },
 }
+# The pickers the chat shows, in this order; other options go under "More".
+SHOWN_CATEGORIES = ("model", "thought_level", "mode")
 
 _TOOL_STATUS = {"pending": "running", "in_progress": "running", "completed": "done", "failed": "failed"}
 
@@ -90,11 +107,43 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _search_path() -> str:
+    home = Path.home()
+    parts = [os.getenv("PATH", ""), str(home / ".npm-global" / "bin"), str(home / ".local" / "bin"),
+             "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    return ":".join(part for part in parts if part)
+
+
+def _which(name: str) -> Optional[str]:
+    override = os.getenv(f"MAC_MCP_{name.upper()}_BINARY", "").strip()
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        return override
+    return shutil.which(name, path=_search_path())
+
+
 def _binary(agent: str) -> Optional[str]:
-    for candidate in harness.binary_candidates(agent):
-        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return None
+    """The agent's own CLI, which holds the owner's sign-in."""
+    return _which(AGENTS[agent]["cli"]) if agent in AGENTS else None
+
+
+def _command(agent: str) -> Optional[List[str]]:
+    cli = _binary(agent)
+    if not cli:
+        return None
+    command = list(AGENTS[agent]["command"])
+    if command[0] == "{cli}":
+        command[0] = cli
+    else:
+        tool = _which(command[0])
+        if not tool:
+            return None
+        command[0] = tool
+    return command
+
+
+def _copilot_byok(model: str) -> bool:
+    vendor, _, name = str(model or "").partition("/")
+    return bool(os.getenv("COPILOT_PROVIDER_BASE_URL")) or (vendor.lower() in harness.COPILOT_BYOK and bool(name))
 
 
 def _keychain_lookup(name: str) -> Optional[str]:
@@ -108,17 +157,20 @@ def _mcp_endpoint() -> str:
 
 
 def _agent_env(agent: str, model: str) -> Dict[str, str]:
-    """What the agent process sees: no server secrets, only its private home and its model credentials."""
+    """What the agent process sees: the owner's home (their sign-in and settings), no server secrets."""
     home = Path.home()
     user = os.getenv("USER") or home.name
-    path_parts = [os.getenv("PATH", ""), str(home / ".npm-global" / "bin"), str(home / ".local" / "bin"),
-                  "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
     env = {
         "HOME": str(home), "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
-        "PATH": ":".join(part for part in path_parts if part), "TMPDIR": os.getenv("TMPDIR", "/tmp"),
-        "NO_COLOR": "1", "TERM": "dumb",
+        "PATH": _search_path(), "TMPDIR": os.getenv("TMPDIR", "/tmp"), "NO_COLOR": "1", "TERM": "dumb",
     }
-    if agent == "copilot":
+    if agent == "opencode":
+        # The owner's shell gives OpenCode their OpenRouter key; the server keeps it in the Keychain.
+        key = os.getenv("OPENROUTER_API_KEY") or _keychain_lookup("OPENROUTER_API_KEY")
+        if key:
+            env["OPENROUTER_API_KEY"] = key
+    if agent == "copilot" and _copilot_byok(model):
+        # Copilot on the owner's own provider key (Settings › Agents model openrouter/…), as for delegated runs.
         private_home = chats_root() / "copilot-home"
         private_home.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
@@ -133,14 +185,37 @@ def available_agents() -> List[Dict[str, Any]]:
     for agent, spec in AGENTS.items():
         if not provider_enabled(agent):
             continue
-        binary = _binary(agent)
-        signed_in, reason = harness.sign_in_state(agent, _keychain_lookup) if binary else (False, "")
-        out.append({
-            "id": agent, "label": spec["label"], "ready": bool(binary and signed_in),
-            "reason": "" if binary and signed_in else (reason or f"{spec['label']} is not installed."),
-            "default_model": str(provider_setting(agent, "model") or "").strip(),
-        })
+        command = _command(agent)
+        reason = "" if command else (f"{spec['label']} is not installed." if not _binary(agent)
+                                     else "Node.js (npx) is needed to connect to it.")
+        out.append({"id": agent, "label": spec["label"], "ready": not reason, "reason": reason})
     return out
+
+
+def _config_options(raw: Any) -> List[Dict[str, Any]]:
+    """ACP configOptions as the app shows them; grouped choices are flattened with their group's name."""
+    out = []
+    for option in raw if isinstance(raw, list) else []:
+        if not isinstance(option, dict) or option.get("type") != "select" or not option.get("id"):
+            continue
+        choices = []
+        for entry in option.get("options") or []:
+            if not isinstance(entry, dict):
+                continue
+            nested = entry.get("options") if isinstance(entry.get("options"), list) else None
+            for choice in nested if nested is not None else [entry]:
+                if isinstance(choice, dict) and choice.get("value") is not None:
+                    choices.append({"value": str(choice["value"]), "name": _cut(str(choice.get("name") or choice["value"]), 120),
+                                    "description": _cut(str(choice.get("description") or ""), 240),
+                                    "group": str(entry.get("name") or "") if nested is not None else ""})
+        out.append({"id": str(option["id"]), "name": str(option.get("name") or option["id"]),
+                    "category": str(option.get("category") or ""), "current": str(option.get("currentValue") or ""),
+                    "options": choices})
+    return out
+
+
+def _needs_sign_in(exc: AcpError) -> bool:
+    return exc.code == -32000 or "auth" in str(exc).lower()
 
 
 def _last_log_line(path: Path) -> str:
@@ -153,8 +228,15 @@ def _last_log_line(path: Path) -> str:
     return lines[-1] if lines else ""
 
 
+# How agents name an MCP tool: mcp__mac-mcp__read_file (Claude), mcp.mac-mcp.read_file (Codex),
+# mac-mcp_read_file (OpenCode), mac-mcp-read_file (Copilot).
+_MCP_TOOL = re.compile(r"^(?:mcp(?:__|\.)(?P<server>[\w.-]+?)(?:__|\.)|(?P<plain>mac[-_]mcp)[-_])(?P<tool>[a-z][a-z0-9_]*)$")
+_AGENT_TOOLS = {"ToolSearch": "Looked for the right tool", "TodoWrite": "Updated its plan", "WebSearch": "Searched the web",
+                "WebFetch": "Read a web page", "Task": "Started a helper"}
+
+
 def _friendly_title(item: Dict[str, Any], fallback: str) -> str:
-    """File steps by the file's name ("Read notes.md"); other steps keep the agent's own sentence."""
+    """File steps by the file's name ("Read notes.md"); a Mac MCP step by what it was for; else the agent's words."""
     agent_title = str(item.get("agent_title") or fallback or "")
     files = [name for name in item.get("files") or [] if name]
     name = Path(files[0]).name if files else ""
@@ -167,6 +249,14 @@ def _friendly_title(item: Dict[str, Any], fallback: str) -> str:
         return f"Deleted {name}"
     if name and kind == "move":
         return f"Moved {name}"
+    if item.get("intent"):
+        return _cut(str(item["intent"]), 200)  # Mac MCP tools say what they are for (their description)
+    match = _MCP_TOOL.match(agent_title.strip())
+    if match:
+        tool = match.group("tool")
+        return _TOOL_WORDS.get(tool) or _humanize(tool)
+    if agent_title in _AGENT_TOOLS:
+        return _AGENT_TOOLS[agent_title]
     return _cut(agent_title, 200) or str(item.get("title") or "Working")
 
 
@@ -201,6 +291,7 @@ class Chat:
         self.start_lock = asyncio.Lock()
         self.idle: Optional[asyncio.TimerHandle] = None
         self.save_pending = False
+        self.warming: Optional[asyncio.Task] = None
 
     @property
     def dir(self) -> Path:
@@ -229,9 +320,11 @@ class Chat:
         _write_json(self.dir / "chat.json", self.meta)
 
     def public(self) -> Dict[str, Any]:
-        meta = {key: value for key, value in self.meta.items() if key not in ("acp_session_id",)}
+        meta = {key: value for key, value in self.meta.items() if key not in ("acp_session_id", "credential_id")}
         meta["running"] = self.turn is not None and not self.turn.done()
         meta["agent_alive"] = self.conn is not None and self.conn.running
+        meta["connecting"] = self.warming is not None and not self.warming.done()
+        meta.setdefault("config", [])
         return meta
 
 
@@ -383,8 +476,9 @@ class ChatHost:
 
     async def shutdown(self) -> None:
         for chat in list(self._chats.values()):
-            if chat.turn is not None and not chat.turn.done():
-                chat.turn.cancel()
+            for task in (chat.turn, chat.warming):
+                if task is not None and not task.done():
+                    task.cancel()
             await self._stop_agent(chat)
             if chat.save_pending:
                 chat.save()
@@ -431,9 +525,7 @@ class ChatHost:
             chat.meta["status"] = "idle"
             chat.bump()
             chat.save()
-            if chat.conn is not None and chat.conn.running:
-                loop = asyncio.get_running_loop()
-                chat.idle = loop.call_later(IDLE_STOP_S, lambda: asyncio.ensure_future(self._stop_agent(chat)))
+            self._arm_idle(chat)
 
     async def _ensure_session(self, chat: Chat) -> None:
         async with chat.start_lock:
@@ -441,48 +533,139 @@ class ChatHost:
                 return
             await self._stop_agent(chat)
             agent = chat.meta["agent"]
-            binary = _binary(agent)
-            if not binary:
-                raise ChatError(f"{AGENTS[agent]['label']} is not installed.", "agent_missing")
+            spec = AGENTS[agent]
+            command = _command(agent)
+            if not command:
+                raise ChatError(f"{spec['label']} is not installed." if not _binary(agent)
+                                else "Node.js (npx) is needed to connect to it.", "agent_missing")
             project = chat.meta["project"]
             if not Path(project).is_dir():
                 raise ChatError("The project folder is gone.", "bad_project")
             token, credential_id = get_scoped_credential_store().issue(
-                agent_id=f"chat:{chat.meta['id']}", team_id=None, profile="trusted",
+                agent_id=chat.meta["id"], team_id=None, profile="trusted",
                 scope=ResourceScope(path_roots=(project,)), ttl_s=CREDENTIAL_TTL_S,
             )
             chat.meta["credential_id"] = credential_id
             conn = AcpConnection(lambda method, params: self._on_update(chat, method, params),
                                  lambda method, params: self._on_request(chat, method, params))
-            await conn.start([binary, *AGENTS[agent]["args"]], cwd=project, env=_agent_env(agent, chat.meta["model"]),
+            await conn.start(command, cwd=project, env=_agent_env(agent, chat.meta.get("model") or ""),
                              stderr_path=chat.dir / "agent.log")
             chat.conn = conn
-            init = await conn.request("initialize", {
-                "protocolVersion": PROTOCOL_VERSION,
-                "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
-                "clientInfo": {"name": "mac-mcp-chat", "title": "Mac MCP Chat", "version": __version__},
-            }, timeout=60)
-            servers = [{"type": "http", "name": "mac-mcp", "url": _mcp_endpoint(),
-                        "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}]
-            previous = chat.meta.get("acp_session_id")
-            can_load = bool((init.get("agentCapabilities") or {}).get("loadSession"))
-            if previous and can_load:
-                chat.replaying = True  # the agent replays the conversation; the transcript already has it
-                try:
-                    await conn.request("session/load", {"sessionId": previous, "cwd": project, "mcpServers": servers},
-                                       timeout=120)
-                    chat.session_id = previous
-                except AcpError:
-                    chat.add("notice", text="The earlier conversation could not be reopened; the agent starts fresh.",
-                             tone="warning")
-                finally:
-                    chat.replaying = False
-            if not chat.session_id:
-                created = await conn.request("session/new", {"cwd": project, "mcpServers": servers}, timeout=120)
-                chat.session_id = str(created.get("sessionId") or "")
+            try:
+                # The first start of an adapter downloads it (npx), so this may take a while.
+                init = await conn.request("initialize", {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
+                    "clientInfo": {"name": "mac-mcp-chat", "title": "Mac MCP Chat", "version": __version__},
+                }, timeout=240)
+                servers = [{"type": "http", "name": "mac-mcp", "url": _mcp_endpoint(),
+                            "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}]
+                previous = chat.meta.get("acp_session_id")
+                opened: Dict[str, Any] = {}
+                if previous and (init.get("agentCapabilities") or {}).get("loadSession"):
+                    chat.replaying = True  # the agent replays the conversation; the transcript already has it
+                    try:
+                        opened = await conn.request("session/load", {"sessionId": previous, "cwd": project,
+                                                                     "mcpServers": servers}, timeout=120)
+                        chat.session_id = previous
+                    except AcpError as exc:
+                        if _needs_sign_in(exc):
+                            raise
+                        chat.add("notice", text="The earlier conversation could not be reopened; the agent starts fresh.",
+                                 tone="warning")
+                    finally:
+                        chat.replaying = False
                 if not chat.session_id:
-                    raise ChatError("The agent did not open a session.", "agent_failed")
-                chat.meta["acp_session_id"] = chat.session_id
+                    opened = await conn.request("session/new", {"cwd": project, "mcpServers": servers}, timeout=120)
+                    chat.session_id = str(opened.get("sessionId") or "")
+                    if not chat.session_id:
+                        raise ChatError("The agent did not open a session.", "agent_failed")
+                    chat.meta["acp_session_id"] = chat.session_id
+            except AcpError as exc:
+                if _needs_sign_in(exc):
+                    raise ChatError(f"Sign in to {spec['label']} first: run `{spec['login']}` in Terminal.",
+                                    "auth_required", 409) from exc
+                raise
+            if "configOptions" in opened:
+                chat.meta["config"] = _config_options(opened.get("configOptions"))
+            await self._apply_choices(chat)
+            chat.meta.pop("agent_error", None)
+            chat.bump()
+            chat.save()
+
+    async def _apply_choices(self, chat: Chat) -> None:
+        """The owner's picks (model, thinking, mode) survive a restart of the agent: set them again."""
+        for config_id, value in dict(chat.meta.get("choices") or {}).items():
+            option = next((entry for entry in chat.meta.get("config") or [] if entry["id"] == config_id), None)
+            if option is None or option["current"] == value:
+                continue
+            if value not in {choice["value"] for choice in option["options"]}:
+                chat.meta["choices"].pop(config_id, None)  # the agent no longer offers it
+                continue
+            try:
+                result = await chat.conn.request("session/set_config_option", {
+                    "sessionId": chat.session_id, "configId": config_id, "value": value}, timeout=60)
+            except AcpError:
+                continue
+            if "configOptions" in result:
+                chat.meta["config"] = _config_options(result.get("configOptions"))
+
+    def _arm_idle(self, chat: Chat) -> None:
+        if chat.idle is not None:
+            chat.idle.cancel()
+        if chat.conn is not None and chat.conn.running:
+            loop = asyncio.get_running_loop()
+            chat.idle = loop.call_later(IDLE_STOP_S, lambda: asyncio.ensure_future(self._stop_agent(chat)))
+
+    async def _warm(self, chat: Chat) -> None:
+        try:
+            await self._ensure_session(chat)
+        except ChatError as exc:
+            chat.meta["agent_error"] = str(exc)
+        except AcpClosed:
+            chat.meta["agent_error"] = _cut("The agent quit. " + _last_log_line(chat.dir / "agent.log"), 400)
+            await self._stop_agent(chat)
+        except (AcpError, OSError) as exc:
+            chat.meta["agent_error"] = _cut(f"Could not start the agent: {exc}", 400)
+            await self._stop_agent(chat)
+        else:
+            if chat.turn is None or chat.turn.done():
+                self._arm_idle(chat)
+        chat.bump()
+        chat.save()
+
+    def connect(self, chat_id: str) -> Dict[str, Any]:
+        """Start the chat's agent ahead of the first message, so its models and modes can be shown."""
+        chat = self._chat(chat_id)
+        alive = chat.conn is not None and chat.conn.running and chat.session_id
+        if not alive and (chat.warming is None or chat.warming.done()) and (chat.turn is None or chat.turn.done()):
+            chat.meta.pop("agent_error", None)
+            chat.warming = asyncio.create_task(self._warm(chat))
+        return {"ok": True, "chat": chat.public()}
+
+    async def configure(self, chat_id: str, config_id: str, value: str) -> Dict[str, Any]:
+        chat = self._chat(chat_id)
+        option = next((entry for entry in chat.meta.get("config") or [] if entry["id"] == config_id), None)
+        if option is None:
+            raise ChatError("The agent does not offer that setting.", "bad_option")
+        if value not in {choice["value"] for choice in option["options"]}:
+            raise ChatError("Unknown choice.", "bad_option")
+        chat.meta.setdefault("choices", {})[config_id] = value
+        if chat.conn is not None and chat.conn.running and chat.session_id:
+            try:
+                result = await chat.conn.request("session/set_config_option", {
+                    "sessionId": chat.session_id, "configId": config_id, "value": value}, timeout=60)
+            except AcpError as exc:
+                raise ChatError(_cut(f"The agent did not take it: {exc}", 300), "agent_failed", 409) from exc
+            if "configOptions" in result:
+                chat.meta["config"] = _config_options(result.get("configOptions"))
+            else:
+                option["current"] = value
+        else:
+            option["current"] = value  # set again when the agent starts
+        chat.bump()
+        chat.save()
+        return {"ok": True, "chat": chat.public()}
 
     async def _stop_agent(self, chat: Chat) -> None:
         if chat.idle is not None:
@@ -491,7 +674,7 @@ class ChatHost:
         conn, chat.conn, chat.session_id = chat.conn, None, None
         if conn is not None:
             await conn.close()
-        get_scoped_credential_store().revoke_agent(f"chat:{chat.meta['id']}")
+        get_scoped_credential_store().revoke_agent(chat.meta["id"])
 
     # ── what the agent sends ────────────────────────────────────────────────
 
@@ -535,6 +718,14 @@ class ChatHost:
             if title and not chat.meta.get("titled"):
                 chat.meta["title"] = _cut(title, MAX_TITLE)
                 chat.bump()
+        elif kind == "config_option_update":
+            chat.meta["config"] = _config_options(update.get("configOptions"))
+            chat.bump()
+        elif kind == "current_mode_update":
+            for option in chat.meta.get("config") or []:
+                if option["category"] == "mode":
+                    option["current"] = str(update.get("currentModeId") or option["current"])
+            chat.bump()
         elif kind == "usage_update":
             chat.meta["context"] = {"used": int(update.get("used") or 0), "size": int(update.get("size") or 0)}
             chat.bump()
@@ -557,6 +748,8 @@ class ChatHost:
             item["status"] = _TOOL_STATUS.get(str(update["status"]), item["status"])
         if isinstance(update.get("rawInput"), dict):
             item["input"] = _inputs(update["rawInput"])
+            if isinstance(update["rawInput"].get("description"), str) and update["rawInput"]["description"].strip():
+                item["intent"] = update["rawInput"]["description"].strip()
         if update.get("locations"):
             item["files"] = [str(place.get("path") or "") for place in update["locations"] if isinstance(place, dict)][:20]
         output = _text_of(update.get("content")) if update.get("content") else ""
@@ -578,7 +771,9 @@ class ChatHost:
                     "kind": str(option.get("kind") or "")}
                    for option in params.get("options") or [] if isinstance(option, dict) and option.get("optionId")]
         tool = chat.tools.get(str(call.get("toolCallId") or ""))
-        title = str(call.get("title") or (tool or {}).get("title") or "The agent wants to continue")
+        raw_title = str(call.get("title") or "")
+        title = (_friendly_title({"agent_title": raw_title}, raw_title) if raw_title
+                 else str((tool or {}).get("title") or "The agent wants to continue"))
         item = chat.add("permission", title=_cut(title, 200), call_id=str(call.get("toolCallId") or ""),
                         input=_inputs(call.get("rawInput")) if isinstance(call.get("rawInput"), dict) else {},
                         files=list((tool or {}).get("files") or []), options=options, status="pending",

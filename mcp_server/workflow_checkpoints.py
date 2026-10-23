@@ -20,6 +20,8 @@ MAX_RECEIPTS = 512
 MAX_UNCERTAIN_EVENTS = 32
 MAX_PENDING_EFFECTS = 32
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,128}$")
+# Mac MCP Chat credentials (chat_sessions.py) use the chat id; delegated agents are agt_….
+ATTENDED_CHAT_PREFIX = "chat_"
 
 _SIDE_EFFECT_CAPABILITIES = {
     "local_write",
@@ -632,6 +634,10 @@ def begin_side_effect(
     arguments: Mapping[str, Any], event_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     if not risk_has_side_effect(capabilities, destructive) or tool == "tool_invoke":
+        return None
+    if str(agent_id).startswith(ATTENDED_CHAT_PREFIX):
+        # A Mac MCP Chat agent works with the owner watching and is never resumed on its own,
+        # so there is no unattended run to make durable.
         return None
     workflow_id = workflow_id_for_agent(agent_id)
     if not workflow_id:

@@ -72,6 +72,14 @@ FAKE_AGENT = textwrap.dedent('''\
         update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "lo"}})
         update(sid, {"sessionUpdate": "usage_update", "used": 1200, "size": 128000})
         return {"stopReason": "end_turn", "usage": {"inputTokens": 100, "outputTokens": 2}}
+    config = {"model": "opus", "effort": "high"}
+    def options():
+        return [{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": config["model"],
+                 "options": [{"value": "opus", "name": "Opus"}, {"value": "sonnet", "name": "Sonnet"}]},
+                {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+                 "currentValue": config["effort"],
+                 "options": [{"group": "g", "name": "Levels", "options": [{"value": "low", "name": "Low"},
+                                                                         {"value": "high", "name": "High"}]}]}]
     while True:
         msg = inbox.get()
         if msg is None:
@@ -81,11 +89,17 @@ FAKE_AGENT = textwrap.dedent('''\
         if method == "initialize":
             result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
         elif method == "session/new":
-            result = {"sessionId": "sess-1"}
+            if os.path.exists(LOG_PATH + ".needauth"):
+                send({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32000, "message": "Authentication required"}})
+                continue
+            result = {"sessionId": "sess-1", "configOptions": options()}
+        elif method == "session/set_config_option":
+            config[params["configId"]] = params["value"]
+            result = {"configOptions": options()}
         elif method == "session/load":
             update(params["sessionId"], {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "old"}})
             update(params["sessionId"], {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "old"}})
-            result = {}
+            result = {"configOptions": options()}
         elif method == "session/prompt":
             threading.Thread(target=lambda m=msg: send({"jsonrpc": "2.0", "id": m["id"], "result": prompt(m)}),
                              daemon=True).start()
@@ -94,6 +108,30 @@ FAKE_AGENT = textwrap.dedent('''\
             send({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": "nope"}}); continue
         send({"jsonrpc": "2.0", "id": msg["id"], "result": result})
 ''')
+
+
+class FriendlyTitleTest(unittest.TestCase):
+    def test_mcp_tool_names_read_as_words(self):
+        title = chat_sessions._friendly_title
+        self.assertEqual(title({"agent_title": "mcp__mac-mcp__search_files"}, ""), "Searched files")  # Claude
+        self.assertEqual(title({"agent_title": "mcp.mac-mcp.write_file"}, ""), "Wrote a file")  # Codex
+        self.assertEqual(title({"agent_title": "mac-mcp_read_file"}, ""), "Read a file")  # OpenCode
+        self.assertEqual(title({"agent_title": "ToolSearch"}, ""), "Looked for the right tool")
+        self.assertEqual(title({"agent_title": "mac-mcp_write_file", "intent": "Save the summary"}, ""), "Save the summary")
+        self.assertEqual(title({"agent_title": "Viewing …/notes.md", "kind": "read", "files": ["/p/notes.md"]}, ""),
+                         "Read notes.md")
+
+
+class ChatSideEffectTest(unittest.TestCase):
+    def test_chat_side_effects_need_no_delegated_workflow(self):
+        from mcp_server import workflow_checkpoints as wc
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"MAC_MCP_STATE_DIR": tmp}):
+            self.assertIsNone(wc.begin_side_effect("chat_0123456789ab", tool="write_file", family="files",
+                                                   capabilities=["local_write"], destructive=False,
+                                                   arguments={"path": "x"}))
+            with self.assertRaises(wc.CheckpointUnknownError):  # delegated agents still need their checkpoint
+                wc.begin_side_effect("agt_0123456789", tool="write_file", family="files",
+                                     capabilities=["local_write"], destructive=False, arguments={"path": "x"})
 
 
 class ChatHostTest(unittest.TestCase):
@@ -197,7 +235,7 @@ class ChatHostTest(unittest.TestCase):
         credential = self.run_async(scenario())
         self.assertIsNotNone(credential)
         self.assertEqual(credential.scope.path_roots, (str(self.project.resolve()),))
-        self.assertTrue(credential.agent_id.startswith("chat:chat_"))
+        self.assertRegex(credential.agent_id, r"^chat_[0-9a-f]{12}$")  # a valid workflow id: side effects are checkpointed
 
     def test_permission_prompt_waits_for_owner(self):
         async def scenario(choice):
@@ -287,6 +325,64 @@ class ChatHostTest(unittest.TestCase):
                          ["user", "thought", "assistant", "user", "thought", "assistant"])
         self.assertNotIn("old", [item.get("text") for item in state["items"]])
         self.assertEqual([item["type"] for item in fresh["items"]], ["user", "thought", "assistant"])
+
+    def test_agent_options_are_read_set_and_kept_across_restart(self):
+        async def first():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            host.connect(chat_id)
+            for _ in range(200):
+                if host.read(chat_id)["chat"]["config"]:
+                    break
+                await asyncio.sleep(0.02)
+            config = host.read(chat_id)["chat"]["config"]
+            with self.assertRaises(chat_sessions.ChatError):
+                await host.configure(chat_id, "model", "gpt-made-up")
+            changed = await host.configure(chat_id, "model", "sonnet")
+            await host.shutdown()
+            return chat_id, config, changed
+
+        chat_id, config, changed = self.run_async(first())
+        self.assertEqual([(entry["id"], entry["category"], entry["current"]) for entry in config],
+                         [("model", "model", "opus"), ("effort", "thought_level", "high")])
+        self.assertEqual([choice["value"] for choice in config[1]["options"]], ["low", "high"])
+        self.assertEqual(config[1]["options"][0]["group"], "Levels")
+        self.assertEqual(changed["chat"]["config"][0]["current"], "sonnet")
+        chat_sessions.reset_host_for_tests()  # the agent restarted and forgot the pick
+
+        async def second():
+            host = chat_sessions.get_host()
+            await host.prompt(chat_id, "hello")
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return state
+
+        state = self.run_async(second())
+        sets = [entry["params"] for entry in self.agent_log() if entry["method"] == "session/set_config_option"]
+        self.assertEqual(len(sets), 2)  # chosen once, then set again after session/load
+        self.assertEqual(state["chat"]["config"][0]["current"], "sonnet")
+
+    def test_signed_out_agent_says_how_to_sign_in(self):
+        Path(str(self.log) + ".needauth").write_text("1")
+
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            host.connect(chat_id)
+            for _ in range(200):
+                chat = host.read(chat_id)["chat"]
+                if chat.get("agent_error"):
+                    break
+                await asyncio.sleep(0.02)
+            await host.prompt(chat_id, "hello")
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return chat, state
+
+        chat, state = self.run_async(scenario())
+        self.assertIn("copilot login", chat["agent_error"])
+        self.assertEqual(state["items"][-1]["tone"], "error")
+        self.assertIn("Sign in to GitHub Copilot", state["items"][-1]["text"])
 
     def test_routes_need_the_dashboard_token(self):
         def guard(request):

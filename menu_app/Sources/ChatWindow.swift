@@ -12,15 +12,43 @@ struct ChatAgentOption: Identifiable, Hashable {
     let label: String
     let ready: Bool
     let reason: String
-    let defaultModel: String
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
         label = object["label"] as? String ?? id
         ready = object["ready"] as? Bool ?? false
         reason = object["reason"] as? String ?? ""
-        defaultModel = object["default_model"] as? String ?? ""
     }
+}
+
+/// One setting the agent offers (ACP configOptions): its model, thinking level, mode, …
+struct ChatConfigChoice: Hashable, Identifiable {
+    let value: String
+    let name: String
+    let description: String
+    let group: String
+    var id: String { value }
+}
+
+struct ChatConfigOption: Hashable, Identifiable {
+    let id: String
+    let name: String
+    let category: String
+    let current: String
+    let options: [ChatConfigChoice]
+
+    init(_ object: [String: Any]) {
+        id = object["id"] as? String ?? ""
+        name = object["name"] as? String ?? id
+        category = object["category"] as? String ?? ""
+        current = object["current"] as? String ?? ""
+        options = (object["options"] as? [[String: Any]] ?? []).map {
+            ChatConfigChoice(value: $0["value"] as? String ?? "", name: $0["name"] as? String ?? "",
+                             description: $0["description"] as? String ?? "", group: $0["group"] as? String ?? "")
+        }
+    }
+
+    var currentName: String { options.first { $0.value == current }?.name ?? current }
 }
 
 struct ChatSummary: Identifiable, Hashable {
@@ -34,6 +62,10 @@ struct ChatSummary: Identifiable, Hashable {
     var updatedAt: Double
     var contextUsed: Int
     var contextSize: Int
+    var config: [ChatConfigOption]
+    var connecting: Bool
+    var agentAlive: Bool
+    var agentError: String
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
@@ -47,6 +79,10 @@ struct ChatSummary: Identifiable, Hashable {
         let context = object["context"] as? [String: Any]
         contextUsed = (context?["used"] as? NSNumber)?.intValue ?? 0
         contextSize = (context?["size"] as? NSNumber)?.intValue ?? 0
+        config = (object["config"] as? [[String: Any]] ?? []).map(ChatConfigOption.init)
+        connecting = object["connecting"] as? Bool ?? false
+        agentAlive = object["agent_alive"] as? Bool ?? false
+        agentError = object["agent_error"] as? String ?? ""
     }
 
     var projectName: String { (project as NSString).lastPathComponent }
@@ -149,12 +185,34 @@ final class ChatModel: ObservableObject {
         cursor = 0
         chat = allChats.first { $0.id == id }
         poller?.cancel()
-        guard id != nil else { return }
-        poller = Task { [weak self] in await self?.pollLoop() }
+        guard let id else { return }
+        poller = Task { [weak self] in
+            // Opening a chat starts its agent, so the models and modes it offers show before the first message.
+            _ = await self?.api("dashboard/api/chats/\(id)/connect", [:])
+            await self?.pollLoop()
+        }
     }
 
-    func start(project: URL, agent: String, model: String) async -> Bool {
-        let result = await api("dashboard/api/chats", ["project": project.path, "agent": agent, "model": model])
+    func reconnect() {
+        guard let id = selectedID else { return }
+        Task { _ = await api("dashboard/api/chats/\(id)/connect", [:]); await poll() }
+    }
+
+    func choose(_ option: ChatConfigOption, value: String) {
+        guard let id = selectedID, value != option.current else { return }
+        Task {
+            let result = await api("dashboard/api/chats/\(id)/config", ["config_id": option.id, "value": value])
+            if result.ok, let meta = result.object["chat"] as? [String: Any] {
+                chat = ChatSummary(meta)
+                error = nil
+            } else {
+                error = result.object["message"] as? String ?? "The agent did not take that setting."
+            }
+        }
+    }
+
+    func start(project: URL, agent: String) async -> Bool {
+        let result = await api("dashboard/api/chats", ["project": project.path, "agent": agent])
         guard result.ok, let chat = result.object["chat"] as? [String: Any], let id = chat["id"] as? String else {
             error = result.object["message"] as? String ?? "Could not start the chat."
             return false
@@ -211,8 +269,8 @@ final class ChatModel: ObservableObject {
     private func pollLoop() async {
         while !Task.isCancelled {
             await poll()
-            // Quick while the agent works, so the answer streams; slow while idle.
-            let busy = chat?.running == true
+            // Quick while the agent works or connects, so the answer streams; slow while idle.
+            let busy = chat?.running == true || chat?.connecting == true
             try? await Task.sleep(nanoseconds: busy ? 350_000_000 : 3_000_000_000)
         }
     }
@@ -377,7 +435,7 @@ private struct ChatConversation: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ChatHeader(chat: model.chat)
+            ChatHeader(chat: model.chat, agent: agentLabel)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
@@ -412,6 +470,7 @@ private struct ChatConversation: View {
 
 private struct ChatHeader: View {
     let chat: ChatSummary?
+    let agent: String
 
     var body: some View {
         HStack(spacing: VisualTokens.Space.s) {
@@ -419,10 +478,8 @@ private struct ChatHeader: View {
                 Text(chat?.title ?? "").font(.headline).lineLimit(1)
                 HStack(spacing: 6) {
                     Label(chat?.projectName ?? "", systemImage: "folder")
-                    if let model = chat?.model, !model.isEmpty {
-                        Text("·")
-                        Text(model).lineLimit(1)
-                    }
+                    Text("·")
+                    Text(agent).lineLimit(1)
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -502,8 +559,14 @@ private struct AssistantText: View {
     }
 
     private var markdown: AttributedString {
+        // Inline Markdown only; list markers become bullets so a list reads as one.
+        let bulleted = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            let trimmed = line.drop(while: { $0 == " " })
+            guard trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") else { return String(line) }
+            return String(line.prefix(line.count - trimmed.count)) + "•  " + trimmed.dropFirst(2)
+        }.joined(separator: "\n")
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+        return (try? AttributedString(markdown: bulleted, options: options)) ?? AttributedString(text)
     }
 }
 
@@ -525,13 +588,21 @@ private struct ToolCard: View {
     let item: ChatItem
     @MacMCPState private var open = false
 
+    /// A step is a small pill as wide as its words; opened, it takes the column to show what it did.
     var body: some View {
+        HStack(spacing: 0) {
+            card.frame(maxWidth: open ? .infinity : nil, alignment: .leading)
+            if !open { Spacer(minLength: 0) }
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button { withAnimation(AppMotion.content) { open.toggle() } } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: symbol).frame(width: 18).foregroundStyle(VisualTokens.accent)
-                    Text(item.title).lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 8)
+                HStack(spacing: 8) {
+                    Image(systemName: symbol).font(.callout).frame(width: 16).foregroundStyle(VisualTokens.accent)
+                    Text(item.title).font(.callout).lineLimit(1).truncationMode(.middle)
+                    if open { Spacer(minLength: 8) }
                     statusMark
                     if hasDetail {
                         Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
@@ -539,7 +610,7 @@ private struct ToolCard: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .padding(.horizontal, 12).padding(.vertical, 9)
+                .padding(.horizontal, 11).padding(.vertical, 7)
             }
             .buttonStyle(.plain)
             .disabled(!hasDetail)
@@ -654,7 +725,7 @@ private struct PermissionCard: View {
     private var subject: String {
         let names = item.files.map { ($0 as NSString).lastPathComponent }.filter { !$0.isEmpty }
         let path = item.input["path"].map { ($0 as NSString).lastPathComponent }
-        let shown = names.isEmpty ? (path.map { [$0] } ?? []) : names
+        let shown = (names.isEmpty ? (path.map { [$0] } ?? []) : names).filter { !item.title.contains($0) }
         return shown.isEmpty ? item.title : "\(item.title) · \(shown.joined(separator: ", "))"
     }
 
@@ -731,13 +802,32 @@ private struct ChatComposer: View {
             if let error = model.error {
                 Text(error).font(.caption).foregroundStyle(VisualTokens.error).frame(maxWidth: .infinity, alignment: .leading)
             }
-            HStack(alignment: .bottom, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 TextField(placeholder, text: $model.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...8)
                     .focused($focused)
                     .onSubmit { model.send() }
                     .disabled(waiting)
+                    .padding(.top, 4)
+                HStack(spacing: 6) {
+                    ChatSettingsBar(model: model)
+                    Spacer(minLength: 8)
+                    sendOrStop
+                }
+            }
+            .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(VisualTokens.hairline))
+            .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+        }
+        .frame(maxWidth: 820)
+        .padding(.horizontal, VisualTokens.Space.l)
+        .padding(.bottom, VisualTokens.Space.m).padding(.top, 6)
+        .onAppear { focused = true }
+    }
+
+    @ViewBuilder private var sendOrStop: some View {
                 if running {
                     Button(action: model.stop) {
                         Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
@@ -755,22 +845,199 @@ private struct ChatComposer: View {
                     }
                     .buttonStyle(.plain).disabled(!canSend).help("Send")
                 }
-            }
-            .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(VisualTokens.hairline))
-            .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
-        }
-        .frame(maxWidth: 820)
-        .padding(.horizontal, VisualTokens.Space.l)
-        .padding(.bottom, VisualTokens.Space.m).padding(.top, 6)
-        .onAppear { focused = true }
     }
 
     private var running: Bool { model.chat?.running == true }
     private var waiting: Bool { model.chat?.status == "waiting" }
     private var canSend: Bool { !running && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var placeholder: String { waiting ? "Answer the question above first" : "Ask for anything in this project" }
+}
+
+// MARK: The agent's own settings: model, thinking, mode (what it offers, from the owner's own account)
+
+private struct ChatSettingsBar: View {
+    @ObservedObject var model: ChatModel
+
+    var body: some View {
+        if let chat = model.chat {
+            if !chat.agentError.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(VisualTokens.warning)
+                    Text(chat.agentError).lineLimit(2).textSelection(.enabled)
+                    Button("Try Again", action: model.reconnect).buttonStyle(.link)
+                }
+                .font(.caption)
+            } else if chat.config.isEmpty {
+                if chat.connecting || !chat.agentAlive {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("Connecting to \(agentLabel)…")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                HStack(spacing: 4) {
+                    ForEach(shown) { option in
+                        if option.category == "model" && option.options.count > 12 {
+                            SearchablePicker(option: option) { model.choose(option, value: $0) }
+                        } else {
+                            ConfigMenu(option: option) { model.choose(option, value: $0) }
+                        }
+                    }
+                    if !more.isEmpty {
+                        Menu {
+                            ForEach(more) { option in
+                                Picker(option.name, selection: Binding(get: { option.current },
+                                                                        set: { model.choose(option, value: $0) })) {
+                                    ForEach(option.options) { Text($0.name).tag($0.value) }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .help("More settings")
+                    }
+                }
+            }
+        }
+    }
+
+    private var agentLabel: String { model.agents.first { $0.id == model.chat?.agent }?.label ?? "the agent" }
+
+    private static let order = ["model", "thought_level", "mode"]
+
+    private var shown: [ChatConfigOption] {
+        (model.chat?.config ?? []).filter { Self.order.contains($0.category) }
+            .sorted { (Self.order.firstIndex(of: $0.category) ?? 9) < (Self.order.firstIndex(of: $1.category) ?? 9) }
+    }
+
+    private var more: [ChatConfigOption] {
+        (model.chat?.config ?? []).filter { !Self.order.contains($0.category) && $0.options.count > 1 }
+    }
+}
+
+/// A chip that names the setting's current value; the menu lists what the agent offers.
+private struct ConfigMenu: View {
+    let option: ChatConfigOption
+    let choose: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(option.options) { choice in
+                Button { choose(choice.value) } label: {
+                    if choice.value == option.current {
+                        Label(choice.name, systemImage: "checkmark")
+                    } else {
+                        Text(choice.name)
+                    }
+                }
+                .help(choice.description)
+            }
+        } label: {
+            ChipLabel(symbol: ConfigChip.symbol(option.category), text: ConfigChip.text(option))
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .modifier(ChipBackground())
+        .help(option.name)
+    }
+}
+
+/// Long model lists (OpenCode has hundreds): a popover with a search field, grouped by provider.
+private struct SearchablePicker: View {
+    let option: ChatConfigOption
+    let choose: (String) -> Void
+    @MacMCPState private var open = false
+    @MacMCPState private var query = ""
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            ChipLabel(symbol: ConfigChip.symbol(option.category), text: ConfigChip.text(option))
+        }
+        .buttonStyle(.plain)
+        .modifier(ChipBackground())
+        .help(option.name)
+        .popover(isPresented: $open, arrowEdge: .top) {
+            VStack(spacing: 0) {
+                TextField("Search \(option.options.count) models", text: $query)
+                    .textFieldStyle(.roundedBorder).padding(10)
+                Divider()
+                List {
+                    ForEach(matches) { choice in
+                        Button {
+                            choose(choice.value)
+                            open = false
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(choice.name).lineLimit(1)
+                                    if !choice.group.isEmpty || choice.name != choice.value {
+                                        Text(choice.value).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                                if choice.value == option.current {
+                                    Image(systemName: "checkmark").foregroundStyle(VisualTokens.accent)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .listStyle(.plain)
+            }
+            .frame(width: 380, height: 420)
+        }
+    }
+
+    private var matches: [ChatConfigChoice] {
+        let words = query.lowercased().split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return option.options }
+        return option.options.filter { choice in
+            let text = "\(choice.name) \(choice.value) \(choice.group)".lowercased()
+            return words.allSatisfy { text.contains($0) }
+        }
+    }
+}
+
+private enum ConfigChip {
+    static func symbol(_ category: String) -> String {
+        switch category {
+        case "model": return "cpu"
+        case "thought_level": return "brain"
+        case "mode": return "shield.lefthalf.filled"
+        default: return "slider.horizontal.3"
+        }
+    }
+
+    static func text(_ option: ChatConfigOption) -> String {
+        option.category == "thought_level" ? "Thinking: \(option.currentName)" : option.currentName
+    }
+}
+
+private struct ChipLabel: View {
+    let symbol: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol).font(.caption)
+            Text(text).font(.caption).lineLimit(1)
+            Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+        }
+        .foregroundStyle(.secondary)
+    }
+}
+
+/// The chip's capsule, on the menu or button itself: a borderless menu would drop it from its label.
+private struct ChipBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Capsule().fill(VisualTokens.quietFill))
+            .contentShape(Capsule())
+    }
 }
 
 // MARK: New chat
@@ -780,7 +1047,6 @@ private struct NewChatSheet: View {
     @Environment(\.dismiss) private var dismiss
     @MacMCPState private var folder: URL?
     @MacMCPState private var agent = ""
-    @MacMCPState private var modelName = ""
     @MacMCPState private var starting = false
 
     var body: some View {
@@ -809,18 +1075,13 @@ private struct NewChatSheet: View {
                         }
                     }
                     .labelsHidden()
-                    .onChange(of: agent) { value in
-                        modelName = model.agents.first { $0.id == value }?.defaultModel ?? ""
-                    }
                     if let option = selectedAgent, !option.ready {
                         Text(option.reason).font(.caption).foregroundStyle(VisualTokens.warning)
                     }
                 }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Model").font(.callout.weight(.medium))
-                TextField("The agent's default", text: $modelName).textFieldStyle(.roundedBorder)
-            }
+            Text("You pick the model, thinking and mode in the chat; they come from your own \(selectedAgent?.label ?? "agent") account.")
+                .font(.caption).foregroundStyle(.secondary)
             if let error = model.error {
                 Text(error).font(.caption).foregroundStyle(VisualTokens.error)
             }
@@ -831,7 +1092,7 @@ private struct NewChatSheet: View {
                     guard let folder else { return }
                     starting = true
                     Task {
-                        if await model.start(project: folder, agent: agent, model: modelName) { dismiss() }
+                        if await model.start(project: folder, agent: agent) { dismiss() }
                         starting = false
                     }
                 }
@@ -846,7 +1107,6 @@ private struct NewChatSheet: View {
             model.error = nil
             if let first = model.agents.first(where: \.ready) ?? model.agents.first {
                 agent = first.id
-                modelName = first.defaultModel
             }
         }
     }

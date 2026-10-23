@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Mac MCP Chat: your own agents in a project folder
+- A new Chat window (menu › Chat…, ⇧⌘N): pick a project folder and talk to Claude, Codex, OpenCode or GitHub Copilot, each signed in as you through its own CLI, with Mac MCP added for the Mac. Chats are grouped by project and continue where they stopped, also after a restart.
+- The model, thinking level and mode come from the agent itself (your own account) and are picked under the message box; a long model list has a search. The pick is kept when the agent restarts.
+- Answers stream in; each step is a small card that opens to show what it did; when the agent asks before changing something, the question is in the chat (Allow once, Always, Deny) and shrinks to one line once answered. Stop ends the answer.
+- Agents speak the Agent Client Protocol: Copilot and OpenCode natively, Claude Code and Codex through their official adapters (`npx`). Mac MCP reaches them on a credential limited to the project folder; an agent whose own config already names a `mac-mcp` server keeps that one. Only agents turned on in Settings › Agents are offered. Dashboard API: `/dashboard/api/chats`.
+
 ### Maintainers: `mac-mcp promote`
 - `mac-mcp promote` puts the source checkout's committed, pushed HEAD into the runtime between checkpoints, with the updater's runtime merge, backup, menu app rebuild, restart and health check, and restores the backup when a file does not compile or the health check fails. The runtime then records HEAD as its deployed commit, so the menu no longer offers a checkpoint the runtime already runs. `--dry-run` shows what would change. Dependency changes stay with `mac-mcp update`.
 

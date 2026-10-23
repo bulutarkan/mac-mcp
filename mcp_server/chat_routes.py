@@ -42,8 +42,9 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         if request.method == "GET":
             return host.list()
         body = await _body(request)
-        return host.create(str(body.get("project") or ""), str(body.get("agent") or ""),
+        made = host.create(str(body.get("project") or ""), str(body.get("agent") or ""),
                            str(body.get("model") or ""), str(body.get("title") or ""))
+        return host.connect(made["chat"]["id"])  # the agent starts now, so its models show at once
 
     async def chat(request: Request) -> Dict[str, Any]:
         try:
@@ -64,6 +65,14 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         return get_host().answer(request.path_params["chat_id"], str(body.get("item_id") or ""),
                                  str(body.get("option_id") or ""))
 
+    async def connect(request: Request) -> Dict[str, Any]:
+        return get_host().connect(request.path_params["chat_id"])
+
+    async def config(request: Request) -> Dict[str, Any]:
+        body = await _body(request)
+        return await get_host().configure(request.path_params["chat_id"], str(body.get("config_id") or ""),
+                                          str(body.get("value") or ""))
+
     async def delete(request: Request) -> Dict[str, Any]:
         return await get_host().delete(request.path_params["chat_id"])
 
@@ -73,5 +82,7 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         Route("/dashboard/api/chats/{chat_id}/prompt", guarded(prompt), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/cancel", guarded(cancel), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/permission", guarded(permission), methods=["POST"]),
+        Route("/dashboard/api/chats/{chat_id}/connect", guarded(connect), methods=["POST"]),
+        Route("/dashboard/api/chats/{chat_id}/config", guarded(config), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/delete", guarded(delete), methods=["POST"]),
     ]
