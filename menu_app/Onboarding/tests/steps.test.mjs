@@ -114,7 +114,7 @@ test('agents on this Mac can be switched on and off; others are not listed', () 
   // Agents without an AI app of their own are found by the server.
   assert.equal(agentRow(kimi, apps, state).detail, 'Off');
   assert.equal(agentRow(grok, apps, state), null);
-  assert.deepEqual(AGENTS.map((a) => a.id), ['codex', 'claude', 'opencode', 'kimi', 'grok', 'antigravity', 'pi', 'cline', 'kilo', 'goose']);
+  assert.deepEqual(AGENTS.map((a) => a.id), ['codex', 'claude', 'opencode', 'kimi', 'grok', 'antigravity', 'pi', 'cline', 'kilo', 'goose', 'copilot']);
   for (const agent of AGENTS) assert.ok(existsSync(new URL(`../logos/${agent.logo}.png`, import.meta.url)), agent.id);
 });
 
@@ -129,16 +129,16 @@ test('the agents row sums them up in one line, whatever their number', () => {
   assert.equal(agentsSummary(AGENTS, apps, { enabled: { codex: true } }).title, 'Codex is on');
   assert.equal(agentsSummary(AGENTS, apps, { enabled: {} }).title, 'No agent is on yet');
   // Past three names, a number says the rest.
-  const many = { enabled: { codex: true, claude: true, opencode: true, kimi: true }, installed: { kimi: true, grok: true, antigravity: true, pi: true, cline: true, kilo: true, goose: true } };
-  assert.equal(agentsSummary(AGENTS, apps, many).detail, 'Codex, Claude Code, OpenCode +1 · 6 others are off');
-  assert.equal(agentsSummary(AGENTS, apps, { enabled: {}, installed: many.installed }).detail, '10 on this Mac, all off');
+  const many = { enabled: { codex: true, claude: true, opencode: true, kimi: true }, installed: { kimi: true, grok: true, antigravity: true, pi: true, cline: true, kilo: true, goose: true, copilot: true } };
+  assert.equal(agentsSummary(AGENTS, apps, many).detail, 'Codex, Claude Code, OpenCode +1 · 7 others are off');
+  assert.equal(agentsSummary(AGENTS, apps, { enabled: {}, installed: many.installed }).detail, '11 on this Mac, all off');
 });
 
 test('a logo stack shows five and keeps the rest behind a +N', () => {
   assert.equal(STACK_LIMIT, 5);
   const { shown, extra } = stackParts(AGENTS);
   assert.deepEqual(shown.map((a) => a.id), ['codex', 'claude', 'opencode', 'kimi', 'grok']);
-  assert.deepEqual(extra.map((a) => a.id), ['antigravity', 'pi', 'cline', 'kilo', 'goose']);
+  assert.deepEqual(extra.map((a) => a.id), ['antigravity', 'pi', 'cline', 'kilo', 'goose', 'copilot']);
   assert.equal(stackParts(AGENTS.slice(0, 5)).extra.length, 0);
   assert.deepEqual(stackParts(null), { shown: [], extra: [] });
 });
@@ -156,8 +156,8 @@ test('the apps card shows what needs a click, then one row for the apps already 
   assert.equal(groups.present, 4);
   assert.equal(groups.all.length, CLIENTS.length);
   // Apps not on this Mac come last, in list order.
-  assert.deepEqual(groups.all.slice(-8).map(({ client }) => client.id),
-    ['opencode', 'kimi', 'grok', 'antigravity', 'pi', 'cline', 'kilo', 'goose']);
+  assert.deepEqual(groups.all.slice(-9).map(({ client }) => client.id),
+    ['opencode', 'kimi', 'grok', 'antigravity', 'pi', 'cline', 'kilo', 'goose', 'copilot']);
   // Every agent with a CLI of its own is also an AI app Mac MCP can be added to.
   for (const agent of AGENTS) assert.ok(CLIENTS.some((client) => client.id === agent.client), agent.id);
 });

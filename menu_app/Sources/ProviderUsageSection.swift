@@ -33,6 +33,7 @@ struct ProviderUsageStyle {
         case "kilo": return ProviderUsageStyle(symbol: "k.circle", tint: .yellow)
         case "cline": return ProviderUsageStyle(symbol: "c.circle", tint: .cyan)
         case "goose": return ProviderUsageStyle(symbol: "bird", tint: .green)
+        case "copilot": return ProviderUsageStyle(symbol: "airplane", tint: .gray)
         default: return ProviderUsageStyle(symbol: "cpu", tint: .gray)
         }
     }

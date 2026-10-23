@@ -3850,7 +3850,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_connect_app.add_argument("--client", required=True, choices=("claude-code", "codex", "claude-desktop",
                                                                    "opencode", "kimi", "grok", "antigravity", "pi",
-                                                                   "cline", "kilo", "goose", "chatgpt"))
+                                                                   "cline", "kilo", "goose", "copilot", "chatgpt"))
     p_connect_app.add_argument("--json", action="store_true", help="Print the outcome as JSON.")
     p_connect_app.set_defaults(func=connect_app)
 

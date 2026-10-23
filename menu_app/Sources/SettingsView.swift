@@ -1134,6 +1134,8 @@ struct SettingsView: View {
         providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
         providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
         providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
+        providerRow(id: "copilot", title: "GitHub Copilot",
+                    subtitle: "Uses GitHub Copilot, with a GitHub token or your own key (model openrouter/…)")
 
         Text("A tool that is off is hidden from AI apps and never started. Changes apply to new requests right away.")
             .font(.caption2)

@@ -1,4 +1,4 @@
-"""More headless coding-agent harnesses: pi, Kilo Code, Antigravity, Cline and Goose.
+"""More headless coding-agent harnesses: pi, Kilo Code, Antigravity, Cline, Goose and GitHub Copilot.
 
 Keep per-agent model credentials and Mac MCP scoped MCP connections isolated from
 the owner's CLI configuration. No provider-specific sandbox guarantee is assumed:
@@ -10,6 +10,12 @@ scoped server reaches it as an added workspace folder (`--add-dir`) holding
 `.agents/mcp_config.json`; the owner's own agy configuration is never changed. It runs
 with full access only: agy reads its sign-in with /usr/bin/security, which the restricted
 boundary refuses so that no agent can read the owner's other Keychain secrets.
+
+GitHub Copilot (`copilot -p --output-format json`) runs with a GitHub token, or with no GitHub
+account at all on a model provider of the owner's (BYOK): a model named `openrouter/<model>`,
+`openai/<model>` or `anthropic/<model>` uses that provider's key, and COPILOT_PROVIDER_* set by
+the owner are passed on as they are. Its private COPILOT_HOME holds only Mac MCP's server; its
+own GitHub servers, subagents and workflows are off, since Mac MCP fans out work itself.
 """
 from __future__ import annotations
 
@@ -25,9 +31,21 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 NO_RESUME = frozenset({"cline"})
 LABELS = {
     "pi": "pi", "kilo": "Kilo Code", "antigravity": "Antigravity",
-    "cline": "Cline", "goose": "Goose",
+    "cline": "Cline", "goose": "Goose", "copilot": "GitHub Copilot",
 }
-BINARIES = {"pi": "pi", "kilo": "kilo", "antigravity": "agy", "cline": "cline", "goose": "goose"}
+BINARIES = {"pi": "pi", "kilo": "kilo", "antigravity": "agy", "cline": "cline", "goose": "goose",
+            "copilot": "copilot"}
+# Copilot's own subagents and workflows outlive or escape one delegated run; Mac MCP fans out work.
+COPILOT_EXCLUDED_TOOLS = ("task", "read_agent", "list_agents", "write_agent",
+                          "dynamic_workflows_manage", "run_dynamic_workflow")
+COPILOT_GITHUB_TOKENS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+# A model named <provider>/<model> runs on that provider with the owner's key (BYOK).
+COPILOT_BYOK = {
+    "openrouter": ("openai", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "openai": ("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "anthropic": ("anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY"),
+}
+_COPILOT_SESSION_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 _ENV_KEYS = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
              "GOOGLE_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "CLINE_API_KEY")
 
@@ -47,6 +65,7 @@ def owner_home(provider: str) -> Path:
         "antigravity": root / ".gemini",
         "cline": Path(os.getenv("CLINE_DIR") or str(root / ".cline")),
         "goose": Path(os.getenv("GOOSE_PATH_ROOT") or str(root / ".config" / "goose")),
+        "copilot": Path(os.getenv("COPILOT_HOME") or str(root / ".copilot")),
     }[provider]
 
 
@@ -62,6 +81,15 @@ def _has_key(keychain_lookup: Callable[[str], Optional[str]]) -> bool:
 
 
 def sign_in_state(provider: str, keychain_lookup: Callable[[str], Optional[str]]) -> Tuple[bool, str]:
+    if provider == "copilot":
+        if os.getenv("COPILOT_PROVIDER_BASE_URL"):
+            return True, ""
+        names = COPILOT_GITHUB_TOKENS + tuple(key for _type, _url, key in COPILOT_BYOK.values())
+        if any(os.getenv(k) or keychain_lookup(k) for k in names):
+            return True, ""
+        return False, ("GitHub Copilot needs a model: a GitHub token (COPILOT_GITHUB_TOKEN) or a provider key "
+                       "(OPENROUTER_API_KEY, OPENAI_API_KEY or ANTHROPIC_API_KEY) with a model named "
+                       "openrouter/<model>, openai/<model> or anthropic/<model>.")
     home = owner_home(provider)
     key_names = {
         "pi": ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"),
@@ -98,6 +126,9 @@ def models(provider: str, binary: Optional[str], env: Dict[str, str]) -> Tuple[L
     if provider == "goose":
         model = os.getenv("GOOSE_MODEL", "").strip()
         return ([model] if model else []), (model or None)
+    if provider == "copilot":
+        # Any model of the chosen provider may be named; COPILOT_MODEL is only the default.
+        return [], (os.getenv("COPILOT_MODEL", "").strip() or None)
     return [], None
 
 
@@ -170,6 +201,11 @@ def prepare_home(provider: str, state_root: Path, endpoint: str, token: str) -> 
                       "    name: mac-mcp\n    uri: " + json.dumps(url) +
                       "\n    headers:\n      Authorization: " + json.dumps("Bearer " + token) +
                       "\n    timeout: 300\n")
+    elif provider == "copilot":
+        # Only Mac MCP's server: the owner's ~/.copilot/mcp-config.json is never read.
+        _private_file(home / "mcp-config.json", json.dumps({"mcpServers": {"mac-mcp": {
+            "type": "http", "url": url, "headers": {"Authorization": f"Bearer {token}"}, "tools": ["*"],
+        }}}))
     else:
         # Antigravity reads `.agents/mcp_config.json` of every workspace folder, including
         # one added with --add-dir; the owner's ~/.gemini/config/mcp_config.json is untouched.
@@ -190,6 +226,7 @@ def remove_credentials(provider: str, state_root: Path) -> None:
         "cline": [home / "data" / "settings" / "cline_mcp_settings.json", home / "data" / "settings" / "providers.json"],
         "goose": [home / "config" / "config.yaml"],
         "antigravity": [home / ".agents" / "mcp_config.json"],
+        "copilot": [home / "mcp-config.json"],
     }[provider]
     for path in targets:
         path.unlink(missing_ok=True)
@@ -216,6 +253,8 @@ def provider_env(provider: str, home: Path, state_root: Path,
     if provider == "antigravity":
         # Preserve the owner's Google sign-in: do not silently switch to API billing.
         selected = ()
+    elif provider == "copilot":
+        selected = ()  # copilot_env() passes exactly the key its model provider needs
     elif selected is None:
         selected = ("OPENROUTER_API_KEY",)  # Explicit fallback; never leak unrelated keys.
     for key in selected:
@@ -247,10 +286,40 @@ def provider_env(provider: str, home: Path, state_root: Path,
         for key in ("GOOSE_PROVIDER", "GOOSE_MODEL"):
             if os.getenv(key):
                 out[key] = str(os.environ[key])
+    elif provider == "copilot":
+        out.update(copilot_env(home, keychain_lookup, model))
     else:
         # agy's sign-in is the owner's (Keychain and ~/.gemini): a private HOME is signed out.
         out["HOME"] = str(Path.home())
         out["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
+    return out
+
+
+def copilot_env(home: Path, keychain_lookup: Callable[[str], Optional[str]], model: str = "") -> Dict[str, str]:
+    """Copilot's private home, and either the owner's model provider (BYOK) or a GitHub token."""
+    out = {"COPILOT_HOME": str(home), "COPILOT_AUTO_UPDATE": "false"}
+    vendor, _, name = str(model or "").partition("/")
+    if os.getenv("COPILOT_PROVIDER_BASE_URL"):
+        # The owner's own provider setup, as Copilot documents it.
+        for key, value in os.environ.items():
+            if key.startswith("COPILOT_PROVIDER_"):
+                out[key] = value
+        if model:
+            out["COPILOT_MODEL"] = str(model)
+    elif vendor.lower() in COPILOT_BYOK and name:
+        kind, base_url, key_name = COPILOT_BYOK[vendor.lower()]
+        out.update({"COPILOT_PROVIDER_TYPE": kind, "COPILOT_PROVIDER_BASE_URL": base_url, "COPILOT_MODEL": name})
+        key = os.getenv(key_name) or keychain_lookup(key_name)
+        if key:
+            out["COPILOT_PROVIDER_API_KEY"] = key
+    else:
+        if model:
+            out["COPILOT_MODEL"] = str(model)
+        for key_name in COPILOT_GITHUB_TOKENS:
+            token = os.getenv(key_name) or keychain_lookup(key_name)
+            if token:
+                out["COPILOT_GITHUB_TOKEN"] = token
+                break
     return out
 
 
@@ -302,6 +371,22 @@ def command(meta: Dict[str, Any], prompt: str) -> List[str]:
             cmd += ["--resume", "--name", resume]
         else:
             cmd += ["--name", str(meta.get("agent_id") or "mac-mcp-agent")]
+        return cmd
+    if provider == "copilot":
+        # The model comes from COPILOT_MODEL (copilot_env), which strips a BYOK provider prefix.
+        cmd = [binary, "-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user",
+               "--disable-builtin-mcps", "--no-auto-update", "--disable-client-telemetry",
+               "--secret-env-vars=COPILOT_PROVIDER_API_KEY,COPILOT_GITHUB_TOKEN",
+               "--excluded-tools", *COPILOT_EXCLUDED_TOOLS]
+        if str(meta.get("access_mode") or "") == "full":
+            cmd += ["--allow-all-paths", "--allow-all-urls"]
+        if reasoning:
+            cmd += ["--reasoning-effort", reasoning]
+        if resume:
+            cmd += ["--resume", resume]
+        for root in meta.get("extra_roots") or ():
+            if root != cwd:
+                cmd += ["--add-dir", str(root)]
         return cmd
     # Headless runs cannot answer permission prompts; agy runs only with full access (its
     # Keychain sign-in needs /usr/bin/security, which the restricted boundary refuses).
@@ -472,6 +557,29 @@ def apply_event(meta: Dict[str, Any], event: Dict[str, Any], now: float,
             meta["usage"] = _normalized_usage(event)
         else:
             note_unknown(meta, kind)
+    elif provider == "copilot":
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if kind == "tool.execution_start":
+            _tool(meta, data.get("toolName"), now)
+        elif kind == "tool.execution_complete":
+            if data.get("success") is False:
+                meta["failed_tool_calls"] = int(meta.get("failed_tool_calls") or 0) + 1
+            meta["phase"] = "reasoning"
+        elif kind == "assistant.turn_end":
+            meta["step_count"] = int(meta.get("step_count") or 0) + 1
+        elif kind == "assistant.message":
+            if data.get("content") and not data.get("toolRequests"):
+                meta["phase"] = "finalizing"
+        elif kind == "result":
+            meta["phase"] = "finalizing"
+            if event.get("sessionId"):
+                meta["session_id"] = str(event["sessionId"])
+            if event.get("exitCode") not in (0, None):
+                meta["stop_reason"] = f"exit_code_{event.get('exitCode')}"
+        elif kind == "session.error":
+            meta["stop_reason"] = str(data.get("errorType") or data.get("message") or "session_error")[:120]
+        elif not (kind in _COPILOT_PASSIVE_EVENTS or kind.endswith("_delta")):
+            note_unknown(meta, kind)
     else:
         # agy --output-format stream-json: the event kind is under "event",
         # step details under "step_update", and the final result is a dict.
@@ -501,6 +609,19 @@ def apply_event(meta: Dict[str, Any], event: Dict[str, Any], now: float,
                 meta["stop_reason"] = str(result.get("status") or "missing_status")
         elif event_kind not in ("init",):
             note_unknown(meta, event_kind)
+
+
+# Copilot streams these between the events that matter.
+_COPILOT_PASSIVE_EVENTS = frozenset({
+    "session.mcp_servers_loaded", "session.tools_updated", "session.info", "session.warning",
+    "session.start", "session.resume", "session.model_change", "user.message", "assistant.turn_start",
+    "assistant.message_start", "assistant.idle", "assistant.intent", "assistant.usage",
+    "model.call_start", "model.call_finished", "model.call_final_result", "tool.execution_partial_result",
+    "tool.execution_progress", "tool.user_requested", "skill.invoked", "hook.start", "hook.end",
+    "session.truncation", "session.compaction_start", "session.compaction_complete",
+    "session.mcp_server_status_changed", "session.mcp_server_tools_loaded", "session.background_tasks_changed",
+    "model.call_failure", "assistant.turn_retry", "tool.shell_output", "session.shutdown",
+})
 
 
 def _tool(meta: Dict[str, Any], name: Any, now: float) -> None:
@@ -554,6 +675,12 @@ def extract(provider: str, stdout_path: Path) -> Tuple[str, Optional[str], Optio
                     final = str(ev.get("text") or "").strip()
                     if isinstance(ev.get("usage"), dict):
                         usage = _normalized_usage(ev["usage"])
+            elif provider == "copilot":
+                data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                if kind == "assistant.message" and data.get("content") and not data.get("toolRequests"):
+                    final = str(data["content"])  # the last answer that called no tool
+                elif kind == "result":
+                    session = str(ev.get("sessionId") or "") or session
             elif provider == "goose":
                 if kind == "message" and msg.get("role") == "assistant":
                     for block in msg.get("content") or ():
@@ -620,6 +747,14 @@ def stop_reason_failure(provider: str, stdout_path: Path) -> Optional[str]:
                     reason = str(part["reason"])
             elif provider == "goose" and kind == "complete":
                 finished = True
+            elif provider == "copilot":
+                if kind == "result":
+                    finished = True
+                    code = event.get("exitCode")
+                    reason = None if code in (0, None) else f"exit_code_{code}"
+                elif kind == "session.error":
+                    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                    reason = str(data.get("errorType") or "session_error")
             elif provider == "antigravity":
                 result = event.get("result") if isinstance(event.get("result"), dict) else {}
                 status = str(result.get("status") or event.get("status") or "").upper()
@@ -643,6 +778,9 @@ READ_ONLY_TOOLS = {
     "kilo": frozenset({"read", "grep", "glob", "list", "webfetch", "websearch", "todoread", "todowrite"}),
     "cline": frozenset({"read_files", "list_files", "search_codebase", "fetch_web_content"}),
     "goose": frozenset(),
+    # Copilot's own tools that only look: files, search, its shells' output and the web.
+    "copilot": frozenset({"view", "glob", "grep", "read_bash", "list_bash", "web_fetch",
+                          "fetch_copilot_cli_documentation", "semantic_code_search", "report_intent"}),
 }
 
 
@@ -667,6 +805,10 @@ def tool_calls(provider: str, event: Dict[str, Any]) -> List[Tuple[str, bool]]:
         if nested.get("contentType") == "tool" and nested.get("type") == "content_start":
             name = str(nested.get("toolName") or "")
             return [(name, name.startswith("mac-mcp__"))]
+    elif provider == "copilot" and kind == "tool.execution_start":
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        name = str(data.get("toolName") or "")
+        return [(name, data.get("mcpServerName") == "mac-mcp" or name.startswith("mac-mcp-"))]
     elif provider == "goose" and kind == "message":
         message = event.get("message") if isinstance(event.get("message"), dict) else {}
         calls = []
@@ -684,7 +826,8 @@ def turn_finished(provider: str, event: Dict[str, Any]) -> bool:
     kind = str(event.get("type") or "")
     return {"antigravity": event.get("event") == "result", "pi": kind == "agent_end",
             "kilo": kind == "step_finish" and (event.get("part") or {}).get("reason") == "stop",
-            "cline": kind == "run_result", "goose": kind == "complete"}.get(provider, False)
+            "cline": kind == "run_result", "goose": kind == "complete",
+            "copilot": kind == "result"}.get(provider, False)
 
 
 # ---------------------------------------------------------------------------
@@ -730,3 +873,53 @@ def usage_report(provider: str, event: Dict[str, Any]) -> Optional[Tuple[str, Di
                        "reasoning": None, "cache_read": _count(event.get("cache_read_input_tokens")),
                        "cache_write": _count(event.get("cache_write_input_tokens")), "total": _count(event.get("total_tokens"))}
     return None
+
+
+def copilot_usage_records(home: Path, session_id: Optional[str], since: float) -> List[Dict[str, Any]]:
+    """Copilot's tokens for one run, one entry per model call, from its session journal.
+
+    Its JSON output carries none; every call is a `session.usage_record` line in
+    `session-state/<session>/events.jsonl` under the private home. A resumed agent shares the
+    home with the runs before it, so only records from `since` on count; each record's own id
+    keeps reading again from counting twice. Copilot's input includes the cached tokens.
+    """
+    session = str(session_id or "").strip()
+    if not session or not _COPILOT_SESSION_RE.match(session):
+        return []
+    journal = home / "session-state" / session / "events.jsonl"
+    try:
+        lines = journal.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    from datetime import datetime
+
+    records: List[Dict[str, Any]] = []
+    for line in lines:
+        if '"session.usage_record"' not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        data = record.get("data") if isinstance(record, dict) and isinstance(record.get("data"), dict) else {}
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+        if record.get("type") != "session.usage_record" or usage is None or not record.get("id"):
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(record.get("timestamp") or "").replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if stamp < float(since or 0):
+            continue
+        counts = {name: max(0, int(usage.get(key) or 0)) for name, key in (
+            ("input", "inputTokens"), ("output", "outputTokens"), ("reasoning", "reasoningTokens"),
+            ("cache_read", "cacheReadTokens"), ("cache_write", "cacheWriteTokens"))}
+        records.append({
+            "event_id": str(record["id"]),
+            "session_id": session,
+            "model": str(usage.get("model") or "").strip() or None,
+            "timestamp": stamp,
+            **counts,
+            "total": counts["input"] + counts["output"],
+        })
+    return records

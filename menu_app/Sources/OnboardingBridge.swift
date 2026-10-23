@@ -31,10 +31,10 @@ enum OnboardingBridge {
     static let permissions: Set<String> = ["accessibility", "screen_recording"]
     static let clients: Set<String> = [
         "claude-code", "codex", "opencode", "claude-desktop", "chatgpt", "kimi", "grok",
-        "antigravity", "pi", "cline", "kilo", "goose",
+        "antigravity", "pi", "cline", "kilo", "goose", "copilot",
     ]
     static let agentProviders: Set<String> = [
-        "codex", "claude", "opencode", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose",
+        "codex", "claude", "opencode", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose", "copilot",
     ]
     static let sections: Set<String> = ["start", "general", "connections", "permissions", "help"]
     static let outcomes: Set<String> = ["completed", "skipped"]

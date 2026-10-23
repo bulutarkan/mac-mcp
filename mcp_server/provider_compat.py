@@ -62,6 +62,10 @@ REQUIRED_OPTIONS: Dict[str, Sequence[Tuple[Sequence[str], Sequence[str]]]] = {
     "goose": (
         (("run", "--help"), ("--text", "--output-format", "--resume", "--name", "--no-profile", "--model")),
     ),
+    "copilot": (
+        (("--help",), ("--prompt", "--output-format", "--allow-all-tools", "--no-ask-user", "--disable-builtin-mcps",
+                       "--excluded-tools", "--secret-env-vars", "--resume", "--reasoning-effort", "--add-dir")),
+    ),
 }
 
 _lock = threading.Lock()

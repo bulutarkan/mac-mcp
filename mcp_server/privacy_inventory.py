@@ -195,6 +195,9 @@ def recipients() -> List[Dict[str, Any]]:
         *({"key": key, "name": f"{name}'s model provider", "active": provider_enabled(key, False),
            "sends": "Task prompts and the files and tool results those agents read."}
           for key, name in (("pi", "pi"), ("cline", "Cline"), ("kilo", "Kilo Code"), ("goose", "Goose"))),
+        {"key": "copilot", "name": "GitHub, or the model provider GitHub Copilot is set up with",
+         "active": provider_enabled("copilot", False),
+         "sends": "Task prompts and the files and tool results those agents read."},
         {"key": "voice", "name": "Groq (voice transcription)", "active": tool_enabled("ask_user_voice", default=False),
          "sends": "Audio of voice questions, when you answer by voice."},
         {"key": "decisions", "name": "OpenAI (decision acceleration)", "active": decisions.get("enabled") is True,
@@ -247,7 +250,8 @@ _PROVIDER_VENDORS = {"codex": "OpenAI (Codex)", "claude": "Anthropic (Claude Cod
                      "pi": "the model provider pi is set up with",
                      "cline": "the model provider Cline is set up with",
                      "kilo": "the model provider Kilo Code is set up with",
-                     "goose": "the model provider Goose is set up with"}
+                     "goose": "the model provider Goose is set up with",
+                     "copilot": "GitHub, or the model provider GitHub Copilot is set up with"}
 
 
 def with_provider_notice(result: Any) -> Any:

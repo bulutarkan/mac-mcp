@@ -187,7 +187,8 @@ def sign_in_state(provider: str, keychain_lookup: Callable[[str], Optional[str]]
 # The agent's private CLI home
 
 def private_home(state_root: Path, provider: str) -> Path:
-    return state_root / ("kimi-home" if provider == "kimi" else "grok-home")
+    """The CLI's private home for the run: <provider>-home under its state root (kimi-home, copilot-home, …)."""
+    return state_root / f"{provider}-home"
 
 
 def _private_dir(path: Path) -> None:

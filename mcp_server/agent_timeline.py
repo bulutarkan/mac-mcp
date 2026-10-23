@@ -287,6 +287,26 @@ def _goose_call(name: str, arguments: Any) -> Dict[str, Any]:
             "output": "", "status": "running"}
 
 
+_COPILOT_TOOLS = {"view": "Read a file", "glob": "Found files", "grep": "Searched files",
+                  "web_fetch": "Read a web page", "read_bash": "Read a command's output",
+                  "semantic_code_search": "Searched the code"}
+
+
+def _copilot_call(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Copilot names MCP tools <server>-<tool> and says which server; its own are bash, view, create, edit, …"""
+    name = str(data.get("toolName") or "")
+    arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+    if data.get("mcpServerName"):
+        return _mcp_step(str(data["mcpServerName"]), str(data.get("mcpToolName") or name), arguments, "", False, True)
+    if name == "bash":
+        return {"kind": "command", "title": "Ran a command", "detail": _cut(arguments.get("command") or "", 400),
+                "output": "", "status": "running"}
+    if name in {"create", "edit"}:
+        return _file_step(name, arguments.get("path"), name == "create")
+    return {"kind": "tool", "title": _COPILOT_TOOLS.get(name) or _humanize(name), "detail": name,
+            "input": _inputs(arguments), "output": "", "status": "running"}
+
+
 def _cline_call(name: str, arguments: Any) -> Dict[str, Any]:
     """Cline names MCP tools <server>__<tool>; its own are run_commands, editor, read_files, …"""
     arguments = arguments if isinstance(arguments, dict) else {}
@@ -438,6 +458,30 @@ def from_events(lines: List[str]) -> Dict[str, Any]:
                 if raw:
                     usage = {"input_tokens": usage.get("input_tokens", 0) + int(raw.get("input") or 0) + int(raw.get("cacheRead") or 0),
                              "output_tokens": usage.get("output_tokens", 0) + int(raw.get("output") or 0)}
+            continue
+        # GitHub Copilot: tool.execution_start/complete per tool, assistant.message for what it says
+        if kind in {"tool.execution_start", "tool.execution_complete"} and isinstance(event.get("data"), dict):
+            data = event["data"]
+            key = "copilot:" + str(data.get("toolCallId") or "")
+            if kind == "tool.execution_start":
+                put(key, _copilot_call(data))
+            elif key in by_id:
+                step = steps[by_id[key]]
+                result = data.get("result") if isinstance(data.get("result"), dict) else {}
+                error = data.get("error") if isinstance(data.get("error"), dict) else {}
+                output = str(result.get("content") or error.get("message") or "")
+                step["output"] = _readable_output(output) if step["kind"] == "tool" else _cut(output, MAX_OUTPUT)
+                step["status"] = "done" if data.get("success") is not False else "failed"
+            continue
+        if kind == "assistant.message" and isinstance(event.get("data"), dict):
+            text = str(event["data"].get("content") or "").split(_MARKER, 1)[0].strip()
+            if text:
+                put(None, {"kind": "message", "title": "Said", "text": _cut(text, MAX_TEXT), "status": "done"})
+            continue
+        if kind == "result" and "sessionId" in event and "exitCode" in event:
+            if event.get("exitCode") not in (0, None):
+                put(None, {"kind": "error", "title": "Ran into a problem",
+                           "text": f"GitHub Copilot exited with code {event.get('exitCode')}", "status": "failed"})
             continue
         # Cline: agent_event content_start/content_end per tool; run_result is the final answer
         if kind == "agent_event" and isinstance(event.get("event"), dict):

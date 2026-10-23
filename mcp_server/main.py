@@ -895,7 +895,7 @@ def create_app():
     # ── Agent delegation tools ──────────────────────────────────────────────
     @mcp.tool(
         name="agent_catalog",
-        description="List available OpenCode, Codex, Claude Code, Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code and Goose providers, models, reasoning options and supported access modes without starting an agent.",
+        description="List available OpenCode, Codex, Claude Code, Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code, Goose and GitHub Copilot providers, models, reasoning options and supported access modes without starting an agent.",
     )
     async def _agent_catalog(provider: Optional[str] = None, model_filter: Optional[str] = None,
                              free_only: bool = False, limit: int = 80) -> Dict[str, Any]:
@@ -909,7 +909,7 @@ def create_app():
         name="spawn_agent",
         description=(
             "Delegate one task to OpenCode, Codex, Claude Code (provider=claude), Kimi Code (kimi), Grok Build (grok), Antigravity (antigravity, full access only), "
-            "pi, Cline, Kilo Code (kilo) or Goose in a non-blocking background process. "
+            "pi, Cline, Kilo Code (kilo), Goose or GitHub Copilot (copilot; model openrouter/<model> runs on that provider's key) in a non-blocking background process. "
             "When provider/model/reasoning are omitted, Mac MCP resolves the saved Settings > Subagents Default Agent preset; "
             "explicit fields always override saved values and model/reasoning never cross provider boundaries. "
             "Claude Code takes a model alias (fable, opus, sonnet, haiku) or a claude-... id and reasoning=low|medium|high|xhigh|max. "
@@ -2015,7 +2015,7 @@ def create_app():
             "create/update take name, summary (what the task is for), kind ('ai', 'script' or 'recipe'), schedule; for "
             "recipe: recipe_id (a saved recipe, see the recipe tool) and values {parameter: value} (a value may hold {file} "
             "or a date word); it replays the recipe's steps with no model call and fails clearly while the recipe is a draft "
-            "or paused. For ai: prompt, agent (codex|claude|opencode|kimi|grok|antigravity|pi|cline|kilo|goose), "
+            "or paused. For ai: prompt, agent (codex|claude|opencode|kimi|grok|antigravity|pi|cline|kilo|goose|copilot), "
             "model, folder, and optional data_step {script or command, arguments} that runs first and hands its output to "
             "the agent; for script: script (a file path) or command, arguments, interpreter, folder. Arguments and "
             "commands may use {today}, {yesterday}, {last_week_start}, {last_week_end}, {last_month_start}, "

@@ -86,7 +86,8 @@ class CatalogAndSelectionTests(ClaudeTempDirTestCase):
             self.assertEqual(400, ctx.exception.status_code)
 
     def test_chatgpt_is_no_longer_a_provider(self) -> None:
-        self.assertEqual({"opencode", "codex", "claude", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose"},
+        self.assertEqual({"opencode", "codex", "claude", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose",
+                          "copilot"},
                          agents._PROVIDER_NAMES)
         self.assertNotIn("chatgpt", agents._PROVIDER_NAMES)
         with self.assertRaises(HTTPException):

@@ -9,7 +9,7 @@ const compact = (x) => isNum(x)
   : 'n/a';
 const latency = (ms) => !isNum(ms) ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 const PROVIDERS = { codex: 'Codex', opencode: 'OpenCode', claude: 'Claude Code', kimi: 'Kimi Code', grok: 'Grok Build',
-  antigravity: 'Antigravity', pi: 'pi', cline: 'Cline', kilo: 'Kilo Code', goose: 'Goose' };
+  antigravity: 'Antigravity', pi: 'pi', cline: 'Cline', kilo: 'Kilo Code', goose: 'Goose', copilot: 'GitHub Copilot' };
 const ACTIVE = new Set(['running', 'starting']);
 const FAILED = new Set(['failed', 'error', 'cancelled', 'canceled', 'timeout', 'killed']);
 const state = { data: null, connected: false, busy: false, editing: false, catalog: null };

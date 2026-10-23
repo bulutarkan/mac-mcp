@@ -33,6 +33,7 @@ const CLIENTS = [
   { id: 'cline', name: 'Cline', logo: 'cline', needsRemote: false },
   { id: 'kilo', name: 'Kilo Code', logo: 'kilo', needsRemote: false },
   { id: 'goose', name: 'Goose', logo: 'goose', needsRemote: false },
+  { id: 'copilot', name: 'GitHub Copilot', logo: 'copilot', needsRemote: false },
 ];
 
 // Agents Mac MCP can hand work to (Settings › Agents). Each starts off; the owner turns it on.
@@ -49,6 +50,7 @@ const AGENTS = [
   { id: 'cline', client: 'cline', name: 'Cline', logo: 'cline' },
   { id: 'kilo', client: 'kilo', name: 'Kilo Code', logo: 'kilo' },
   { id: 'goose', client: 'goose', name: 'Goose', logo: 'goose' },
+  { id: 'copilot', client: 'copilot', name: 'GitHub Copilot', logo: 'copilot' },
 ];
 
 // A logo stack shows this many; the rest wait behind a +N that opens them in place.

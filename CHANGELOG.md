@@ -35,6 +35,11 @@
 - A result envelope followed only by stray closing brackets (`{...}}`) is kept instead of failing the agent; any other trailing text still fails closed.
 - Measured with the same three tasks before and after (default model and reasoning): an owner fact in memory went from 20 tool calls, 1.3M tokens, 173 s and no answer to one `memory_search`, about 112K tokens, 21 s and the right answer; a design task now uses the design skill; a "from now on" preference is saved once.
 
+### GitHub Copilot as an agent provider
+- `provider=copilot` delegates work to the GitHub Copilot CLI (`copilot -p --output-format json`), off by default like the other extra agents. It runs without a Copilot subscription on your own key: a model named `openrouter/<model>`, `openai/<model>` or `anthropic/<model>` uses that provider (OpenRouter's key is also read from the Keychain); other model names use GitHub Copilot with a GitHub token.
+- Each agent gets a private Copilot home with only Mac MCP's server; Copilot's GitHub servers, subagents and workflows are off. Read-only and workspace-write runs are inside the Seatbelt boundary. Follow-ups continue the same Copilot session; run reports, the menu and the island show its commands, file writes and Mac MCP tools; Settings → Usage counts its tokens from its session journal.
+- Mac MCP can be added to the Copilot CLI itself too (Settings → Apps, `mac-mcp connect --client copilot`).
+
 ## 2.3.0 r3 - 2026-10-22
 
 **In short:** a signed checkpoint on the 2.3.0 line; the version stays 2.3.0. Agents can ask you a quick question in Mac MCP's own window (with one-click answers, files and pictures) and keep working whatever you answer, and the approvals before sending a mail or uploading a file open there too. Agents find your skills and memories and use them quietly. `personal_search` and `daily_briefing` read across your apps; the Photos, Contacts, Notes and Calendar adapters grow; web and Electron apps can be read and pressed down to their controls. Settings let you review memories, lessons and skills; the dashboard and phone get a new look; a running team shows its plan limits; your other Macs can get full access for a while. Update with `mac-mcp update` or the new package.

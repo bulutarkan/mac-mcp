@@ -49,7 +49,7 @@ const demoApps = [
   { id: 'opencode', installed: false, added: false },
 ];
 const demoAgents = { enabled: { codex: true, claude: true, opencode: false, kimi: false, grok: false },
-  installed: { codex: true, claude: true, opencode: true, kimi: true, grok: true, antigravity: true, pi: true, cline: true, kilo: true, goose: true } };
+  installed: { codex: true, claude: true, opencode: true, kimi: true, grok: true, antigravity: true, pi: true, cline: true, kilo: true, goose: true, copilot: true } };
 
 function demo(action, args) {
   const replies = {

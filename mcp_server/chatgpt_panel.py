@@ -34,7 +34,7 @@ PANEL_ICON = Icon(
     mimeType="image/svg+xml", sizes=["20x20"],
 )
 PANEL_HTML = Path(__file__).resolve().parent / "chatgpt_ui" / "control-center.html"
-PANEL_PROVIDERS = ("codex", "opencode", "claude", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose")
+PANEL_PROVIDERS = ("codex", "opencode", "claude", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose", "copilot")
 _MODEL_LIMIT = 600
 
 
@@ -115,7 +115,7 @@ def panel_snapshot(telemetry: Any, settings: Any) -> dict[str, Any]:
             "output_tokens": row.get("output_tokens"),
             "total_tokens": row.get("total_tokens"),
         }
-        for name in ("codex", "opencode", "claude", "grok", "antigravity", "pi", "kilo", "cline", "goose")
+        for name in ("codex", "opencode", "claude", "grok", "antigravity", "pi", "kilo", "cline", "goose", "copilot")
         for row in [provider_data.get(name, {})]
         # The agents beyond the first three only when they are on or have reported usage.
         if name in ("codex", "opencode", "claude") or provider_enabled(name) or row

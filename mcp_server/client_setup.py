@@ -2,7 +2,7 @@
 
 Each app gets `mac-mcp stdio` as a command-based MCP server, so its config holds
 no address and no key; the bridge adds the key from Mac MCP's own .env. Apps
-with a CLI for this (Claude Code, Codex, Grok Build, Antigravity, pi) are set up through
+with a CLI for this (Claude Code, Codex, Grok Build, Antigravity, pi, GitHub Copilot) are set up through
 it; for the others Mac MCP edits the JSON (Goose: YAML) config itself, keeping everything
 else in the file.
 """
@@ -54,6 +54,7 @@ APPS = (
     App("cline", "Cline", "Start a new Cline session, then ask it something about your Mac."),
     App("kilo", "Kilo Code", "Start a new Kilo Code session, then ask it something about your Mac."),
     App("goose", "Goose", "Start a new Goose session, then ask it something about your Mac."),
+    App("copilot", "GitHub Copilot", "Start a new copilot session, then ask it something about your Mac."),
 )
 # The CLI each app is started with, where it differs from the app id.
 _BINARIES = {"claude-code": "claude", "antigravity": "agy"}
@@ -66,6 +67,7 @@ _CLI_SETUP = {
              ["--no-auto-update", "mcp", "add", SERVER_NAME, "--"]),
     "antigravity": ("agy", ["mcp", "remove", SERVER_NAME], ["mcp", "add", SERVER_NAME, "--"]),
     "pi": ("pi", ["mcp", "remove", SERVER_NAME], ["mcp", "add", SERVER_NAME, "--"]),
+    "copilot": ("copilot", ["mcp", "remove", SERVER_NAME], ["mcp", "add", SERVER_NAME, "--"]),
 }
 APP_IDS = tuple(app.id for app in APPS)
 
@@ -131,6 +133,10 @@ def _agy_mcp_config() -> Path:
 
 def _pi_mcp_config() -> Path:
     return Path(os.environ.get("PI_CODING_AGENT_DIR") or _home() / ".pi" / "agent") / "mcp.json"
+
+
+def _copilot_mcp_config() -> Path:
+    return Path(os.environ.get("COPILOT_HOME") or _home() / ".copilot") / "mcp-config.json"
 
 
 def _cline_mcp_config() -> Path:
@@ -231,6 +237,8 @@ def _entry(app: str) -> Any:
         servers = (_read_json(_pi_mcp_config()) or {}).get("mcpServers")
     elif app == "cline":
         servers = (_read_json(_cline_mcp_config()) or {}).get("mcpServers")
+    elif app == "copilot":
+        servers = (_read_json(_copilot_mcp_config()) or {}).get("mcpServers")
     elif app == "kilo":
         servers = (_read_json(_kilo_config()) or {}).get("mcp")
     elif app == "goose":

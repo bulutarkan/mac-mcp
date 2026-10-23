@@ -6,9 +6,10 @@ enum AgentProviders {
     static let names: [String: String] = [
         "codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "kimi": "Kimi Code", "grok": "Grok Build",
         "antigravity": "Antigravity", "pi": "pi", "cline": "Cline", "kilo": "Kilo Code", "goose": "Goose",
+        "copilot": "GitHub Copilot",
     ]
     /// Agents kept in `SettingsStore.moreProviders*` rather than a field each.
-    static let more = ["antigravity", "pi", "cline", "kilo", "goose"]
+    static let more = ["antigravity", "pi", "cline", "kilo", "goose", "copilot"]
 
     static func name(_ id: String?) -> String? {
         guard let id else { return nil }
@@ -17,14 +18,14 @@ enum AgentProviders {
 
     /// A tool as an agent's CLI names it, without its MCP server: mcp__mac-mcp__read_file (Claude
     /// Code, Kimi, Antigravity), mcp__mac_mcp__read_file (pi), mac-mcp__read_file (Goose, Cline),
-    /// mac-mcp_read_file (OpenCode, Kilo) are all read_file.
+    /// mac-mcp_read_file (OpenCode, Kilo) and mac-mcp-read_file (GitHub Copilot) are all read_file.
     static func toolName(_ raw: String) -> String {
         var value = raw
         if value.hasPrefix("mcp__"), let range = value.dropFirst(5).range(of: "__") {
             return String(value[range.upperBound...])
         }
         if let range = value.range(of: "__") { return String(value[range.upperBound...]) }
-        for prefix in ["mac-mcp_", "mac_mcp_", "mcp_"] where value.hasPrefix(prefix) { value.removeFirst(prefix.count) }
+        for prefix in ["mac-mcp_", "mac-mcp-", "mac_mcp_", "mcp_"] where value.hasPrefix(prefix) { value.removeFirst(prefix.count) }
         return value
     }
 }

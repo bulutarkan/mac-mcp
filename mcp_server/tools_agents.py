@@ -3709,8 +3709,10 @@ def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
             "boundary": "macos_seatbelt" if available else "unsupported",
             "note": (
                 f"{label} runs inside a Mac MCP macOS Seatbelt boundary with scoped filesystem roots and a private "
-                f"{label} home holding a copy of the owner's model settings and sign-in for the run. {label} itself "
-                "runs its tools without asking; the boundary is what limits them."
+                + (f"{label} home holding only Mac MCP's server; its model key or GitHub token comes from the "
+                   "environment for the run. " if provider == "copilot" else
+                   f"{label} home holding a copy of the owner's model settings and sign-in for the run. ")
+                + f"{label} itself runs its tools without asking; the boundary is what limits them."
                 if available else
                 f"{label} restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
             ),
@@ -4048,6 +4050,7 @@ def agent_catalog(
                 "grok": ["low", "medium", "high"],
                 "antigravity": ["low", "medium", "high", "xhigh", "max"],
                 "cline": ["none", "low", "medium", "high", "xhigh"],
+                "copilot": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
             }.get(harness, []),
             "catalog_source": f"{harness}_config" if all_models else "unavailable",
             "catalog_fetched_at": None,
@@ -4058,6 +4061,9 @@ def agent_catalog(
                 if harness == "kimi" else
                 "Models `grok models` lists for the owner's sign-in and config; without a model its default is used."
                 if harness == "grok" else
+                "Name a model openrouter/<model>, openai/<model> or anthropic/<model> to run it on that provider's key "
+                "with no GitHub account; any other name runs on GitHub Copilot with a GitHub token (COPILOT_GITHUB_TOKEN)."
+                if harness == "copilot" else
                 "Models depend on the owner's own sign-in and configuration of this CLI; without a model its default is used."
             ),
             "supports_resume": harness not in harness_providers.extra.NO_RESUME,
@@ -4266,6 +4272,7 @@ def _validate_provider_model_selection(
             "kimi": (), "grok": ("low", "medium", "high"),
             "pi": (), "kilo": (), "antigravity": ("low", "medium", "high", "xhigh", "max"),
             "cline": ("none", "low", "medium", "high", "xhigh"), "goose": (),
+            "copilot": ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
         }.get(provider, ())
         if selected_reasoning and selected_reasoning != "none" and selected_reasoning not in supported_efforts:
             raise HTTPException(
@@ -8227,24 +8234,28 @@ def _accumulate_agent_usage(agent_id: str, event_key: str, total_tokens: int) ->
 
 
 def _ingest_kimi_usage(agent_id: str, meta: Dict[str, Any], session_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Count a finished Kimi Code run's tokens from its session journal; its stdout carries none.
+    """Count a finished Kimi Code or GitHub Copilot run's tokens from its session journal; its
+    stdout carries none.
 
     Returns the run's usage in the shape the other providers report, or None when it recorded none.
     """
-    home = harness_providers.private_home(_harness_state(agent_id, meta), "kimi")
-    records = harness_providers.kimi_usage_records(home, session_id, float(meta.get("started_at") or 0))
+    provider = str(meta.get("provider") or "kimi")
+    home = harness_providers.private_home(_harness_state(agent_id, meta), provider)
+    reader = (harness_providers.extra.copilot_usage_records if provider == "copilot"
+              else harness_providers.kimi_usage_records)
+    records = reader(home, session_id, float(meta.get("started_at") or 0))
     if not records:
         return None
     store = get_provider_usage_store()
     requested_model, effective_model, model, model_verified = _provider_usage_models(meta)
     summary: Dict[str, Any] = {"input": 0, "output": 0, "cache": {"read": 0, "write": 0}}
     for record in records:
-        event_key = f"kimi:{record['event_id']}"
+        event_key = f"{provider}:{record['event_id']}"
         reported_model = record["model"]
         try:
             store.ingest(ProviderUsageRecord(
                 event_key=event_key,
-                provider="kimi",
+                provider=provider,
                 session_id=record["session_id"],
                 event_id=record["event_id"],
                 timestamp=record["timestamp"],
@@ -8274,7 +8285,8 @@ def _ingest_kimi_usage(agent_id: str, meta: Dict[str, Any], session_id: Optional
 
 
 # Providers whose CLI reports token usage that Mac MCP can count.
-_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude", "kimi", "grok", "pi", "kilo", "cline", "goose", "antigravity"}
+_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude", "kimi", "grok", "pi", "kilo", "cline", "goose", "antigravity",
+                              "copilot"}
 
 
 def _agent_token_usage(meta: Dict[str, Any]) -> tuple[int, bool]:
@@ -8701,7 +8713,7 @@ def _worker(agent_id: str) -> int:
         result, session_id, usage = _extract_claude(stdout_path)
     elif meta["provider"] in harness_providers.PROVIDERS:
         result, session_id, usage = harness_providers.extract(meta["provider"], stdout_path)
-        if meta["provider"] == "kimi":
+        if meta["provider"] in ("kimi", "copilot"):
             try:
                 usage = _ingest_kimi_usage(agent_id, meta, session_id) or usage
             except Exception:
