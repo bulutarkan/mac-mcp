@@ -43,9 +43,8 @@ struct MenuBarView: View {
                 // One surface (#201): header, callouts, chips, then rows in groups split by dividers.
                 VStack(alignment: .leading, spacing: 10) {
                     header
+                    if let card = menuCard { cardView(card).id(card).transition(AppMotion.arrive) }
                     actionBar
-                    if state.showsOnboardingReminder { onboardingReminder.transition(AppMotion.arrive) }
-                    if state.updateReady { updateCallout.transition(AppMotion.arrive) }
                     if state.serverRunning { chipsRow.transition(.opacity) }
                     Divider()
                     if showsAgentSection {
@@ -63,8 +62,7 @@ struct MenuBarView: View {
                 }
                 .padding(14)
                 // Callouts arrive and leave; the window still follows the measured height without its own motion (#200).
-                .animation(AppMotion.content, value: state.showsOnboardingReminder)
-                .animation(AppMotion.content, value: state.updateReady)
+                .animation(AppMotion.content, value: menuCard)
                 .animation(AppMotion.content, value: state.serverRunning)
                 .background(GeometryReader { box in
                     Color.clear.preference(key: MenuContentHeight.self, value: box.size.height)
@@ -173,53 +171,105 @@ struct MenuBarView: View {
         SettingsWindowController.shared.show(state: state, settings: settings, section: section)
     }
 
-    /// Get Started (#59) while setup is unfinished; OnboardingChecklist.shouldShowReminder decides.
-    private var onboardingReminder: some View {
-        let checklist = state.onboardingChecklist
-        return Button { openSettings(.start) } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "flag.checkered")
-                    .foregroundStyle(Color.accentColor)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Finish setting up · \(checklist.completed) of \(checklist.steps.count)")
-                        .font(.caption.weight(.semibold))
-                    if let next = checklist.nextStep {
-                        Text("Next: \(next.title)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-            }
-            .padding(10)
-            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Opens Get Started in Settings")
+    /// The one card under the header. Only the most important shows: Mac MCP not answering,
+    /// then unfinished setup, then a new version.
+    private enum TopCard: Hashable { case connection, setup, update }
+
+    private var menuCard: TopCard? {
+        if state.connectionState != .connected { return .connection }
+        if state.showsOnboardingReminder { return .setup }
+        if state.updateReady { return .update }
+        return nil
     }
 
-    /// A new release is ready (#232): the same calm row for every way Mac MCP was installed.
-    private var updateCallout: some View {
-        HStack(spacing: 11) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 30, height: 30)
-                .background(Color.accentColor.opacity(0.14), in: Circle())
+    @ViewBuilder
+    private func cardView(_ card: TopCard) -> some View {
+        switch card {
+        case .connection: connectionCard
+        case .setup: setupCard
+        case .update: updateCallout
+        }
+    }
+
+    /// Stopped, starting, or not answering. A stopped server gets one plain sentence and Start.
+    private var connectionCard: some View {
+        let stopped = !state.serverRunning && !state.startingAfterLogin
+        let tint = stopped ? VisualTokens.error : connectionDisplay.tone.color
+        return MenuCard(tint: tint) {
+            HStack(spacing: 10) {
+                MenuCardSymbol(symbol: stopped ? "power" : connectionDisplay.symbol, tint: tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(stopped ? "Your AI apps can't use this Mac" : state.connectionBannerTitle)
+                        .font(.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                    let detail = stopped ? "Start Mac MCP to let them in again." : state.connectionBannerDetail
+                    if !detail.isEmpty {
+                        Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 6)
+                if stopped {
+                    Button("Start") { state.startServer() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .accessibilityLabel("Start Server")
+                } else if !state.startingAfterLogin && (state.connectionState == .degraded || state.connectionState == .disconnected) {
+                    Button("Retry") { Task { await state.retryConnection() } }
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    /// Get Started (#59) while setup is unfinished; OnboardingChecklist.shouldShowReminder decides.
+    private var setupCard: some View {
+        let checklist = state.onboardingChecklist
+        return MenuCard(tint: VisualTokens.accent) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    MenuCardSymbol(symbol: "checkmark", tint: VisualTokens.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Get your AI apps ready · \(checklist.completed) of \(checklist.steps.count)")
+                            .font(.body.weight(.semibold))
+                        if let next = checklist.nextStep {
+                            Text("Next: \(next.title)").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 6)
+                    Button("Continue") { openSettings(.start) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .accessibilityHint("Opens Get Started in Settings")
+                }
+                // One segment per step, filled when done.
+                HStack(spacing: 4) {
+                    ForEach(checklist.steps) { step in
+                        Capsule()
+                            .fill(step.done ? VisualTokens.accent : VisualTokens.hairline)
+                            .frame(height: 4)
+                    }
+                }
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
+            }
+        }
+    }
+
+    /// A new release is ready (#232): one compact row, the same for every way Mac MCP was installed.
+    private var updateCallout: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(VisualTokens.accent)
+                .frame(width: 24, height: 24)
+                .background(VisualTokens.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: VisualTokens.Radius.tile + 1, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
                 Text("A new update is ready")
-                    .font(.caption.weight(.semibold))
-                Text("New improvements for Mac MCP.")
-                    .font(.caption2)
+                    .font(.body.weight(.semibold))
+                Text(updateDetail)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 6)
             Button {
                 state.performUpdate()
             } label: {
@@ -233,14 +283,15 @@ struct MenuBarView: View {
             .controlSize(.small)
             .disabled(!state.canInstallUpdate)
         }
-        .padding(10)
-        .background(
-            LinearGradient(colors: [Color.accentColor.opacity(0.12), Color.accentColor.opacity(0.04)],
-                           startPoint: .leading, endPoint: .trailing),
-            in: RoundedRectangle(cornerRadius: 10)
-        )
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor.opacity(0.18)))
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(VisualTokens.quietFill, in: RoundedRectangle(cornerRadius: VisualTokens.Radius.card - 2, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VisualTokens.Radius.card - 2, style: .continuous).strokeBorder(VisualTokens.hairline))
         .accessibilityElement(children: .contain)
+    }
+
+    private var updateDetail: String {
+        if let version = state.updateCheckInfo?.releaseVersion, !version.isEmpty { return "Mac MCP \(version) is ready to install." }
+        return "New improvements for Mac MCP."
     }
 
     /// What Mac MCP is doing, in one line under its name.
@@ -348,26 +399,9 @@ struct MenuBarView: View {
                                                 ended: state.sessionEndedCount)
     }
 
-    /// Problems and progress as tinted callouts; nothing shows while all is well.
+    /// What the owner just started (a restart, an update) and how it went.
     private var actionBar: some View {
         VStack(spacing: 8) {
-            if state.connectionState != .connected {
-                let stopped = !state.serverRunning && !state.startingAfterLogin
-                MenuCallout(tint: stopped ? VisualTokens.error : connectionDisplay.tone.color, symbol: connectionDisplay.symbol,
-                            title: state.connectionBannerTitle, detail: state.connectionBannerDetail) {
-                    if stopped {
-                        Button { state.startServer() } label: { Label("Start Server", systemImage: "play.fill") }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .accessibilityLabel("Start Server")
-                    } else if !state.startingAfterLogin && (state.connectionState == .degraded || state.connectionState == .disconnected) {
-                        Button("Retry") { Task { await state.retryConnection() } }
-                            .controlSize(.small)
-                    }
-                }
-                .transition(AppMotion.arrive)
-            }
-
             if let action = state.busyAction {
                 MenuCallout(tint: .accentColor, symbol: nil, title: action, detail: "") {
                     ProgressView().controlSize(.small)
@@ -381,7 +415,6 @@ struct MenuBarView: View {
         }
         .animation(AppMotion.content, value: state.actionNotice?.id)
         .animation(AppMotion.content, value: state.busyAction)
-        .animation(AppMotion.content, value: state.connectionState)
     }
 
     /// Settings and More close the menu, as in other menu bar apps.
@@ -1940,6 +1973,35 @@ private struct MenuCallout<Control: View>: View {
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(0.35)))
+    }
+}
+
+/// The card under the header: a tinted panel with a hairline in the same tint.
+private struct MenuCard<Content: View>: View {
+    let tint: Color
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .padding(12)
+            .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: VisualTokens.Radius.card - 2, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VisualTokens.Radius.card - 2, style: .continuous).strokeBorder(tint.opacity(0.28)))
+            .accessibilityElement(children: .contain)
+    }
+}
+
+/// The round symbol at the start of a card.
+private struct MenuCardSymbol: View {
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(tint)
+            .frame(width: 28, height: 28)
+            .background(tint.opacity(0.18), in: Circle())
+            .accessibilityHidden(true)
     }
 }
 

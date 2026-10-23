@@ -146,11 +146,19 @@ class MenuPopoverStructureTests(unittest.TestCase):
         self.assertEqual(2, self.menu.count(".disclosureGroupStyle(MenuDisclosureStyle())"))
 
     def test_a_stopped_server_gets_a_prominent_start(self) -> None:
-        bar = self.menu[self.menu.index("private var actionBar"):self.menu.index("/// Settings and More close the menu")]
-        self.assertIn("let stopped = !state.serverRunning && !state.startingAfterLogin", bar)
-        start = bar[bar.index("if stopped {"):bar.index("} else if")]
+        card = self.menu[self.menu.index("private var connectionCard"):self.menu.index("private var setupCard")]
+        self.assertIn("let stopped = !state.serverRunning && !state.startingAfterLogin", card)
+        self.assertIn('"Your AI apps can\'t use this Mac"', card)
+        start = card[card.index("if stopped {"):card.index("} else if")]
         self.assertIn("state.startServer()", start)
         self.assertIn(".buttonStyle(.borderedProminent)", start)
+
+    def test_one_card_at_a_time_most_important_first(self) -> None:
+        pick = self.menu[self.menu.index("private var menuCard: TopCard?"):][:400]
+        order = [pick.index(s) for s in ("return .connection", "return .setup", "return .update")]
+        self.assertEqual(sorted(order), order)
+        self.assertIn("if let card = menuCard { cardView(card).id(card).transition(AppMotion.arrive) }", self.menu)
+        self.assertEqual(1, self.menu.count("cardView(card)"))
 
     def test_settings_window_opens_on_requested_pane(self) -> None:
         self.assertIn("SettingsWindowController.shared.show(state: state, settings: settings, section: section)", self.menu)
