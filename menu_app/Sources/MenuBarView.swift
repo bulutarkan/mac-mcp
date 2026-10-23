@@ -44,9 +44,9 @@ struct MenuBarView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     header
                     actionBar
-                    if state.showsOnboardingReminder { onboardingReminder }
-                    if state.updateReady { updateCallout }
-                    if state.serverRunning { chipsRow }
+                    if state.showsOnboardingReminder { onboardingReminder.transition(AppMotion.arrive) }
+                    if state.updateReady { updateCallout.transition(AppMotion.arrive) }
+                    if state.serverRunning { chipsRow.transition(.opacity) }
                     Divider()
                     if showsAgentSection {
                         agentCard.id(Self.agentsAnchor)
@@ -62,6 +62,10 @@ struct MenuBarView: View {
                     footer
                 }
                 .padding(14)
+                // Callouts arrive and leave; the window still follows the measured height without its own motion (#200).
+                .animation(AppMotion.content, value: state.showsOnboardingReminder)
+                .animation(AppMotion.content, value: state.updateReady)
+                .animation(AppMotion.content, value: state.serverRunning)
                 .background(GeometryReader { box in
                     Color.clear.preference(key: MenuContentHeight.self, value: box.size.height)
                 })
@@ -348,7 +352,7 @@ struct MenuBarView: View {
         VStack(spacing: 8) {
             if state.connectionState != .connected {
                 let stopped = !state.serverRunning && !state.startingAfterLogin
-                MenuCallout(tint: stopped ? .red : connectionDisplay.tone.color, symbol: connectionDisplay.symbol,
+                MenuCallout(tint: stopped ? VisualTokens.error : connectionDisplay.tone.color, symbol: connectionDisplay.symbol,
                             title: state.connectionBannerTitle, detail: state.connectionBannerDetail) {
                     if stopped {
                         Button { state.startServer() } label: { Label("Start Server", systemImage: "play.fill") }
@@ -360,6 +364,7 @@ struct MenuBarView: View {
                             .controlSize(.small)
                     }
                 }
+                .transition(AppMotion.arrive)
             }
 
             if let action = state.busyAction {
@@ -370,10 +375,12 @@ struct MenuBarView: View {
                 MenuCallout(tint: noticeColor(notice.kind), symbol: notice.symbolName, title: notice.message, detail: "") {
                     EmptyView()
                 }
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .animation(.easeInOut(duration: 0.2), value: state.actionNotice?.id)
+                .transition(AppMotion.arrive)
             }
         }
+        .animation(AppMotion.content, value: state.actionNotice?.id)
+        .animation(AppMotion.content, value: state.busyAction)
+        .animation(AppMotion.content, value: state.connectionState)
     }
 
     /// Settings and More close the menu, as in other menu bar apps.
@@ -1481,9 +1488,9 @@ struct MenuBarView: View {
 
     private func noticeColor(_ kind: ActionNotice.Kind) -> Color {
         switch kind {
-        case .success: return .green
-        case .error: return .red
-        case .update: return .accentColor
+        case .success: return VisualTokens.success
+        case .error: return VisualTokens.error
+        case .update: return VisualTokens.accent
         case .info: return .secondary
         }
     }
@@ -1768,12 +1775,12 @@ private struct MenuTileLabelStyle: LabelStyle {
     }
 }
 
-/// A disclosure row with its chevron on the right, opening without an animation of its own
-/// (the menu window follows the content, #200).
+/// A disclosure row with its chevron on the right. The content fades in and the chevron turns;
+/// the menu window itself follows the content without a motion of its own (#200).
 private struct MenuDisclosureStyle: DisclosureGroupStyle {
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { configuration.isExpanded.toggle() } label: {
+            Button { withAnimation(AppMotion.content) { configuration.isExpanded.toggle() } } label: {
                 HStack(spacing: 6) {
                     configuration.label
                     Image(systemName: "chevron.down")
@@ -1788,7 +1795,7 @@ private struct MenuDisclosureStyle: DisclosureGroupStyle {
             .buttonStyle(.plain)
             .accessibilityHint(configuration.isExpanded ? "Collapses this section" : "Expands this section")
             if configuration.isExpanded {
-                configuration.content
+                configuration.content.transition(.opacity)
             }
         }
     }
@@ -1805,7 +1812,10 @@ private struct MenuChip: View {
         HStack(spacing: 4) {
             Image(systemName: symbol).foregroundStyle(tint ?? .secondary)
             Text(text).foregroundStyle(tint ?? .primary)
+                .monospacedDigit()
+                .contentTransition(.numericText())
         }
+        .animation(AppMotion.control, value: text)
         .font(.caption2.weight(.semibold))
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background((tint ?? Color.primary).opacity(tint == nil ? 0.07 : 0.14), in: Capsule())

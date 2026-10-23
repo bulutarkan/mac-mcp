@@ -50,7 +50,7 @@ class UpdateAlertTests(unittest.TestCase):
         self.assertIn('userInfo["kind"] as? String == "update"', self.notifications)
 
     def test_the_menu_and_settings_say_the_same_words(self) -> None:
-        self.assertIn("if state.updateReady { updateCallout }", self.menu)
+        self.assertIn("if state.updateReady { updateCallout.transition(AppMotion.arrive) }", self.menu)
         callout = self.section(self.menu, "private var updateCallout", "private var headerSubtitle")
         self.assertIn('Text("A new update is ready")', callout)
         self.assertIn("state.performUpdate()", callout)

@@ -224,6 +224,8 @@ struct SettingsView: View {
             sidebar
             Divider()
             detail
+                // A pane that replaces another rises in slightly; with Reduce Motion it only fades.
+                .animation(AppMotion.pane, value: selection)
         }
         .frame(minWidth: 820, idealWidth: 920, minHeight: 560, idealHeight: 640)
         .background(.regularMaterial)
@@ -1019,6 +1021,8 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             selectedPane
+                .id(selection)
+                .transition(AppMotion.paneChange)
         }
     }
 

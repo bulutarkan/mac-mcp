@@ -443,6 +443,8 @@ private struct PromptHeightKey: PreferenceKey {
 struct OwnerPromptRoot: View {
     @ObservedObject var model: OwnerPromptModel
     let controller: OwnerPromptController
+    /// With Reduce Motion the question only fades in: the island does not grow and the card does not slide.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -493,7 +495,8 @@ struct OwnerPromptRoot: View {
             )
         )
         .environment(\.colorScheme, .dark)
-        .scaleEffect(x: model.appeared ? 1 : 0.42, y: model.appeared ? 1 : 0.18, anchor: .top)
+        .scaleEffect(x: model.appeared || reduceMotion ? 1 : 0.42, y: model.appeared || reduceMotion ? 1 : 0.18, anchor: .top)
+        .opacity(reduceMotion && !model.appeared ? 0 : 1)
     }
 
     /// The card at the top right: glass, in the system's light or dark look.
@@ -510,7 +513,7 @@ struct OwnerPromptRoot: View {
                 }
                 .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
         )
-        .offset(x: model.appeared ? 0 : 40)
+        .offset(x: model.appeared || reduceMotion ? 0 : 16)
         .opacity(model.appeared ? 1 : 0)
     }
 }

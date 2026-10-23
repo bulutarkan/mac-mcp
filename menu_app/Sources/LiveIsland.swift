@@ -1085,14 +1085,7 @@ final class SpinnerView: NSView {
         guard window != nil else { return }
         arc.removeAnimation(forKey: "spin")
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            // No turning: the arc breathes instead.
-            let pulse = CABasicAnimation(keyPath: "opacity")
-            pulse.fromValue = 1
-            pulse.toValue = 0.35
-            pulse.duration = 0.9
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            arc.add(pulse, forKey: "spin")
+            // No turning and no breathing: a still arc; the words beside it say that work goes on.
             return
         }
         let spin = CABasicAnimation(keyPath: "transform.rotation.z")
