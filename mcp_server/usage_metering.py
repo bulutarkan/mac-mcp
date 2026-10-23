@@ -257,6 +257,84 @@ def ensure_usage_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_usage_daily_tool_date ON usage_daily(tool, local_date DESC)"
     )
+    # What memory and skill calls came to (#110): counts per outcome, a skill's name, nothing else.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_skill_daily (
+            local_date TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            actor_class TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (local_date, timezone, actor_class, tool, outcome, detail)
+        )
+        """
+    )
+
+
+MEMORY_SKILL_TOOLS = frozenset({"memory_search", "memory_add", "memory_update", "skill_search", "skill_get"})
+
+
+def _payload_dict(value: Any) -> Dict[str, Any]:
+    """The tool's own result dict from what MCP returns: a dict, a {"result": {...}} wrapper, a
+    (content, structured) pair, or text content holding JSON."""
+    if isinstance(value, dict):
+        inner = value.get("result")
+        if isinstance(inner, dict) and "ok" not in value:
+            return inner
+        if value.get("type") == "text" and isinstance(value.get("text"), str):
+            return _payload_dict(_json_or_none(value["text"]))
+        return value
+    if isinstance(value, (list, tuple)):
+        if len(value) == 2 and isinstance(value[1], dict):
+            return _payload_dict(value[1])
+        for item in value:
+            found = _payload_dict(item)
+            if found:
+                return found
+        return {}
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return _payload_dict(_json_or_none(text))
+    return {}
+
+
+def _json_or_none(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def memory_skill_outcome(tool: str, status: str, arguments: Any, result: Any,
+                         error: Optional[str] = None) -> Optional[tuple[str, str]]:
+    """(outcome, detail) for a memory or skill call; None for any other tool.
+
+    Outcomes: matched / no_match for searches, saved / already_saved / updated / unchanged for
+    writes, rejected_secret when a secret was refused, loaded / not_found for skill_get, error
+    otherwise. detail is a skill's name for skill_get and empty for everything else."""
+    # A call through tool_invoke is recorded twice, as tool_invoke and as the tool that ran; only the
+    # second counts here, so tool_invoke itself is never a memory or skill call.
+    if tool not in MEMORY_SKILL_TOOLS:
+        return None
+    if status != "success":
+        text = str(error or "")
+        if "MEMORY_CONTAINS_SECRET" in text:
+            return "rejected_secret", ""
+        if tool == "skill_get" and ("not found" in text.lower() or "404" in text):
+            return "not_found", ""
+        return "error", ""
+    data = _payload_dict(result)
+    if tool in {"memory_search", "skill_search"}:
+        return ("matched" if int(data.get("count") or 0) > 0 else "no_match"), ""
+    if tool == "memory_add":
+        return ("already_saved" if data.get("action") == "already_saved" else "saved"), ""
+    if tool == "memory_update":
+        return ("unchanged" if data.get("action") == "unchanged" else "updated"), ""
+    args = arguments if isinstance(arguments, dict) else {}
+    return "loaded", str(data.get("name") or args.get("name") or "").strip()[:80]
 
 
 @dataclass
@@ -270,6 +348,8 @@ class UsageSample:
     result: Any
     # Approximate payload bytes, when the producer knows them; bounds what the batch holds.
     size_hint: int = 0
+    # The error text of a failed call, read only to tell outcomes apart (#110); never stored.
+    error: Optional[str] = None
 
 
 class UsageCollector:
@@ -397,7 +477,17 @@ class UsageCollector:
 
     def _write_batch(self, samples: Iterable[UsageSample]) -> None:
         rows = []
+        outcomes = []
         for sample in samples:
+            try:
+                outcome = memory_skill_outcome(str(sample.tool or ""), str(sample.status or ""), sample.arguments,
+                                               sample.result, sample.error)
+            except Exception:
+                outcome = None
+            if outcome is not None:
+                local_date, timezone = self._local_bucket(sample.timestamp)
+                outcomes.append((local_date, timezone, str(sample.actor_class or "primary"), str(sample.tool),
+                                 outcome[0], outcome[1]))
             try:
                 input_metrics = measure_payload(sample.arguments)
                 output_metrics = measure_payload(sample.result)
@@ -481,6 +571,15 @@ class UsageCollector:
                     """,
                     rows,
                 )
+                conn.executemany(
+                    """
+                    INSERT INTO memory_skill_daily (local_date, timezone, actor_class, tool, outcome, detail, count)
+                    VALUES (?,?,?,?,?,?,1)
+                    ON CONFLICT(local_date, timezone, actor_class, tool, outcome, detail)
+                    DO UPDATE SET count=count+1
+                    """,
+                    outcomes,
+                )
                 _prune_usage(conn)
         finally:
             conn.close()
@@ -491,10 +590,9 @@ def _usage_cutoff(retention_days: int) -> str:
 
 
 def _prune_usage(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "DELETE FROM usage_daily WHERE local_date < ?",
-        (_usage_cutoff(usage_privacy()["retention_days"]),),
-    )
+    cutoff = _usage_cutoff(usage_privacy()["retention_days"])
+    conn.execute("DELETE FROM usage_daily WHERE local_date < ?", (cutoff,))
+    conn.execute("DELETE FROM memory_skill_daily WHERE local_date < ?", (cutoff,))
 
 
 def clear_usage(db_path: Path) -> int:
@@ -505,6 +603,7 @@ def clear_usage(db_path: Path) -> int:
         with conn:
             ensure_usage_schema(conn)
             removed = conn.execute("DELETE FROM usage_daily").rowcount
+            removed += conn.execute("DELETE FROM memory_skill_daily").rowcount
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return int(removed or 0)
     finally:
@@ -593,6 +692,11 @@ def query_usage_summary(
             params,
         ).fetchall()
         available_since = conn.execute("SELECT MIN(local_date) FROM usage_daily").fetchone()[0]
+        memory_rows = conn.execute(
+            f"SELECT tool, outcome, detail, SUM(count) AS count FROM memory_skill_daily WHERE {where_sql} "
+            "GROUP BY tool, outcome, detail ORDER BY tool, outcome, detail",
+            params,
+        ).fetchall()
     finally:
         conn.close()
 
@@ -651,5 +755,23 @@ def query_usage_summary(
         "daily": daily,
         "totals": row_payload(total),
         "top_tools": tools,
+        "memory_skills": _memory_skill_payload(memory_rows),
         "diagnostics": diagnostics or {},
+    }
+
+
+def _memory_skill_payload(rows: Iterable[sqlite3.Row]) -> Dict[str, Any]:
+    """Memory and skill outcomes per tool, and which skills were loaded how often (#110)."""
+    tools: Dict[str, Dict[str, int]] = {}
+    skills: Dict[str, int] = {}
+    for row in rows:
+        count = int(row["count"] or 0)
+        outcomes = tools.setdefault(str(row["tool"]), {})
+        outcomes[str(row["outcome"])] = outcomes.get(str(row["outcome"]), 0) + count
+        if row["tool"] == "skill_get" and row["outcome"] == "loaded" and row["detail"]:
+            skills[str(row["detail"])] = skills.get(str(row["detail"]), 0) + count
+    return {
+        "tools": {tool: dict(sorted(outcomes.items())) for tool, outcomes in sorted(tools.items())},
+        "skills_loaded": [{"name": name, "count": count}
+                          for name, count in sorted(skills.items(), key=lambda item: (-item[1], item[0]))[:10]],
     }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import contextvars
 import os
 from dataclasses import dataclass, replace
@@ -35,6 +37,8 @@ class RiskOverride:
     destructive: Optional[bool] = None
     sensitive: Optional[bool] = None
     requested_access_mode: Optional[AccessMode] = None
+    # The tool a tool_invoke call runs, so a profile treats it as that tool (#110).
+    invoked_tool: Optional[str] = None
 
 
 RiskResolver = Callable[[Mapping[str, Any]], RiskOverride]
@@ -58,6 +62,7 @@ class RiskAssessment:
     destructive: bool
     sensitive: bool
     requested_access_mode: Optional[AccessMode] = None
+    invoked_tool: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -300,8 +305,23 @@ def _http_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+_CLIENT_PREFIX = re.compile(r"^mcp__((?:[^_]|_(?!_))+)__(.+)$")
+
+
+def strip_client_prefix(name: str, is_known: Callable[[str], bool]) -> str:
+    """A tool name as an MCP client shows it (mcp__<server>__<tool>) back to this server's own name.
+
+    Agents copy the name they see into tool_invoke; only a prefix that leaves a known tool is removed."""
+    if is_known(name):
+        return name
+    match = _CLIENT_PREFIX.match(name)
+    if match and is_known(match.group(2)):
+        return match.group(2)
+    return name
+
+
 def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
-    target = str(arguments.get("tool_name") or "").strip()
+    target = strip_client_prefix(str(arguments.get("tool_name") or "").strip(), lambda name: name in RISK_REGISTRY)
     nested = arguments.get("arguments") if isinstance(arguments.get("arguments"), Mapping) else {}
     if not target or target in {"tool_invoke", "tool_discover"}:
         return RiskOverride(
@@ -317,7 +337,7 @@ def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
         return RiskOverride(capabilities=_caps(Capability.RAW_EXECUTION), destructive=True, sensitive=True)
     return RiskOverride(
         capabilities=effective.capabilities, destructive=effective.destructive, sensitive=effective.sensitive,
-        requested_access_mode=effective.requested_access_mode,
+        requested_access_mode=effective.requested_access_mode, invoked_tool=target,
     )
 
 
@@ -940,6 +960,7 @@ def resolve_risk(tool: str, arguments: Optional[Mapping[str, Any]] = None) -> tu
         destructive=override.destructive if override.destructive is not None else declared.destructive,
         sensitive=override.sensitive if override.sensitive is not None else declared.sensitive,
         requested_access_mode=override.requested_access_mode,
+        invoked_tool=override.invoked_tool,
     )
     return declared, effective
 
@@ -955,7 +976,9 @@ def evaluate_profile(profile_name: str, risk: RiskAssessment) -> PolicyDecision:
     profile = PROFILES.get(profile_name)
     if profile is None:
         return PolicyDecision(False, profile_name, "profile_denied", "unknown_profile")
-    if risk.tool in _PROFILE_EXTRA_TOOLS.get(profile.name, frozenset()):
+    extras = _PROFILE_EXTRA_TOOLS.get(profile.name, frozenset())
+    # The same tool through tool_invoke is the same call (#110): a read-only agent's memory_add was denied there.
+    if risk.tool in extras or (risk.tool == "tool_invoke" and risk.invoked_tool in extras):
         return PolicyDecision(True, profile.name, "profile_allowed", "allowed")
     denied_capabilities: tuple[str, ...] = ()
     if profile.allowed_capabilities is not None:
@@ -1214,7 +1237,11 @@ def narrow_child_profile(parent_profile: str, access_mode: AccessMode | str) -> 
 
 def _scope_paths(tool: str, arguments: Mapping[str, Any]) -> tuple[str, ...]:
     paths: list[str] = []
+    # A memory's source is where the fact came from ("owner instruction"), not a file (#110).
+    text_source = tool in RISK_REGISTRY and RISK_REGISTRY[tool].family == "memory"
     for key in ("path", "source", "destination", "cwd"):
+        if key == "source" and text_source:
+            continue
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
             paths.append(value)

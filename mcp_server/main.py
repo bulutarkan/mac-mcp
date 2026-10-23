@@ -42,7 +42,7 @@ from .browser_schemas import (
 from mcp.server.fastmcp.exceptions import ToolError
 from .policy import (
     PROFILES, Capability, current_policy_context, declared_risk, environment_policy_context, reset_policy_context,
-    set_policy_context,
+    set_policy_context, strip_client_prefix,
 )
 from .policy_scope import ScopeRequest, evaluate_scope
 from .scoped_auth import resolve_request_identity
@@ -552,7 +552,7 @@ def _split_images(result: Any) -> tuple[list, Any]:
 
 
 async def _invoke_registered_tool(mcp: ObservedFastMCP, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
-    target = str(tool_name or "").strip()
+    target = strip_client_prefix(str(tool_name or "").strip(), lambda name: mcp._tool_manager.get_tool(name) is not None)
     if not target or target in {"tool_discover", "tool_invoke"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A non-fallback target tool_name is required.")
     if mcp._tool_manager.get_tool(target) is None:

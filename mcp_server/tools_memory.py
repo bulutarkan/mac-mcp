@@ -723,7 +723,8 @@ def _tag_match(entry: MemoryEntry, tags: Sequence[str]) -> bool:
 
 _SECRET_MESSAGE = (
     "MEMORY_CONTAINS_SECRET: memories never keep passwords, API keys, tokens or private keys. Save the fact "
-    "without the secret (for example where it is kept: 'the deploy key is in the Keychain item deploy-prod')."
+    "without the secret (for example where it is kept: 'the deploy key is in the Keychain item deploy-prod'), "
+    "once, or skip saving it. Never retry with the secret."
 )
 
 

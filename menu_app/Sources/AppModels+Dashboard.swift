@@ -156,6 +156,7 @@ struct UsageSummaryEnvelope: Decodable, Equatable {
     let daily: [UsageDay]
     let totals: UsageTotals
     let topTools: [UsageTool]
+    let memorySkills: MemorySkillUsage?
     let diagnostics: UsageDiagnostics?
     let meteringEnabled: Bool?
     let retentionDays: Int?
@@ -174,7 +175,31 @@ struct UsageSummaryEnvelope: Decodable, Equatable {
         case inputDefinition = "input_definition"
         case outputDefinition = "output_definition"
         case topTools = "top_tools"
+        case memorySkills = "memory_skills"
     }
+}
+
+/// What memory and skill calls came to (#110): outcomes per tool and the skills loaded most.
+struct MemorySkillUsage: Decodable, Equatable {
+    let tools: [String: [String: Int]]
+    let skillsLoaded: [LoadedSkill]
+
+    struct LoadedSkill: Decodable, Equatable {
+        let name: String
+        let count: Int
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case tools
+        case skillsLoaded = "skills_loaded"
+    }
+
+    func count(_ tool: String, _ outcomes: String...) -> Int {
+        let byOutcome = tools[tool] ?? [:]
+        return outcomes.isEmpty ? byOutcome.values.reduce(0, +) : outcomes.reduce(0) { $0 + (byOutcome[$1] ?? 0) }
+    }
+
+    var isEmpty: Bool { tools.values.allSatisfy { $0.values.allSatisfy { $0 == 0 } } }
 }
 
 struct UsagePrivacyEnvelope: Decodable, Equatable {

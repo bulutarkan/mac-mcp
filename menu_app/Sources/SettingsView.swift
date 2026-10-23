@@ -1332,6 +1332,14 @@ struct SettingsView: View {
                             Label("Top Tools", systemImage: "list.number")
                         }
                     }
+                    if let memorySkills = usage.memorySkills, !memorySkills.isEmpty {
+                        GroupBox {
+                            MemorySkillUsageView(usage: memorySkills, format: compactNumber)
+                                .padding(.vertical, 2)
+                        } label: {
+                            Label("Memory and Skills", systemImage: "brain")
+                        }
+                    }
                 } else if state.usageLoading {
                     GroupBox {
                         HStack {

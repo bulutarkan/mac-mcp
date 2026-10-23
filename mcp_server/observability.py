@@ -803,6 +803,7 @@ class TelemetryManager:
                         arguments=usage_arguments if usage_arguments is not None else {},
                         result=None if error is not None else result,
                         size_hint=int(event.get("result_size") or 0),
+                        error=str(error)[:400] if error is not None else None,
                     )
                 )
             except Exception:

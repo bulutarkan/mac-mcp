@@ -261,3 +261,27 @@ class AgentResultEnvelopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StrayCloserTests(unittest.TestCase):
+    """A complete envelope followed only by stray closing brackets is kept; anything else stays invalid."""
+
+    BASE = ('{"schema_version":1,"outcome":"success","summary":"ok","claims":[],"evidence":[],"artifacts":[],'
+            '"warnings":[],"confidence":0.9,"errors":[]}')
+
+    def parse(self, tail: str):
+        from mcp_server.agent_results import parse_provider_result
+
+        return parse_provider_result("report\n\nTASK_RESULT_ENVELOPE_V1 " + self.BASE + tail)
+
+    def test_extra_closing_brackets_after_a_whole_object(self) -> None:
+        for tail in ("}", "}}", "] }", "\n}"):
+            envelope, meta = self.parse(tail)
+            self.assertEqual(("valid", "ok"), (meta["contract_status"], envelope["summary"]), tail)
+
+    def test_other_trailing_text_is_still_invalid(self) -> None:
+        from mcp_server.agent_results import ResultContractError
+
+        for tail in (" extra text", '{"a":1}', "}x"):
+            with self.assertRaises(ResultContractError, msg=tail):
+                self.parse(tail)

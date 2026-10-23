@@ -25,6 +25,16 @@
 - `team_messages action=history` shows a team's whole conversation, oldest first, with who was shown and who opened each message, without marking anything read (#104). Only the lead, the team's agents and the owner can read it; the owner sees it under Settings › Agents › Team History, in each team's Messages, with counts of messages that reached a finished agent or were passed on. Dashboard API: `/dashboard/api/agents/teams/{team_id}/messages`.
 - A delegated agent reaches the Mac MCP that started it on that server's port (`MAC_MCP_PORT`), not always 8765.
 
+### Memory and skills for delegated agents (roadmap #110, part 2)
+- Agents Mac MCP starts get a short memory-and-skills section right after their task, since MCP clients need not pass the server's instructions on: look up the owner's facts with `memory_search` before searching files or saying something cannot be found, `skill_search` and `skill_get` before procedure work (design or UI, frameworks, file formats, review, release and report routines), and save a lasting preference, decision or correction with `memory_update` or `memory_add`, quietly. Only agents that can use those tools get it; work from outside content never saves.
+- Read-only agents are told that saving to the owner's memory and team messages are allowed, so they no longer drop a preference they were asked to keep.
+- A memory's `source` is text, not a path: `memory_add` with `source: "owner instruction"` was refused for scoped agents.
+- `tool_invoke` accepts the name an MCP client shows (`mcp__<server>__<tool>`), and a read-only agent's `memory_add` or `memory_update` through `tool_invoke` is allowed like the direct call.
+- Settings › Usage shows Memory and Skills: lookups and how many found something, memories saved, updated or refused for holding a secret, and the skills used most. Counts only, under the same usage switch and retention; nothing is counted in private mode.
+- The secret refusal tells the caller to save the fact without the secret once, or skip it.
+- A result envelope followed only by stray closing brackets (`{...}}`) is kept instead of failing the agent; any other trailing text still fails closed.
+- Measured with the same three tasks before and after (default model and reasoning): an owner fact in memory went from 20 tool calls, 1.3M tokens, 173 s and no answer to one `memory_search`, about 112K tokens, 21 s and the right answer; a design task now uses the design skill; a "from now on" preference is saved once.
+
 ## 2.3.0 r3 - 2026-10-22
 
 **In short:** a signed checkpoint on the 2.3.0 line; the version stays 2.3.0. Agents can ask you a quick question in Mac MCP's own window (with one-click answers, files and pictures) and keep working whatever you answer, and the approvals before sending a mail or uploading a file open there too. Agents find your skills and memories and use them quietly. `personal_search` and `daily_briefing` read across your apps; the Photos, Contacts, Notes and Calendar adapters grow; web and Electron apps can be read and pressed down to their controls. Settings let you review memories, lessons and skills; the dashboard and phone get a new look; a running team shows its plan limits; your other Macs can get full access for a while. Update with `mac-mcp update` or the new package.

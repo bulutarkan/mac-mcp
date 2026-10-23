@@ -199,3 +199,56 @@ struct UsageCollapsibleCard<Content: View>: View {
         }
     }
 }
+
+
+/// How often AI apps and agents looked up and saved memories and used skills (#110). Counts only.
+struct MemorySkillUsageView: View {
+    let usage: MemorySkillUsage
+    let format: (Int) -> String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                UsageStat(title: "Memory lookups", value: format(usage.count("memory_search")),
+                          help: "\(format(usage.count("memory_search", "matched"))) found something")
+                UsageStat(title: "Memories saved", value: format(usage.count("memory_add", "saved")),
+                          help: "\(format(usage.count("memory_add", "already_saved"))) were already saved")
+                UsageStat(title: "Memories updated", value: format(usage.count("memory_update", "updated")))
+                UsageStat(title: "Skills used", value: format(usage.count("skill_get", "loaded")),
+                          help: "\(format(usage.count("skill_search"))) skill searches")
+            }
+            Text(detailLine)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !usage.skillsLoaded.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(usage.skillsLoaded, id: \.name) { skill in
+                        HStack {
+                            Image(systemName: "book.closed")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                            Text(skill.name).font(.caption)
+                            Spacer()
+                            Text("\(format(skill.count))×")
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            }
+        }
+    }
+
+    private var detailLine: String {
+        var parts = ["\(format(usage.count("memory_search", "matched"))) of \(format(usage.count("memory_search"))) lookups found something"]
+        let already = usage.count("memory_add", "already_saved")
+        if already > 0 { parts.append(already == 1 ? "1 save was already known" : "\(format(already)) saves were already known") }
+        let refused = usage.count("memory_add", "rejected_secret") + usage.count("memory_update", "rejected_secret")
+        if refused > 0 { parts.append("\(format(refused)) refused because \(refused == 1 ? "it" : "they") held a secret") }
+        let missing = usage.count("skill_get", "not_found")
+        if missing > 0 { parts.append(missing == 1 ? "1 skill not found" : "\(format(missing)) skills not found") }
+        return parts.joined(separator: " · ") + "."
+    }
+}

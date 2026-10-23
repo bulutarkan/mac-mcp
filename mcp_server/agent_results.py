@@ -385,6 +385,19 @@ def legacy_result_envelope(
     return normalize_result_envelope(raw, provenance=provenance, contract_status="legacy_fallback")
 
 
+def _complete_object_with_stray_closers(text: str) -> Optional[Dict[str, Any]]:
+    """A whole JSON object followed only by stray closing brackets ("{...}}"), which models sometimes
+    write; the object itself is complete, so it is kept. Anything else after it stays invalid."""
+    try:
+        decoded, end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        return None
+    rest = "".join(text[end:].split())
+    if not isinstance(decoded, dict) or not rest or rest.strip("}]") != "":
+        return None
+    return decoded
+
+
 def parse_provider_result(
     text: str,
     *,
@@ -406,7 +419,9 @@ def parse_provider_result(
     try:
         decoded = json.loads(marked)
     except json.JSONDecodeError as exc:
-        raise ResultContractError("invalid_json", f"invalid marked result envelope JSON: {exc.msg}") from exc
+        decoded = _complete_object_with_stray_closers(marked)
+        if decoded is None:
+            raise ResultContractError("invalid_json", f"invalid marked result envelope JSON: {exc.msg}") from exc
     envelope = normalize_result_envelope(decoded, provenance=provenance, contract_status="valid")
     return envelope, {
         "valid": True,

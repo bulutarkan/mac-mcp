@@ -4786,6 +4786,43 @@ def _resolve_cwd(cwd: Optional[str]) -> Path:
     return workdir
 
 
+def _memory_skill_instruction(scope: ResourceScope, *, provenance_class: str, scoped_mcp: bool) -> str:
+    """How a delegated agent uses the owner's memory and skills (#110), in its own prompt.
+
+    MCP clients need not pass the server's instructions to the model, so agents Mac MCP starts get
+    the rules here. Only for agents that reach Mac MCP and may use those tools; work that came from
+    outside content never writes memory. Lookups are conditional, saving is rare and silent."""
+    if not scoped_mcp:
+        return ""
+    families = scope.tool_families
+    memory = families is None or "memory" in families
+    skills = families is None or "skills" in families
+    if not (memory or skills):
+        return ""
+    lines = ["Mac MCP memory and skills (Mac MCP tools; through tool_invoke if not in your list):"]
+    if memory:
+        lines.append(
+            "- The owner's memories hold facts found nowhere else: where things are posted or kept, people, accounts, "
+            "projects, how they like work done, past decisions. When the task needs such a fact, call memory_search "
+            "with a few key words before searching files or the web, and before saying it could not be found."
+        )
+    if skills:
+        lines.append(
+            "- Before work that follows a procedure (design or UI, a framework, a file format, a review, release or "
+            "report routine), call skill_search once, even for a short task, and skill_get the best match if one fits."
+        )
+    if memory and provenance_class == "local":
+        lines.append(
+            "- When the task states a lasting preference of the owner ('from now on', 'always', 'never'), a decision "
+            "or a correction, saving it is part of the task: before your final answer, memory_search for it, then "
+            "memory_update the match or memory_add one short sentence with tags. Never save secrets, one-off details "
+            "or guesses; if a secret is refused, save only the safe part once or skip it."
+        )
+    lines.append("- A task that needs no owner facts and follows no procedure needs none of this.")
+    lines.append("- Do it quietly: never mention reading or saving memory in your report; just use what you know.")
+    return "\n".join(lines)
+
+
 def _handoff_instruction(result_style: str, *, evidence_required: bool = False) -> str:
     if result_style == "detailed":
         prose = (
@@ -5247,9 +5284,12 @@ def _access_instruction(access_mode: str, permission_profile: Optional[str]) -> 
             "Files, repositories, configuration and services on this Mac are read-only: do not modify them. "
             "In the browser, act as the task asks (click, type, submit, post) with the browser tools."
         )
+    # Read-only agents may still save to the owner's memory (#110) and message their team; without saying so
+    # they took "no external state" to forbid memory_add and dropped the preference they were told to keep.
     return (
         "This task is read-only. Do not modify files, configuration, services, repositories, or external state. "
-        "Use only inspection/read commands and tools."
+        "Use only inspection/read commands and tools. Saving to the owner's Mac MCP memory (memory_add, "
+        "memory_update) and team messages are allowed: they do not change this Mac."
     )
 
 
@@ -5458,13 +5498,18 @@ def _spawn_internal(
         lesson_context_chars = int(learned_context.get("chars") or 0)
         pieces = [str(learned_context.get("text") or "").strip(), lesson_candidate_instruction(clean_role)]
         role_learning_instruction = "\n\n".join(piece for piece in pieces if piece)
+    memory_skill_instruction = _memory_skill_instruction(
+        scope, provenance_class=provenance_class,
+        scoped_mcp=provider in {"opencode", "codex", "claude", *harness_providers.PROVIDERS},
+    )
     effective_prompt = (
         user_prompt
+        # Right after the task, so lookups happen before the work and the save is part of it (#110).
+        + ("\n\n" + memory_skill_instruction if memory_skill_instruction else "")
         + ("\n\n" + integration_instruction if integration_instruction else "")
         + ("\n\n" + access_instruction if access_instruction else "")
         + "\n\n" + scope_instruction
         + ("\n\n" + role_learning_instruction if role_learning_instruction else "")
-
         + "\n\n" + _handoff_instruction(
             result_style,
             evidence_required=evidence_policy_for(
