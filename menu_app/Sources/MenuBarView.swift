@@ -248,8 +248,9 @@ struct MenuBarView: View {
         if state.activeAgents > 0 {
             return "\(state.activeAgents) agent\(state.activeAgents == 1 ? "" : "s") working"
         }
+        // Idle says only that; the line is for news (work, a stopped server), not filler.
         guard state.serverRunning else { return "Not running" }
-        return state.totalCalls > 0 ? "Ready · your AI apps are using it" : "Ready for your AI apps"
+        return "Ready"
     }
 
     /// The agent list shows while agents work, or when asked for from the Agents row.
