@@ -10,9 +10,9 @@ enum StatusTone: Equatable {
 
     var color: Color {
         switch self {
-        case .ok: return .green
-        case .warning: return .orange
-        case .error: return .red
+        case .ok: return VisualTokens.success
+        case .warning: return VisualTokens.warning
+        case .error: return VisualTokens.error
         case .neutral: return .secondary
         }
     }

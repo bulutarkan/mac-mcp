@@ -43,6 +43,8 @@ if [[ -n "${MAC_MCP_APP_DISPLAY_NAME:-}" ]]; then
 fi
 APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/SwiftUICompat.swift"
+  "${SCRIPT_DIR}/Sources/VisualTokens.swift"
+  "${SCRIPT_DIR}/Sources/AppMotion.swift"
   "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift"
   "${SCRIPT_DIR}/Sources/LoginItem.swift"
   "${SCRIPT_DIR}/Sources/PrivacyPane.swift"

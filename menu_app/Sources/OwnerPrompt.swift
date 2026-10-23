@@ -427,10 +427,12 @@ final class OwnerPromptHostingView: NSHostingView<OwnerPromptRoot> {
 
 // MARK: - Views
 
+/// The question window's colours, from the app-wide tokens: champagne for what the owner is
+/// asked to do, amber for a question about to run out of time.
 private enum PromptPalette {
-    static let gold = Color(red: 0.953, green: 0.776, blue: 0.435)
-    static let goldInk = Color(red: 0.165, green: 0.102, blue: 0.02)
-    static let attention = Color(red: 1.0, green: 0.66, blue: 0.25)
+    static let gold = VisualTokens.OnDark.brand
+    static let goldInk = VisualTokens.onBrand
+    static let attention = VisualTokens.OnDark.warning
 }
 
 private struct PromptHeightKey: PreferenceKey {

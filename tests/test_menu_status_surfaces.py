@@ -188,6 +188,7 @@ class StatusDisplayMappingTests(unittest.TestCase):
                 str(SOURCES / "SettingsStore.swift"),
                 str(SOURCES / "ToolActivityBubbleController.swift"),
                 str(SOURCES / "KeychainStore.swift"),
+                str(SOURCES / "VisualTokens.swift"),
                 str(SOURCES / "StatusDisplay.swift"),
                 str(harness),
                 "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security",

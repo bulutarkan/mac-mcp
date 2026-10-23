@@ -67,22 +67,21 @@ struct IslandSilhouette: Shape {
     }
 }
 
+/// The island's motion, from the app-wide system (AppMotion).
 enum IslandMotion {
-    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    /// Opening: a little give at the end, like the iPhone island.
-    static var open: Animation { reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.78) }
-    /// Closing: content leaves first, then the shape settles back without bounce.
-    static var close: Animation { reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 0.92) }
-    static var slot: Animation { reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.32, dampingFraction: 0.8) }
+    static var reduceMotion: Bool { AppMotion.reduceMotion }
+    static var open: Animation { AppMotion.islandOpen }
+    static var close: Animation { AppMotion.islandClose }
+    static var slot: Animation { AppMotion.spatial }
 }
 
 extension LiveTone {
     var color: Color {
         switch self {
-        case .working: return Color(red: 0.45, green: 0.56, blue: 1.0)
-        case .done: return Color(red: 0.30, green: 0.85, blue: 0.50)
-        case .attention: return Color(red: 1.0, green: 0.66, blue: 0.25)
-        case .problem: return Color(red: 1.0, green: 0.38, blue: 0.36)
+        case .working: return VisualTokens.OnDark.accent
+        case .done: return VisualTokens.OnDark.success
+        case .attention: return VisualTokens.OnDark.warning
+        case .problem: return VisualTokens.OnDark.error
         case .notice: return Color(red: 0.58, green: 0.68, blue: 0.82)
         }
     }
