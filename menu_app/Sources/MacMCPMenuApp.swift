@@ -56,6 +56,10 @@ struct MacMCPMenuApp: App {
         }
         .menuBarExtraStyle(.window)
         .commands {
+            CommandGroup(after: .newItem) {
+                Button("Mac MCP Chat") { ChatWindowController.shared.show(state: state) }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
                     SettingsWindowController.shared.show(state: state, settings: state.settings)

@@ -420,6 +420,13 @@ struct MenuBarView: View {
     /// Settings and More close the menu, as in other menu bar apps.
     private var footer: some View {
         VStack(alignment: .leading, spacing: 2) {
+            Button { ChatWindowController.shared.show(state: state) } label: {
+                MenuRow(symbol: "bubble.left.and.text.bubble.right.fill", tint: MenuPalette.neutral, title: "Chat…") {
+                    Text("⇧⌘N").font(.callout).foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open Mac MCP Chat")
             Button { openSettings() } label: {
                 MenuRow(symbol: "gearshape.fill", tint: MenuPalette.neutral, title: "Settings…") {
                     Text("⌘,").font(.callout).foregroundStyle(.tertiary)

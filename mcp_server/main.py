@@ -82,6 +82,7 @@ from .app_adapters import mac_app
 from . import agent_message_bridge, tools_team_messages
 from . import fleet, fleet_client
 from .fleet_routes import create_fleet_routes
+from .chat_routes import create_chat_routes
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
@@ -3331,12 +3332,15 @@ def create_app():
                 yield state
         finally:
             scheduled_task_runner.set_recipe_runner(None)
+            from .chat_sessions import get_host as chat_host
+            await chat_host().shutdown()  # Mac MCP Chat's agent processes stop with the server
 
     app.router.lifespan_context = lifespan_with_recipe_runner
     from .dashboard_routes import _dashboard_guard
     app.router.routes.extend(external_mcp_routes.create_routes(lambda request: _dashboard_guard(request, dashboard_token)))
     app.router.routes.extend(agent_message_bridge.routes())
     app.router.routes.extend(create_mobile_routes(telemetry, settings, dashboard_token, mcp.steering))
+    app.router.routes.extend(create_chat_routes(lambda request: _dashboard_guard(request, dashboard_token)))
     app.router.routes.extend(create_fleet_routes(lambda request: _dashboard_guard(request, dashboard_token),
                                                  recipe_runner=run_recipe_for_launcher))
 

@@ -89,6 +89,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/DoctorReport.swift"
   "${SCRIPT_DIR}/Sources/HelpDiagnostics.swift"
   "${SCRIPT_DIR}/Sources/SettingsWindowController.swift"
+  "${SCRIPT_DIR}/Sources/ChatWindow.swift"
   "${SCRIPT_DIR}/Sources/ToolActivityBubbleController.swift"
   "${SCRIPT_DIR}/Sources/DesktopCursorOverlay.swift"
   "${SCRIPT_DIR}/Sources/BrowserTabPulse.swift"
