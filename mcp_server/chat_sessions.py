@@ -235,6 +235,15 @@ _AGENT_TOOLS = {"ToolSearch": "Looked for the right tool", "TodoWrite": "Updated
                 "WebFetch": "Read a web page", "Task": "Started a helper"}
 
 
+def _tool_source(agent_title: str) -> tuple[str, str]:
+    """("mac-mcp", "read_file") for a Mac MCP tool, (server, tool) for another MCP server, else ("", "")."""
+    match = _MCP_TOOL.match(agent_title.strip())
+    if not match:
+        return "", ""
+    server = match.group("plain") or match.group("server") or ""
+    return ("mac-mcp" if server.replace("_", "-") == "mac-mcp" else server), match.group("tool")
+
+
 def _friendly_title(item: Dict[str, Any], fallback: str) -> str:
     """File steps by the file's name ("Read notes.md"); a Mac MCP step by what it was for; else the agent's words."""
     agent_title = str(item.get("agent_title") or fallback or "")
@@ -435,6 +444,7 @@ class ChatHost:
         if not chat.meta.get("titled") and chat.meta.get("title") == "New chat":
             chat.meta["title"] = _cut(text.splitlines()[0], 60)
         chat.meta["status"] = "running"
+        chat.meta["turn_started_at"] = _now()
         chat.save()
         chat.turn = asyncio.create_task(self._run_turn(chat, text))
         return {"ok": True, "chat": chat.public(), "cursor": chat.seq}
@@ -486,12 +496,15 @@ class ChatHost:
     # ── one turn ────────────────────────────────────────────────────────────
 
     async def _run_turn(self, chat: Chat, text: str) -> None:
+        started = float(chat.meta.get("turn_started_at") or _now())
+        stop, usage = "error", {}
         try:
             await self._ensure_session(chat)
             result = await chat.conn.request("session/prompt", {
                 "sessionId": chat.session_id, "prompt": [{"type": "text", "text": text}]})
             stop = str(result.get("stopReason") or "end_turn")
             usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+
             totals = chat.meta.setdefault("usage", {"input_tokens": 0, "output_tokens": 0})
             totals["input_tokens"] = int(totals.get("input_tokens") or 0) + int(usage.get("inputTokens") or 0)
             totals["output_tokens"] = int(totals.get("output_tokens") or 0) + int(usage.get("outputTokens") or 0)
@@ -522,6 +535,16 @@ class ChatHost:
                     chat.bump(item)
             chat.tools.clear()
             chat.open_text = None
+            # What the CLI reports for the answer: how long it worked, with which model, and its tokens.
+            model = next((option for option in chat.meta.get("config") or [] if option["category"] == "model"), None)
+            model_name = next((choice["name"] for choice in (model or {}).get("options") or []
+                               if choice["value"] == (model or {}).get("current")), (model or {}).get("current") or "")
+            ended = _now()
+            chat.add("turn", started_at=started, ended_at=ended, duration_s=round(max(0.0, ended - started), 1),
+                     stop=stop, model=model_name or chat.meta.get("model") or "",
+                     input_tokens=int(usage.get("inputTokens") or 0), output_tokens=int(usage.get("outputTokens") or 0),
+                     cached_tokens=int(usage.get("cachedReadTokens") or 0))
+            chat.meta.pop("turn_started_at", None)
             chat.meta["status"] = "idle"
             chat.bump()
             chat.save()
@@ -742,6 +765,9 @@ class ChatHost:
             chat.tools[call_id] = item
         if update.get("title"):
             item["agent_title"] = _cut(str(update["title"]), 300)
+            server, tool = _tool_source(item["agent_title"])
+            if tool and not item.get("tool"):
+                item["server"], item["tool"] = server, tool
         if update.get("kind"):
             item["kind"] = str(update["kind"])
         if update.get("status"):

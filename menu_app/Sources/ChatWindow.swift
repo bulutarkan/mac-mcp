@@ -66,6 +66,7 @@ struct ChatSummary: Identifiable, Hashable {
     var connecting: Bool
     var agentAlive: Bool
     var agentError: String
+    var turnStartedAt: Double
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
@@ -83,6 +84,7 @@ struct ChatSummary: Identifiable, Hashable {
         connecting = object["connecting"] as? Bool ?? false
         agentAlive = object["agent_alive"] as? Bool ?? false
         agentError = object["agent_error"] as? String ?? ""
+        turnStartedAt = (object["turn_started_at"] as? NSNumber)?.doubleValue ?? 0
     }
 
     var projectName: String { (project as NSString).lastPathComponent }
@@ -114,6 +116,14 @@ struct ChatItem: Identifiable, Hashable {
     var options: [ChatPermissionOption]
     var choice: String?
     var entries: [(text: String, status: String)]
+    var tool: String
+    var server: String
+    var at: Double
+    // A turn summary: how long the agent worked, with which model, and the tokens it reported.
+    var durationSeconds: Double
+    var model: String
+    var stop: String
+    var tokens: Int
     let rev: Int
 
     init(_ object: [String: Any]) {
@@ -135,6 +145,13 @@ struct ChatItem: Identifiable, Hashable {
         entries = (object["entries"] as? [[String: Any]] ?? []).map {
             (text: $0["text"] as? String ?? "", status: $0["status"] as? String ?? "")
         }
+        tool = object["tool"] as? String ?? ""
+        server = object["server"] as? String ?? ""
+        at = (object["ended_at"] as? NSNumber ?? object["at"] as? NSNumber)?.doubleValue ?? 0
+        durationSeconds = (object["duration_s"] as? NSNumber)?.doubleValue ?? 0
+        model = object["model"] as? String ?? ""
+        stop = object["stop"] as? String ?? ""
+        tokens = ((object["input_tokens"] as? NSNumber)?.intValue ?? 0) + ((object["output_tokens"] as? NSNumber)?.intValue ?? 0)
         rev = (object["rev"] as? NSNumber)?.intValue ?? 0
     }
 
@@ -220,6 +237,12 @@ final class ChatModel: ObservableObject {
         await refreshList()
         select(id)
         return true
+    }
+
+    func retry(_ text: String) {
+        guard chat?.running != true else { return }
+        draft = text
+        send()
     }
 
     func send() {
@@ -310,8 +333,10 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         let model = ChatModel { path, body in await state.taskAPI(path, body: body) }
         let window = NSWindow(contentViewController: NSHostingController(rootView: ChatView(model: model)))
         window.title = "Mac MCP Chat"
+        window.titleVisibility = .hidden  // the chat draws its own header in the title bar's place
         window.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.setContentSize(NSSize(width: 1080, height: 720))
         window.contentMinSize = NSSize(width: 760, height: 500)
         window.setFrameAutosaveName("MacMCPChatWindow")
@@ -326,349 +351,9 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-struct ChatView: View {
-    @ObservedObject var model: ChatModel
-    @MacMCPState private var showingNewChat = false
-
-    var body: some View {
-        NavigationSplitView {
-            ChatSidebar(model: model, newChat: { showingNewChat = true })
-                .navigationSplitViewColumnWidth(min: 230, ideal: 260, max: 340)
-        } detail: {
-            if model.selectedID != nil {
-                ChatConversation(model: model)
-            } else {
-                ChatWelcome(model: model, newChat: { showingNewChat = true })
-            }
-        }
-        .sheet(isPresented: $showingNewChat) { NewChatSheet(model: model) }
-        .task {
-            await model.refreshList()
-            if model.selectedID == nil, let first = model.allChats.first { model.select(first.id) }
-        }
-    }
-}
-
-private struct ChatSidebar: View {
-    @ObservedObject var model: ChatModel
-    let newChat: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Button(action: newChat) {
-                Label("New Chat", systemImage: "square.and.pencil")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: VisualTokens.Radius.control).fill(VisualTokens.quietFill))
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 6)
-            .keyboardShortcut("n", modifiers: .command)
-
-            List(selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
-                ForEach(model.projects) { project in
-                    Section {
-                        ForEach(project.chats) { chat in
-                            ChatRow(chat: chat).tag(Optional(chat.id))
-                                .contextMenu {
-                                    Button("Delete Chat", role: .destructive) { model.delete(chat.id) }
-                                }
-                        }
-                    } header: {
-                        Label(project.name, systemImage: "folder").help(project.id)
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-        }
-    }
-}
-
-private struct ChatRow: View {
-    let chat: ChatSummary
-
-    var body: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(chat.title).lineLimit(1)
-                Text(Date(timeIntervalSince1970: chat.updatedAt), style: .relative)
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 4)
-            if chat.status == "waiting" {
-                Image(systemName: "hand.raised.fill").foregroundStyle(VisualTokens.warning)
-                    .help("Waiting for your answer")
-            } else if chat.running {
-                ProgressView().controlSize(.small)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-}
-
-private struct ChatWelcome: View {
-    @ObservedObject var model: ChatModel
-    let newChat: () -> Void
-
-    var body: some View {
-        VStack(spacing: VisualTokens.Space.m) {
-            Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 44, weight: .light)).foregroundStyle(VisualTokens.accent)
-            Text("Work on a project with an agent").font(.title2.weight(.semibold))
-            Text("Pick a folder and talk. The agent reads and changes files there and uses your Mac through Mac MCP. It asks you before it changes anything.")
-                .multilineTextAlignment(.center).foregroundStyle(.secondary).frame(maxWidth: 420)
-            Button("Choose a Project Folder…", action: newChat)
-                .buttonStyle(.borderedProminent).controlSize(.large)
-            if let error = model.error {
-                Text(error).font(.callout).foregroundStyle(VisualTokens.error)
-            }
-        }
-        .padding(VisualTokens.Space.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 // MARK: Conversation
 
-private struct ChatConversation: View {
-    @ObservedObject var model: ChatModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ChatHeader(chat: model.chat, agent: agentLabel)
-            Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: VisualTokens.Space.s) {
-                        ForEach(model.items) { item in
-                            ChatItemView(item: item, agent: agentLabel, answer: { model.answer(item, option: $0) })
-                                .id(item.id)
-                        }
-                        if model.chat?.running == true, model.items.last?.type == "user" {
-                            ThinkingDots().id("thinking")
-                        }
-                        Color.clear.frame(height: 4).id("end")
-                    }
-                    .padding(.horizontal, VisualTokens.Space.l)
-                    .padding(.vertical, VisualTokens.Space.m)
-                    .frame(maxWidth: 820)
-                    .frame(maxWidth: .infinity)
-                }
-                .onChange(of: model.items.last?.rev) { _ in
-                    withAnimation(AppMotion.content) { proxy.scrollTo("end", anchor: .bottom) }
-                }
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
-            }
-            ChatComposer(model: model)
-        }
-    }
-
-    private var agentLabel: String {
-        model.agents.first { $0.id == model.chat?.agent }?.label ?? "The agent"
-    }
-}
-
-private struct ChatHeader: View {
-    let chat: ChatSummary?
-    let agent: String
-
-    var body: some View {
-        HStack(spacing: VisualTokens.Space.s) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(chat?.title ?? "").font(.headline).lineLimit(1)
-                HStack(spacing: 6) {
-                    Label(chat?.projectName ?? "", systemImage: "folder")
-                    Text("·")
-                    Text(agent).lineLimit(1)
-                }
-                .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if let chat, chat.contextSize > 0 {
-                ContextGauge(used: chat.contextUsed, size: chat.contextSize)
-            }
-        }
-        .padding(.horizontal, VisualTokens.Space.l)
-        .padding(.top, 14).padding(.bottom, 10)
-    }
-}
-
-private struct ContextGauge: View {
-    let used: Int
-    let size: Int
-
-    var body: some View {
-        let fraction = min(1, Double(used) / Double(max(size, 1)))
-        HStack(spacing: 6) {
-            ZStack {
-                Circle().stroke(VisualTokens.hairline, lineWidth: 3)
-                Circle().trim(from: 0, to: fraction)
-                    .stroke(fraction > 0.8 ? VisualTokens.warning : VisualTokens.accent,
-                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            .frame(width: 16, height: 16)
-            Text("\(Int(fraction * 100))% of memory").font(.caption).foregroundStyle(.secondary)
-        }
-        .help("How much of the agent's working memory this chat uses")
-    }
-}
-
-private struct ChatItemView: View {
-    let item: ChatItem
-    let agent: String
-    let answer: (ChatPermissionOption) -> Void
-
-    var body: some View {
-        switch item.type {
-        case "user": UserBubble(text: item.text)
-        case "assistant": AssistantText(text: item.text)
-        case "thought": ThoughtView(text: item.text)
-        case "tool": ToolCard(item: item)
-        case "permission": PermissionCard(item: item, agent: agent, answer: answer)
-        case "plan": PlanCard(item: item)
-        default: NoticeLine(item: item)
-        }
-    }
-}
-
-private struct UserBubble: View {
-    let text: String
-
-    var body: some View {
-        HStack {
-            Spacer(minLength: 80)
-            Text(text)
-                .textSelection(.enabled)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: VisualTokens.Radius.card, style: .continuous)
-                    .fill(VisualTokens.accent.opacity(0.14)))
-        }
-        .padding(.top, VisualTokens.Space.xs)
-    }
-}
-
-private struct AssistantText: View {
-    let text: String
-
-    var body: some View {
-        Text(markdown)
-            .textSelection(.enabled)
-            .lineSpacing(3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var markdown: AttributedString {
-        // Inline Markdown only; list markers become bullets so a list reads as one.
-        let bulleted = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
-            let trimmed = line.drop(while: { $0 == " " })
-            guard trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") else { return String(line) }
-            return String(line.prefix(line.count - trimmed.count)) + "•  " + trimmed.dropFirst(2)
-        }.joined(separator: "\n")
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: bulleted, options: options)) ?? AttributedString(text)
-    }
-}
-
-private struct ThoughtView: View {
-    let text: String
-    @MacMCPState private var open = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $open) {
-            Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
-        } label: {
-            Label("Thinking", systemImage: "sparkles").font(.callout).foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct ToolCard: View {
-    let item: ChatItem
-    @MacMCPState private var open = false
-
-    /// A step is a small pill as wide as its words; opened, it takes the column to show what it did.
-    var body: some View {
-        HStack(spacing: 0) {
-            card.frame(maxWidth: open ? .infinity : nil, alignment: .leading)
-            if !open { Spacer(minLength: 0) }
-        }
-    }
-
-    private var card: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { withAnimation(AppMotion.content) { open.toggle() } } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: symbol).font(.callout).frame(width: 16).foregroundStyle(VisualTokens.accent)
-                    Text(item.title).font(.callout).lineLimit(1).truncationMode(.middle)
-                    if open { Spacer(minLength: 8) }
-                    statusMark
-                    if hasDetail {
-                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(open ? 90 : 0))
-                    }
-                }
-                .contentShape(Rectangle())
-                .padding(.horizontal, 11).padding(.vertical, 7)
-            }
-            .buttonStyle(.plain)
-            .disabled(!hasDetail)
-            if open && hasDetail {
-                Divider()
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(item.input.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(key).font(.caption).foregroundStyle(.secondary).frame(width: 90, alignment: .leading)
-                            Text(value).font(.caption.monospaced()).textSelection(.enabled).lineLimit(4)
-                        }
-                    }
-                    if !item.output.isEmpty {
-                        ScrollView {
-                            Text(item.output).font(.caption.monospaced()).textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 180)
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: VisualTokens.Radius.tile).fill(VisualTokens.quietFill))
-                    }
-                }
-                .padding(12)
-            }
-        }
-        .background(RoundedRectangle(cornerRadius: VisualTokens.Radius.card, style: .continuous)
-            .fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: VisualTokens.Radius.card, style: .continuous)
-            .strokeBorder(VisualTokens.hairline))
-    }
-
-    private var hasDetail: Bool { !item.output.isEmpty || !item.input.isEmpty }
-
-    private var symbol: String {
-        switch item.kind {
-        case "read": return "doc.text"
-        case "edit": return "pencil"
-        case "delete": return "trash"
-        case "move": return "arrow.right.doc.on.clipboard"
-        case "search": return "magnifyingglass"
-        case "execute": return "terminal"
-        case "fetch": return "globe"
-        case "think": return "sparkles"
-        default: return "wrench.and.screwdriver"
-        }
-    }
-
-    @ViewBuilder private var statusMark: some View {
-        switch item.status {
-        case "running": ProgressView().controlSize(.small)
-        case "done": Image(systemName: "checkmark.circle.fill").foregroundStyle(VisualTokens.success)
-        case "failed": Image(systemName: "xmark.circle.fill").foregroundStyle(VisualTokens.error)
-        default: Image(systemName: "stop.circle").foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct PermissionCard: View {
+struct PermissionCard: View {
     let item: ChatItem
     let agent: String
     let answer: (ChatPermissionOption) -> Void
@@ -741,7 +426,7 @@ private struct PermissionCard: View {
     }
 }
 
-private struct PlanCard: View {
+struct PlanCard: View {
     let item: ChatItem
 
     var body: some View {
@@ -762,100 +447,9 @@ private struct PlanCard: View {
     }
 }
 
-private struct NoticeLine: View {
-    let item: ChatItem
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: item.tone == "error" ? "exclamationmark.triangle.fill"
-                  : item.tone == "warning" ? "exclamationmark.circle" : "stop.circle")
-            Text(item.text).textSelection(.enabled)
-        }
-        .font(.caption)
-        .foregroundStyle(item.tone == "error" ? VisualTokens.error : item.tone == "warning" ? VisualTokens.warning : .secondary)
-        .frame(maxWidth: .infinity)
-    }
-}
-
-private struct ThinkingDots: View {
-    @MacMCPState private var phase = 0.0
-
-    var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<3) { index in
-                Circle().fill(Color.secondary).frame(width: 6, height: 6)
-                    .opacity(0.3 + 0.7 * abs(sin(phase + Double(index) * 0.6)))
-            }
-        }
-        .padding(.vertical, 6)
-        .onAppear { withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) { phase = .pi } }
-        .accessibilityLabel("The agent is working")
-    }
-}
-
-private struct ChatComposer: View {
-    @ObservedObject var model: ChatModel
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        VStack(spacing: 6) {
-            if let error = model.error {
-                Text(error).font(.caption).foregroundStyle(VisualTokens.error).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                TextField(placeholder, text: $model.draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...8)
-                    .focused($focused)
-                    .onSubmit { model.send() }
-                    .disabled(waiting)
-                    .padding(.top, 4)
-                HStack(spacing: 6) {
-                    ChatSettingsBar(model: model)
-                    Spacer(minLength: 8)
-                    sendOrStop
-                }
-            }
-            .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(VisualTokens.hairline))
-            .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
-        }
-        .frame(maxWidth: 820)
-        .padding(.horizontal, VisualTokens.Space.l)
-        .padding(.bottom, VisualTokens.Space.m).padding(.top, 6)
-        .onAppear { focused = true }
-    }
-
-    @ViewBuilder private var sendOrStop: some View {
-                if running {
-                    Button(action: model.stop) {
-                        Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
-                            .frame(width: 28, height: 28)
-                            .background(Circle().fill(Color.primary.opacity(0.85)))
-                            .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-                    }
-                    .buttonStyle(.plain).help("Stop").keyboardShortcut(".", modifiers: .command)
-                } else {
-                    Button(action: model.send) {
-                        Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold))
-                            .frame(width: 28, height: 28)
-                            .background(Circle().fill(canSend ? VisualTokens.accent : VisualTokens.hairline))
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain).disabled(!canSend).help("Send")
-                }
-    }
-
-    private var running: Bool { model.chat?.running == true }
-    private var waiting: Bool { model.chat?.status == "waiting" }
-    private var canSend: Bool { !running && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var placeholder: String { waiting ? "Answer the question above first" : "Ask for anything in this project" }
-}
-
 // MARK: The agent's own settings: model, thinking, mode (what it offers, from the owner's own account)
 
-private struct ChatSettingsBar: View {
+struct ChatSettingsBar: View {
     @ObservedObject var model: ChatModel
 
     var body: some View {
@@ -1042,12 +636,16 @@ private struct ChipBackground: ViewModifier {
 
 // MARK: New chat
 
-private struct NewChatSheet: View {
+struct NewChatSheet: View {
     @ObservedObject var model: ChatModel
     @Environment(\.dismiss) private var dismiss
     @MacMCPState private var folder: URL?
     @MacMCPState private var agent = ""
     @MacMCPState private var starting = false
+
+    init(model: ChatModel) {
+        self.model = model
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: VisualTokens.Space.m) {

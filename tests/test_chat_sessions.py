@@ -121,6 +121,13 @@ class FriendlyTitleTest(unittest.TestCase):
         self.assertEqual(title({"agent_title": "Viewing …/notes.md", "kind": "read", "files": ["/p/notes.md"]}, ""),
                          "Read notes.md")
 
+    def test_tool_source_names_the_server(self):
+        source = chat_sessions._tool_source
+        self.assertEqual(source("mcp__mac-mcp__search_files"), ("mac-mcp", "search_files"))
+        self.assertEqual(source("mac-mcp_write_file"), ("mac-mcp", "write_file"))
+        self.assertEqual(source("mcp__claude_ai_Google_Sheets__get_values"), ("claude_ai_Google_Sheets", "get_values"))
+        self.assertEqual(source("Run the tests"), ("", ""))
+
 
 class ChatSideEffectTest(unittest.TestCase):
     def test_chat_side_effects_need_no_delegated_workflow(self):
@@ -203,8 +210,13 @@ class ChatHostTest(unittest.TestCase):
 
         chat_id, state = self.run_async(scenario())
         kinds = [item["type"] for item in state["items"]]
-        self.assertEqual(kinds, ["user", "thought", "assistant"])
+        self.assertEqual(kinds, ["user", "thought", "assistant", "turn"])
         self.assertEqual(state["items"][2]["text"], "Hello")
+        turn = state["items"][3]  # what the CLI reported: time worked, model and tokens
+        self.assertEqual((turn["stop"], turn["model"], turn["input_tokens"], turn["output_tokens"]),
+                         ("end_turn", "Opus", 100, 2))
+        self.assertGreaterEqual(turn["duration_s"], 0)
+        self.assertNotIn("turn_started_at", state["chat"])
         self.assertEqual(state["chat"]["title"], "Greeting")
         self.assertEqual(state["chat"]["context"], {"used": 1200, "size": 128000})
         self.assertEqual(state["chat"]["usage"]["input_tokens"], 100)
@@ -264,7 +276,7 @@ class ChatHostTest(unittest.TestCase):
         self.assertEqual((permission["status"], permission["choice"]), ("answered", "allow_once"))
         self.assertEqual(permission["files"], ["hello.txt"])
         self.assertEqual([option["id"] for option in permission["options"]], ["allow_once", "reject_once"])
-        self.assertEqual(state["items"][-1]["text"], "done")
+        self.assertEqual(state["items"][-2]["text"], "done")
         self.assertIn({"permission": {"outcome": "selected", "optionId": "allow_once"}}, self.agent_log())
 
     def test_cancel_stops_turn_and_answers_open_permission(self):
@@ -290,7 +302,8 @@ class ChatHostTest(unittest.TestCase):
 
         state, after = self.run_async(scenario())
         self.assertFalse(state["chat"]["running"])
-        self.assertEqual(state["items"][-1], {**state["items"][-1], "type": "notice", "text": "Stopped."})
+        self.assertEqual(state["items"][-2], {**state["items"][-2], "type": "notice", "text": "Stopped."})
+        self.assertEqual((state["items"][-1]["type"], state["items"][-1]["stop"]), ("turn", "cancelled"))
         self.assertIn("tick", state["items"][1]["text"])
         permission = next(item for item in after["items"] if item["type"] == "permission")
         self.assertEqual(permission["status"], "cancelled")
@@ -322,9 +335,9 @@ class ChatHostTest(unittest.TestCase):
         load = next(entry for entry in self.agent_log() if entry["method"] == "session/load")
         self.assertEqual(load["params"]["sessionId"], "sess-1")
         self.assertEqual([item["type"] for item in state["items"]],
-                         ["user", "thought", "assistant", "user", "thought", "assistant"])
+                         ["user", "thought", "assistant", "turn", "user", "thought", "assistant", "turn"])
         self.assertNotIn("old", [item.get("text") for item in state["items"]])
-        self.assertEqual([item["type"] for item in fresh["items"]], ["user", "thought", "assistant"])
+        self.assertEqual([item["type"] for item in fresh["items"]], ["user", "thought", "assistant", "turn"])
 
     def test_agent_options_are_read_set_and_kept_across_restart(self):
         async def first():
@@ -381,8 +394,8 @@ class ChatHostTest(unittest.TestCase):
 
         chat, state = self.run_async(scenario())
         self.assertIn("copilot login", chat["agent_error"])
-        self.assertEqual(state["items"][-1]["tone"], "error")
-        self.assertIn("Sign in to GitHub Copilot", state["items"][-1]["text"])
+        self.assertEqual(state["items"][-2]["tone"], "error")
+        self.assertIn("Sign in to GitHub Copilot", state["items"][-2]["text"])
 
     def test_routes_need_the_dashboard_token(self):
         def guard(request):
