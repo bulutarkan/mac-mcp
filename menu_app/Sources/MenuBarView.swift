@@ -380,7 +380,7 @@ struct MenuBarView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button { openSettings() } label: {
-                MenuRow(symbol: "gearshape.fill", tint: .gray, title: "Settings…") {
+                MenuRow(symbol: "gearshape.fill", tint: MenuPalette.neutral, title: "Settings…") {
                     Text("⌘,").font(.callout).foregroundStyle(.tertiary)
                 }
             }
@@ -415,7 +415,7 @@ struct MenuBarView: View {
             Divider()
             Button("Quit Mac MCP") { state.quitApp() }
         } label: {
-            MenuRow(symbol: "ellipsis", tint: .gray, title: "More") {
+            MenuRow(symbol: "ellipsis", tint: MenuPalette.neutral, title: "More") {
                 Image(systemName: "chevron.right").font(.system(size: 10 * glyphScale, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
@@ -435,19 +435,20 @@ struct MenuBarView: View {
         let endpoint = endpointStatus
         let safety = safetyStatus
         return VStack(alignment: .leading, spacing: 2) {
-            summaryRow(symbol: "cpu", color: failedAgentCount > 0 ? .red : MenuPalette.violet, title: "Agents",
-                       value: agentsSummaryValue, valueColor: failedAgentCount > 0 ? .red : .secondary,
+            summaryRow(symbol: "cpu", color: failedAgentCount > 0 ? VisualTokens.error
+                       : state.activeAgents > 0 ? VisualTokens.accent : MenuPalette.neutral, title: "Agents",
+                       value: agentsSummaryValue, valueColor: failedAgentCount > 0 ? VisualTokens.error : .secondary,
                        hint: state.agents.isEmpty ? "Opens the dashboard" : "Shows the agent list",
                        tip: state.agents.isEmpty ? "Opens the dashboard" : "Shows the agent list") {
                 if state.agents.isEmpty { state.openDashboard() } else { revealAgents(proxy) }
             }
-            summaryRow(symbol: endpoint.symbol, color: endpoint.tone == .warning ? .orange : MenuPalette.teal,
+            summaryRow(symbol: endpoint.symbol, color: endpoint.tone == .warning ? VisualTokens.warning : MenuPalette.neutral,
                        title: "Endpoint", value: endpoint.label,
-                       valueColor: endpoint.tone == .warning ? .orange : .secondary,
+                       valueColor: endpoint.tone == .warning ? VisualTokens.warning : .secondary,
                        hint: "Review Connections in Settings", tip: endpoint.explanation) { openSettings(.connections) }
-            summaryRow(symbol: safety.symbol, color: safety.tone == .warning ? .orange : .gray,
+            summaryRow(symbol: safety.symbol, color: safety.tone == .warning ? VisualTokens.warning : MenuPalette.neutral,
                        title: "Safety", value: safety.label,
-                       valueColor: safety.tone == .warning ? .orange : .secondary,
+                       valueColor: safety.tone == .warning ? VisualTokens.warning : .secondary,
                        hint: "Review safety in Settings", tip: safety.explanation) { openSettings(.permissions) }
         }
     }
@@ -619,7 +620,7 @@ struct MenuBarView: View {
         } label: {
             HStack {
                 Label("Conversations", systemImage: "rectangle.stack")
-                    .labelStyle(MenuTileLabelStyle(tint: MenuPalette.ember))
+                    .labelStyle(MenuTileLabelStyle(tint: MenuPalette.neutral))
                     .accessibilityLabel("Conversations")
                     .accessibilityHint("AI app conversations using Mac MCP (Mac MCP logical sessions, not the app's own chat IDs). Agents you delegate work to are under Agents.")
                 Spacer()
@@ -645,7 +646,7 @@ struct MenuBarView: View {
             Button { showAllAgents.toggle() } label: {
                 HStack(spacing: 6) {
                     Label(state.activeAgents > 0 ? "Active Work" : "Agents", systemImage: "cpu")
-                        .labelStyle(MenuTileLabelStyle(tint: MenuPalette.violet))
+                        .labelStyle(MenuTileLabelStyle(tint: VisualTokens.accent))
                     Spacer()
                     if state.activeAgents > 0 {
                         RobotRunner(active: true)
@@ -928,7 +929,7 @@ struct MenuBarView: View {
         } label: {
             HStack(spacing: 6) {
                 Label("Recent activity", systemImage: "waveform.path.ecg")
-                    .labelStyle(MenuTileLabelStyle(tint: .blue))
+                    .labelStyle(MenuTileLabelStyle(tint: MenuPalette.neutral))
                 Spacer()
                 if errorCount > 0 {
                     Button {
@@ -1706,23 +1707,25 @@ private struct HostWindowReader: NSViewRepresentable {
 
 // MARK: - Menu building blocks (#201)
 
-/// Mac MCP's own colours, from the first-run tour's tokens.
+/// Row tiles are calm: a row that only names a place has no colour of its own. Colour means
+/// state (VisualTokens): work in progress, something to look at, something that failed.
 private enum MenuPalette {
-    static let violet = Color(red: 0.545, green: 0.486, blue: 0.965)
-    static let teal = Color(red: 0.29, green: 0.74, blue: 0.68)
-    static let ember = Color(red: 0.96, green: 0.6, blue: 0.24)
+    static let neutral = Color.secondary
 }
 
-/// A small filled square with a white symbol, like the System Settings sidebar.
+/// A small quiet square with its symbol; tinted only when the row reports a state.
 private struct MenuIconTile: View {
     let symbol: String
     let tint: Color
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(tint.gradient)
+        let quiet = tint == MenuPalette.neutral
+        RoundedRectangle(cornerRadius: VisualTokens.Radius.tile, style: .continuous)
+            .fill(quiet ? VisualTokens.quietFill : tint.opacity(0.16))
+            .overlay(RoundedRectangle(cornerRadius: VisualTokens.Radius.tile, style: .continuous)
+                .strokeBorder(quiet ? VisualTokens.hairline : tint.opacity(0.28), lineWidth: 0.5))
             .frame(width: 20, height: 20)
-            .overlay(Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white))
+            .overlay(Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint))
             .accessibilityHidden(true)
     }
 }
@@ -1751,11 +1754,14 @@ private struct MenuTileLabelStyle: LabelStyle {
     let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
+        let quiet = tint == MenuPalette.neutral
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(tint.gradient)
+            RoundedRectangle(cornerRadius: VisualTokens.Radius.tile, style: .continuous)
+                .fill(quiet ? VisualTokens.quietFill : tint.opacity(0.16))
+                .overlay(RoundedRectangle(cornerRadius: VisualTokens.Radius.tile, style: .continuous)
+                    .strokeBorder(quiet ? VisualTokens.hairline : tint.opacity(0.28), lineWidth: 0.5))
                 .frame(width: 20, height: 20)
-                .overlay(configuration.icon.font(.system(size: 11, weight: .semibold)).foregroundStyle(.white))
+                .overlay(configuration.icon.font(.system(size: 11, weight: .semibold)).foregroundStyle(tint))
                 .accessibilityHidden(true)
             configuration.title.font(.callout)
         }
