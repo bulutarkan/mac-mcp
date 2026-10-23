@@ -13,6 +13,11 @@
 - Plain words: Connected, Partly working, Not connected; the Endpoint row is now Remote access (This Mac only, On, On but stopped, Your own address); hover captions count actions instead of tool calls.
 - The menu bar mark shows a waiting question (M!) and paused observation (M‖) beside the M, besides stopped, working and idle; VoiceOver names every mode.
 
+### Menu app: one card under the header (premium UI, phase 2)
+- Only one card shows under the header, the most important first: Mac MCP stopped or not answering, then unfinished setup, then a new version.
+- A stopped server says "Your AI apps can't use this Mac" with Start; setup reads "Get your AI apps ready · 2 of 3" with the next step, Continue and a bar per step; a new version is a compact row with its version and Update.
+- The header says only "Ready" while idle; the line under the name is for news such as agents working.
+
 ## 2.3.0 r3 - 2026-10-22
 
 **In short:** a signed checkpoint on the 2.3.0 line; the version stays 2.3.0. Agents can ask you a quick question in Mac MCP's own window (with one-click answers, files and pictures) and keep working whatever you answer, and the approvals before sending a mail or uploading a file open there too. Agents find your skills and memories and use them quietly. `personal_search` and `daily_briefing` read across your apps; the Photos, Contacts, Notes and Calendar adapters grow; web and Electron apps can be read and pressed down to their controls. Settings let you review memories, lessons and skills; the dashboard and phone get a new look; a running team shows its plan limits; your other Macs can get full access for a while. Update with `mac-mcp update` or the new package.
