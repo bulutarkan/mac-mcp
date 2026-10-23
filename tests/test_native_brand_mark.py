@@ -30,6 +30,21 @@ class MenuBarMarkTests(unittest.TestCase):
         self.assertIn("base.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18)", self.app)
         self.assertIn("let dot = NSRect(x: 18.2, y: 12.6", self.app)
 
+    def test_a_waiting_question_and_paused_observation_show_beside_the_m(self) -> None:
+        # One look at a time, most important first; the glyphs sit in the column right of the M.
+        look = self.app[self.app.index("private var menuBarLook: MenuBarMark.Look"):][:700]
+        order = [look.index(s) for s in ("return .stopped", "return .needsYou", "return .paused", "return .working")]
+        self.assertEqual(sorted(order), order)
+        self.assertIn("if !prompts.queue.isEmpty { return .needsYou }", look)
+        self.assertIn("if state.privacyFlags?.paused == true { return .paused }", look)
+        self.assertIn("MenuBarLabel(state: state, prompts: OwnerPromptController.shared.model)", self.app)
+        self.assertIn("case stopped, idle, needsYou, paused", self.app)
+
+    def test_voiceover_names_every_mode(self) -> None:
+        label = self.app[self.app.index("private var menuBarAccessibilityLabel: String"):][:1200]
+        for words in ("needs you", "observation paused", "active work", "private mode", "partly working"):
+            self.assertIn(f'"{words}"', label)
+
     def test_both_resolutions_are_loaded(self) -> None:
         self.assertIn('"MenuBarMark"', self.app)
         self.assertIn('"MenuBarMark@2x"', self.app)

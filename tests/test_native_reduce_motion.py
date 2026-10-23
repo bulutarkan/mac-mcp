@@ -25,7 +25,7 @@ class NativeReduceMotionTests(unittest.TestCase):
         # Without the pulse the working mark keeps a filled dot, distinct from idle (no dot).
         self.assertIn("return .working(hollow: state.pulse)", app)
         self.assertIn("return .idle", app)
-        self.assertIn('"Mac MCP, active work"', app)
+        self.assertIn('parts.append("active work")', app)
 
     def test_robot_draws_a_still_pose_under_reduce_motion(self) -> None:
         view = (SOURCES / "MenuBarView.swift").read_text(encoding="utf-8")

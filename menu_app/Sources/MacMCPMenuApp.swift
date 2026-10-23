@@ -52,8 +52,7 @@ struct MacMCPMenuApp: App {
         MenuBarExtra {
             MenuBarView(state: state, settings: state.settings)
         } label: {
-            Image(nsImage: MenuBarMark.image(menuBarLook))
-                .accessibilityLabel(menuBarAccessibilityLabel)
+            MenuBarLabel(state: state, prompts: OwnerPromptController.shared.model)
         }
         .menuBarExtraStyle(.window)
         .commands {
@@ -66,8 +65,23 @@ struct MacMCPMenuApp: App {
         }
     }
 
+}
+
+/// The menu bar item. It also watches the question window's queue, so "needs you" shows here too.
+private struct MenuBarLabel: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var prompts: OwnerPromptModel
+
+    var body: some View {
+        Image(nsImage: MenuBarMark.image(menuBarLook))
+            .accessibilityLabel(menuBarAccessibilityLabel)
+    }
+
+    /// One look at a time, most important first: stopped, a question waiting, paused, working, idle.
     private var menuBarLook: MenuBarMark.Look {
         if !state.serverRunning { return .stopped }
+        if !prompts.queue.isEmpty { return .needsYou }
+        if state.privacyFlags?.paused == true { return .paused }
         if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
             // The dot stays filled without the pulse (Reduce Motion), so work still reads at a glance.
             return .working(hollow: state.pulse)
@@ -79,11 +93,15 @@ struct MacMCPMenuApp: App {
         // Same words as the popover header and Settings (shared StatusDisplay mapping).
         if state.startingAfterLogin { return "Mac MCP, starting" }
         if !state.serverRunning { return "Mac MCP, \(state.connectionState.display.label.lowercased())" }
+        var parts = ["Mac MCP"]
+        if !prompts.queue.isEmpty { parts.append("needs you") }
+        if state.privacyFlags?.paused == true { parts.append("observation paused") }
         if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
-            return "Mac MCP, active work"
+            parts.append("active work")
         }
-        if state.connectionState == .degraded { return "Mac MCP, partly working" }
-        return "Mac MCP"
+        if state.privacyFlags?.privateMode == true { parts.append("private mode") }
+        if state.connectionState == .degraded { parts.append("partly working") }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -96,11 +114,11 @@ enum BrandArt {
 }
 
 /// The monogram in the menu bar. It is a template image, so macOS colours it for light, dark
-/// and highlighted bars; the state shows in alpha and a dot, never in colour.
+/// and highlighted bars; the state shows in alpha and a glyph right of the M, never in colour.
 @MainActor
 enum MenuBarMark {
     enum Look: Hashable {
-        case stopped, idle
+        case stopped, idle, needsYou, paused
         case working(hollow: Bool)
     }
 
@@ -131,10 +149,20 @@ enum MenuBarMark {
         let image = NSImage(size: size, flipped: false) { rect in
             base.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18), from: .zero, operation: .sourceOver,
                       fraction: look == .stopped ? 0.4 : 1)
-            if case .working(let hollow) = look {
+            NSColor.black.set()
+            switch look {
+            case .needsYou:
+                // An exclamation mark beside the M: a question is waiting in Mac MCP's window.
+                NSBezierPath(roundedRect: NSRect(x: 19.2, y: 8.4, width: 2.2, height: 8), xRadius: 1.1, yRadius: 1.1).fill()
+                NSBezierPath(ovalIn: NSRect(x: 19.2, y: 4.2, width: 2.2, height: 2.2)).fill()
+            case .paused:
+                // Pause bars beside the M: observation is paused.
+                for x in [18.4, 20.8] {
+                    NSBezierPath(roundedRect: NSRect(x: x, y: 9.6, width: 1.4, height: 6.4), xRadius: 0.5, yRadius: 0.5).fill()
+                }
+            case .working(let hollow):
                 // A dot at the top right, clear of the M's right leg (over the leg it read as "Mi").
                 let dot = NSRect(x: 18.2, y: 12.6, width: 3.8, height: 3.8)
-                NSColor.black.set()
                 if hollow {
                     let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
                     ring.lineWidth = 0.9
@@ -142,6 +170,8 @@ enum MenuBarMark {
                 } else {
                     NSBezierPath(ovalIn: dot).fill()
                 }
+            case .stopped, .idle:
+                break
             }
             return true
         }
