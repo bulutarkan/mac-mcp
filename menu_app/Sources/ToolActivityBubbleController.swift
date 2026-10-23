@@ -24,9 +24,32 @@ private struct ToolActivityBubbleShape: Shape {
     func path(in rect: CGRect) -> Path {
         Path(
             roundedRect: rect,
-            cornerRadius: 14,
+            cornerRadius: 18,
             style: .continuous
         )
+    }
+}
+
+/// The island's look (black, white text, quiet row boxes), so the bubble and the notch island read
+/// as one product. Values mirror VisualTokens.OnDark; this file also builds on its own in tests.
+private enum BubblePalette {
+    static let accent = Color(red: 0x8F / 255, green: 0xCE / 255, blue: 0xF8 / 255)
+    static let success = Color(red: 0x30 / 255, green: 0xD1 / 255, blue: 0x58 / 255)
+    static let primary = Color.white
+    static let secondary = Color.white.opacity(0.55)
+    static let tertiary = Color.white.opacity(0.42)
+    static let row = Color.white.opacity(0.06)
+    static let tile = Color.white.opacity(0.12)
+    static let hairline = Color.white.opacity(0.08)
+}
+
+private extension View {
+    func bubbleChrome() -> some View {
+        background(Color.black, in: ToolActivityBubbleShape())
+            .overlay(ToolActivityBubbleShape().stroke(BubblePalette.hairline, lineWidth: 0.6))
+            .shadow(color: .black.opacity(0.35), radius: 10, y: 5)
+            .padding(6)
+            .environment(\.colorScheme, .dark)
     }
 }
 
@@ -71,18 +94,18 @@ private struct ToolActivityBubbleView: View {
     }
 
     private var compactBody: some View {
-        HStack(spacing: 9) {
-            toolIcon(for: primaryLane.tool, size: 27, symbolSize: 12)
+        HStack(spacing: 10) {
+            toolIcon(for: primaryLane.tool, size: 26, symbolSize: 12)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(primaryLane.source.map { "Mac MCP · \($0)" } ?? "Mac MCP")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .foregroundStyle(BubblePalette.secondary)
                     .lineLimit(1)
 
                 Text(primaryLane.description)
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(BubblePalette.primary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .contentTransition(.opacity)
@@ -94,46 +117,39 @@ private struct ToolActivityBubbleView: View {
             ProgressView()
                 .controlSize(.mini)
                 .scaleEffect(0.82)
-                .tint(.secondary)
         }
-        .padding(.horizontal, 11)
-        .padding(.top, 13)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
         // Design height is a minimum; the panel grows (top-anchored) when larger text needs it.
         .frame(width: 286)
-        .frame(minHeight: 64)
+        .frame(minHeight: 60)
         .fixedSize(horizontal: false, vertical: true)
-        .background(
-            Color(nsColor: .windowBackgroundColor).opacity(0.96),
-            in: ToolActivityBubbleShape()
-        )
-        .overlay(
-            ToolActivityBubbleShape()
-                .stroke(Color.primary.opacity(0.09), lineWidth: 0.6)
-        )
-        .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
-        .padding(6)
+        .bubbleChrome()
     }
 
     private var expandedBody: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(activeLanes.isEmpty ? BubblePalette.success : BubblePalette.accent)
+                    .frame(width: 7, height: 7)
+
                 Text("Mac MCP")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .foregroundStyle(BubblePalette.primary.opacity(0.85))
 
                 Spacer()
 
                 Text(headerText)
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(BubblePalette.secondary)
             }
 
             if model.lanes.count > Self.rowsBeforeScrolling {
                 ScrollView(.vertical, showsIndicators: true) {
                     laneRows
                 }
-                .frame(height: 160 * iconScale)
+                .frame(height: 176 * iconScale)
             } else {
                 laneRows
             }
@@ -141,40 +157,32 @@ private struct ToolActivityBubbleView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
-        .padding(.top, 15)
-        .padding(.bottom, 13)
+        .padding(.top, 12)
+        .padding(.bottom, 12)
+        // Room for two lanes, so the panel keeps its size while lanes come and go in one epoch.
         .frame(width: 306, alignment: .topLeading)
-        .frame(minHeight: 202, alignment: .topLeading)
+        .frame(minHeight: 150, alignment: .topLeading)
         .fixedSize(horizontal: false, vertical: true)
-        .background(
-            Color(nsColor: .windowBackgroundColor).opacity(0.96),
-            in: ToolActivityBubbleShape()
-        )
-        .overlay(
-            ToolActivityBubbleShape()
-                .stroke(Color.primary.opacity(0.09), lineWidth: 0.6)
-        )
-        .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
-        .padding(6)
+        .bubbleChrome()
     }
 
     private var laneRows: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(model.lanes) { lane in
                 HStack(alignment: .center, spacing: 9) {
-                    toolIcon(for: lane.tool, size: 25, symbolSize: 11)
+                    toolIcon(for: lane.tool, size: 24, symbolSize: 11)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(lane.description)
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(BubblePalette.primary)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                             .contentTransition(.opacity)
 
                         Text(lane.label)
                             .font(.caption2.weight(.medium))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(BubblePalette.tertiary)
                             .lineLimit(1)
                     }
 
@@ -182,16 +190,19 @@ private struct ToolActivityBubbleView: View {
 
                     if lane.settling {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10 * iconScale, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11 * iconScale, weight: .semibold))
+                            .foregroundStyle(BubblePalette.success)
                     } else {
                         ProgressView()
                             .controlSize(.mini)
                             .scaleEffect(0.72)
-                            .tint(.secondary)
                     }
                 }
-                .padding(.vertical, 3)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(BubblePalette.row)
+                )
                 .opacity(lane.settling ? 0.58 : 1)
                 .transition(.opacity)
             }
@@ -208,14 +219,15 @@ private struct ToolActivityBubbleView: View {
 
     @ViewBuilder
     private func toolIcon(for tool: String, size: CGFloat, symbolSize: CGFloat) -> some View {
-        ZStack {
-            Circle()
-                .fill(Color.accentColor.opacity(0.12))
-            Image(systemName: symbol(for: tool))
-                .font(.system(size: symbolSize * iconScale, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-        }
-        .frame(width: size * iconScale, height: size * iconScale)
+        // The island's symbol tile: a quiet rounded square with a white glyph.
+        RoundedRectangle(cornerRadius: size * iconScale * 0.26, style: .continuous)
+            .fill(BubblePalette.tile)
+            .frame(width: size * iconScale, height: size * iconScale)
+            .overlay(
+                Image(systemName: symbol(for: tool))
+                    .font(.system(size: symbolSize * iconScale, weight: .semibold))
+                    .foregroundStyle(BubblePalette.primary)
+            )
     }
 
     private func symbol(for tool: String) -> String {
@@ -251,8 +263,8 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
 
     private static let originXKey = "ToolActivityBubbleOriginX"
     private static let originYKey = "ToolActivityBubbleOriginY"
-    private static let compactSize = NSSize(width: 304, height: 82)
-    private static let expandedSize = NSSize(width: 324, height: 214)
+    private static let compactSize = NSSize(width: 298, height: 72)
+    private static let expandedSize = NSSize(width: 318, height: 162)
 
     private struct ActiveIntent {
         let eventID: String
