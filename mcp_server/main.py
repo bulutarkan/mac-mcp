@@ -923,7 +923,7 @@ def create_app():
     def _spawn_agent(prompt: str, provider: Optional[str] = None, model: Optional[str] = None,
                      reasoning: Optional[str] = None, cwd: Optional[str] = None,
                      timeout_s: Optional[int] = None, title: Optional[str] = None,
-                     result_style: str = "concise", access_mode: str = "workspace_write",
+                     result_style: Literal["concise", "detailed"] = "concise", access_mode: str = "workspace_write",
                      idle_timeout_s: Optional[int] = None, retries: int = 0,
                      scope: Optional[Dict[str, Any]] = None,
                      capability_profile: Optional[str] = None,
@@ -968,7 +968,7 @@ def create_app():
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: Optional[str] = None, model: Optional[str] = None,
                       reasoning: Optional[str] = None, cwd: Optional[str] = None,
                       timeout_s: Optional[int] = None, idle_timeout_s: Optional[int] = None,
-                      retries: int = 1, result_style: str = "concise",
+                      retries: int = 1, result_style: Literal["concise", "detailed"] = "concise",
                       access_mode: str = "read_only", title: Optional[str] = None,
                       scope: Optional[Dict[str, Any]] = None,
                       capability_profile: Optional[str] = None,
@@ -1019,12 +1019,12 @@ def create_app():
     async def _team_messages(action: str = "inbox", body: Optional[str] = None, to: Optional[str] = None,
                              kind: str = "update", reply_to: Optional[str] = None, room: Optional[str] = None,
                              team_id: Optional[str] = None, unread_only: bool = True, limit: int = 10,
-                             dedupe_key: Optional[str] = None) -> Dict[str, Any]:
+                             dedupe_key: Optional[str] = None, after: int = 0) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "team_messages",
             lambda: tools_team_messages.team_messages(
                 action=action, body=body, to=to, kind=kind, reply_to=reply_to, room=room, team_id=team_id,
-                unread_only=unread_only, limit=limit, dedupe_key=dedupe_key,
+                unread_only=unread_only, limit=limit, dedupe_key=dedupe_key, after=after,
             ),
         )
 

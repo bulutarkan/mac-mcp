@@ -398,7 +398,7 @@ def finish(bridge: Optional[Bridge], *, terminal: bool) -> None:
     try:
         cleanup(bridge)
         if bridge is not None and terminal:
-            tm.store().leave(bridge.room_id, bridge.member_id)
+            tm.finish_member(bridge.room_id, bridge.member_id)
     except Exception as exc:
         LOG.warning("team messages cleanup for %s failed: %s", bridge.member_id if bridge else None, exc)
 

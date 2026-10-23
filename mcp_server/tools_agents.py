@@ -451,7 +451,7 @@ def _lineage_denied(
 
 def _authorize_agent_control(
     agent_id: str, operation: str, *, meta: Optional[Dict[str, Any]] = None,
-    context: Optional[PolicyContext] = None,
+    context: Optional[PolicyContext] = None, record_dependency_read: bool = False,
 ) -> Dict[str, Any]:
     context = context or current_policy_context()
     raw_target = dict(meta or _read_meta(agent_id))
@@ -461,9 +461,67 @@ def _authorize_agent_control(
     actor = str(context.agent_id)
     if actor == agent_id or actor in set(lineage["lineage_ancestors"]):
         return _persist_agent_lineage_if_missing(agent_id, raw_target)
+    # A team task may read the results of the tasks it depends on or reviews (#106), nothing else.
+    if operation == "get_agent":
+        grant = _dependency_read_grant(actor, raw_target)
+        if grant is not None:
+            if record_dependency_read:
+                _record_dependency_read(grant)
+            return _persist_agent_lineage_if_missing(agent_id, raw_target)
     raise _lineage_denied(
         target_type="agent", target_id=agent_id, operation=operation, context=context
     )
+
+
+def _dependency_read_grant(actor_agent_id: str, target_meta: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """The team, reader task and target task when the actor's task depends on or reviews the target's task.
+
+    Same team only, and only a direct depends_on/review_of link written when the team was planned;
+    any agent of that task counts, so a revised result can be read too.
+    """
+    team_id = str(target_meta.get("team_id") or "").strip()
+    target_task = str(target_meta.get("team_task_id") or "").strip()
+    if not team_id or not target_task:
+        return None
+    try:
+        actor_meta = _read_meta(actor_agent_id)
+    except HTTPException:
+        return None
+    if str(actor_meta.get("team_id") or "").strip() != team_id:
+        return None
+    reader_task = str(actor_meta.get("team_task_id") or "").strip()
+    if not reader_task or reader_task == target_task:
+        return None
+    try:
+        team = _read_team(team_id)
+    except HTTPException:
+        return None
+    task = _team_task_map(team).get(reader_task)
+    if not task:
+        return None
+    linked = {str(dep) for dep in (task.get("depends_on") or [])}
+    review_of = str(task.get("review_of") or "").strip()
+    if review_of:
+        linked.add(review_of)
+    if target_task not in linked:
+        return None
+    return {"team_id": team_id, "reader_task": reader_task, "target_task": target_task}
+
+
+def _record_dependency_read(grant: Dict[str, str]) -> None:
+    """Count dependency reads on the team, so its history shows which task read which result."""
+    def update(team: Dict[str, Any]) -> bool:
+        reads = team.setdefault("dependency_reads", {})
+        key = f"{grant['reader_task']}->{grant['target_task']}"
+        entry = reads.get(key) or {"reader_task": grant["reader_task"], "target_task": grant["target_task"], "count": 0}
+        entry["count"] = int(entry.get("count") or 0) + 1
+        entry["last_at"] = _now()
+        reads[key] = entry
+        return True
+    try:
+        _update_team(grant["team_id"], update)
+    except Exception:
+        pass
 
 
 def _authorize_team_control(
@@ -754,6 +812,38 @@ def _reserve_team_retry(team_id: Optional[str], agent_id: str, reason: str, requ
         _write_team_unlocked(str(team_id), team)
         remaining = max(0, int(limit) - (used + 1)) if limit is not None else None
         return {"allowed": True, "delay_s": max(0.0, earliest - now), "remaining": remaining, "reason": reason}
+
+
+def _choice_problem(field: str, value: Any, allowed: Any) -> Optional[str]:
+    """One rule for a fixed set of values, the same at team creation and at spawn (#105)."""
+    if str(value) in allowed:
+        return None
+    return f"{field} must be one of: {', '.join(sorted(allowed))} (got {value!r})."
+
+
+def _int_problem(field: str, value: Any, *, low: Optional[int] = None, high: Optional[int] = None) -> Optional[str]:
+    """None when value is absent or an integer inside [low, high]; else what is wrong with it."""
+    if value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return f"{field} must be an integer (got {value!r})."
+    if isinstance(value, float) and not value.is_integer():
+        return f"{field} must be an integer (got {value!r})."
+    if (low is not None and number < low) or (high is not None and number > high):
+        return f"{field} must be between {low} and {high} (got {number})."
+    return None
+
+
+def _raise_input_problems(problems: List[str]) -> None:
+    """Every problem in one 400, so the caller fixes them in one go; a single one reads as before."""
+    if not problems:
+        return
+    if len(problems) == 1:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, problems[0])
+    listed = " ".join(f"{index}) {problem}" for index, problem in enumerate(problems, start=1))
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{len(problems)} problems in this request, nothing was started: {listed}")
 
 
 def _validate_team_graph(tasks: List[Dict[str, Any]]) -> None:
@@ -1216,6 +1306,7 @@ def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict
     preamble = _team_skill_preamble(team, task)
     pieces = ([preamble] if preamble else []) + [str(task.get("prompt") or "").strip()]
     dependency_rows: List[Tuple[str, Dict[str, Any]]] = []
+    full_text_sources: List[Tuple[str, str]] = []
     for dep_id in task.get("depends_on") or []:
         dep = task_map.get(str(dep_id))
         if not dep:
@@ -1223,6 +1314,7 @@ def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict
         agent_id = str(dep.get("latest_agent_id") or "").strip()
         if not agent_id:
             continue
+        full_text_sources.append((str(dep_id), agent_id))
         try:
             dep_meta = _read_meta(agent_id)
         except HTTPException:
@@ -1239,6 +1331,8 @@ def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict
             "Dependency result envelopes (deterministic fan-in; use provenance/task IDs and do not infer from raw logs):\n"
             + json.dumps(reduced, ensure_ascii=False, sort_keys=True)
         )
+    if full_text_sources:
+        pieces.append(_dependency_full_text_instruction(full_text_sources))
 
     review_of = str(task.get("review_of") or "").strip() or None
     if review_of:
@@ -1292,6 +1386,17 @@ def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict
             )
         )
     return "\n\n".join(piece for piece in pieces if piece)
+
+
+def _dependency_full_text_instruction(sources: List[Tuple[str, str]]) -> str:
+    """How a dependent task reads each dependency's whole report (#106); the envelopes above are summaries."""
+    rows = "\n".join(f"- task {task_id}: agent_id={agent_id}" for task_id, agent_id in sources)
+    return (
+        "Full dependency reports: the envelopes above are shortened. When details matter, read the complete text with "
+        "get_agent(agent_id=<id>, result_mode=\"full\", result_offset=0) (through tool_invoke if get_agent is not in your "
+        "tool list) and keep reading with result_offset=result_full.next_offset while result_full.has_more is true. "
+        "You may read only these tasks' results:\n" + rows
+    )
 
 
 _RESUMABLE_STATUSES = {"failed", "timeout", "stalled", "cancelled"}
@@ -1517,37 +1622,8 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
         task_map = _team_task_map(team)
         reviewer_map = _team_reviewer_map(team)
 
-        # Resolve dependency readiness/failure. Repeat because skipping one task can
-        # make another task impossible in the same tick.
-        progressed = True
-        while progressed:
-            progressed = False
-            for task in tasks:
-                # Queued and ready tasks too: a dependency can go back after they were let through, as when
-                # a nested reviewer's FAIL sends the reviewer back for revision (#91).
-                if task.get("state") not in {"blocked", "ready", "queued"}:
-                    continue
-                deps = [str(dep) for dep in (task.get("depends_on") or [])]
-                failed_dep = next(
-                    (dep for dep in deps if _team_task_effectively_failed(dep, task_map, reviewer_map)),
-                    None,
-                )
-                if failed_dep:
-                    if task.get("state") == "queued":
-                        _release_task_admission(task)
-                    task["state"] = "skipped"
-                    task["failure_reason"] = f"dependency_failed:{failed_dep}"
-                    changed = progressed = True
-                    continue
-                if all(_team_dependency_satisfied(task, dep, task_map, reviewer_map) for dep in deps):
-                    if task.get("state") == "blocked":
-                        task["state"] = "ready"
-                        changed = progressed = True
-                elif task.get("state") != "blocked":
-                    if task.get("state") == "queued":
-                        _release_task_admission(task)
-                    task["state"] = "blocked"
-                    changed = progressed = True
+        if _settle_team_dependencies(tasks, task_map, reviewer_map):
+            changed = True
 
         budget = _team_budget_snapshot(team)
         admission_reason = str(budget.get("admission_exhausted_reason") or "").strip() or None
@@ -1567,6 +1643,7 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
 
         active = sum(1 for task in tasks if task.get("state") in {"spawning", "running"})
         max_parallel = min(max(1, int(team.get("max_parallel") or len(tasks) or 1)), MAX_TEAM_SIZE)
+        spawn_failed = False
         for task in tasks:
             if active >= max_parallel:
                 break
@@ -1683,9 +1760,10 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
                                  reason="resume_spawn_failed_before_provider")
                 _release_task_admission(task)
                 task["state"] = "failed"
-                task["failure_reason"] = f"spawn_failed:{str(exc)[:240]}"
+                detail = exc.detail if isinstance(exc, HTTPException) else exc
+                task["failure_reason"] = f"spawn_failed:{str(detail)[:240]}"
                 task["active_agent_id"] = None
-                changed = True
+                changed = spawn_failed = True
                 continue
             agent_id = str(item["agent_id"])
             task.setdefault("agent_ids", []).append(agent_id)
@@ -1702,10 +1780,70 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
             active += 1
             changed = True
 
+        # A task that could not start (#105) settles what depends on it now: skipped with the reason,
+        # instead of blocked until something else ticks the team.
+        if spawn_failed:
+            _settle_team_dependencies(tasks, _team_task_map(team), _team_reviewer_map(team))
+
         if changed:
             team["updated_at"] = _now()
             _write_team_unlocked(team_id, team)
         return team
+
+
+def unfinished_dependents(team_id: str, task_id: str) -> List[str]:
+    """Tasks of the team that depend on or review task_id and have not ended (#107)."""
+    try:
+        team = _read_team(team_id)
+    except HTTPException:
+        return []
+    ended = {"completed", "failed", "skipped", "cancelled", "quality_failed"}
+    return [str(task["id"]) for task in team.get("tasks") or []
+            if task.get("state") not in ended
+            and (task_id in [str(dep) for dep in task.get("depends_on") or []]
+                 or str(task.get("review_of") or "") == task_id)]
+
+
+team_messages.set_dependents_resolver(unfinished_dependents)
+
+
+def _settle_team_dependencies(tasks: List[Dict[str, Any]], task_map: Dict[str, Dict[str, Any]],
+                              reviewer_map: Dict[str, Dict[str, Any]]) -> bool:
+    """Mark waiting tasks ready, blocked or skipped from their dependencies; True when one changed.
+
+    Repeats because skipping one task can make another impossible in the same tick.
+    """
+    changed = False
+    progressed = True
+    while progressed:
+        progressed = False
+        for task in tasks:
+            # Queued and ready tasks too: a dependency can go back after they were let through, as when
+            # a nested reviewer's FAIL sends the reviewer back for revision (#91).
+            if task.get("state") not in {"blocked", "ready", "queued"}:
+                continue
+            deps = [str(dep) for dep in (task.get("depends_on") or [])]
+            failed_dep = next(
+                (dep for dep in deps if _team_task_effectively_failed(dep, task_map, reviewer_map)),
+                None,
+            )
+            if failed_dep:
+                if task.get("state") == "queued":
+                    _release_task_admission(task)
+                task["state"] = "skipped"
+                task["failure_reason"] = f"dependency_failed:{failed_dep}"
+                changed = progressed = True
+                continue
+            if all(_team_dependency_satisfied(task, dep, task_map, reviewer_map) for dep in deps):
+                if task.get("state") == "blocked":
+                    task["state"] = "ready"
+                    changed = progressed = True
+            elif task.get("state") != "blocked":
+                if task.get("state") == "queued":
+                    _release_task_admission(task)
+                task["state"] = "blocked"
+                changed = progressed = True
+    return changed
 
 
 _TEAM_WAKE_TIMERS: Dict[str, threading.Timer] = {}
@@ -2017,7 +2155,27 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "task_count": len(tasks),
         "task_status_counts": task_counts,
         "tasks": public_tasks,
+        **_team_exchange_summary(team_id, team),
     }
+
+
+def _team_exchange_summary(team_id: str, team: Dict[str, Any]) -> Dict[str, Any]:
+    """What the team's tasks passed to each other: message counts (#107) and dependency reads (#106)."""
+    out: Dict[str, Any] = {}
+    if (team.get("messaging") or {}).get("enabled"):
+        try:
+            out["message_counts"] = team_messages.store().room_stats(team_messages.team_room(team_id))
+        except Exception:
+            pass
+    reads = team.get("dependency_reads")
+    if isinstance(reads, dict) and reads:
+        out["dependency_reads"] = [
+            {"reader_task": item.get("reader_task"), "target_task": item.get("target_task"),
+             "count": int(item.get("count") or 0)}
+            for item in reads.values() if isinstance(item, dict)
+        ]
+    return out
+
 
 def _dashboard_text(value: Any, limit: int = 96) -> Optional[str]:
     text = " ".join(str(value or "").split())
@@ -2131,6 +2289,14 @@ def _history_agent(agent_id: str, label: str, usage_rows: Dict[str, Dict[str, Op
         # Unknown usage is null, never 0: a provider that reports nothing did not use nothing.
         "tokens": {**tokens, "total": total if known else None},
     }
+
+
+def team_message_history(team_id: str, *, after: int = 0, limit: int = 50) -> Dict[str, Any]:
+    """A team's conversation and exchange counts for the owner (#104); raises 404 for an unknown team."""
+    team = _read_team(team_id)
+    history = team_messages.store().history(team_messages.team_room(team_id), after=after, limit=limit)
+    return {"ok": True, "team_id": team_id, "messaging": bool((team.get("messaging") or {}).get("enabled")),
+            **history, **_team_exchange_summary(team_id, team)}
 
 
 def team_history(*, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
@@ -5039,6 +5205,21 @@ _LAUNCH_NONCE_ENV = "MAC_MCP_AGENT_LAUNCH_NONCE"
 _STALE_START_S = 120.0
 
 
+def _agent_mcp_endpoint() -> str:
+    """Where a delegated agent reaches this Mac MCP: the port this server runs on, not always 8765.
+
+    MAC_MCP_AGENT_ENDPOINT wins; else MAC_MCP_PORT, which the CLI sets for the server it starts.
+    """
+    configured = os.getenv("MAC_MCP_AGENT_ENDPOINT", "").strip()
+    if configured:
+        return configured
+    try:
+        port = int(os.getenv("MAC_MCP_PORT", "").strip() or 8765)
+    except ValueError:
+        port = 8765
+    return f"http://127.0.0.1:{port}/mcp"
+
+
 def _spawn_worker_process(agent_id: str, worker_log, launch_nonce: Optional[str] = None) -> subprocess.Popen:
     env = _base_env()
     if launch_nonce:
@@ -5156,15 +5337,14 @@ def _spawn_internal(
         if isinstance(selection_validation, dict)
         else _validate_provider_model_selection(provider, binary, model, reasoning)
     )
-    if result_style not in _RESULT_STYLES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"result_style must be one of: {', '.join(sorted(_RESULT_STYLES))}")
-    if access_mode not in _ACCESS_MODES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"access_mode must be one of: {', '.join(sorted(_ACCESS_MODES))}")
+    git_isolation = str(git_isolation or "auto").strip().lower()
+    _raise_input_problems([problem for problem in (
+        _choice_problem("result_style", result_style, _RESULT_STYLES),
+        _choice_problem("access_mode", access_mode, _ACCESS_MODES),
+        _choice_problem("git_isolation", git_isolation, GIT_ISOLATION_MODES),
+    ) if problem])
     _validate_provider_access_mode(provider, access_mode)
     _require_provider_sign_in(provider, access_mode, binary)
-    git_isolation = str(git_isolation or "auto").strip().lower()
-    if git_isolation not in GIT_ISOLATION_MODES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"git_isolation must be one of: {', '.join(sorted(GIT_ISOLATION_MODES))}")
     seed_conflict_mode = str(seed_conflict_mode or "fail").strip().lower()
     if seed_conflict_mode not in {"fail", "manifest"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "seed_conflict_mode must be fail or manifest.")
@@ -5284,6 +5464,7 @@ def _spawn_internal(
         + ("\n\n" + access_instruction if access_instruction else "")
         + "\n\n" + scope_instruction
         + ("\n\n" + role_learning_instruction if role_learning_instruction else "")
+
         + "\n\n" + _handoff_instruction(
             result_style,
             evidence_required=evidence_policy_for(
@@ -5339,7 +5520,7 @@ def _spawn_internal(
         "lesson_candidate_ids": [],
         "scope": scope.to_dict(),
         "scoped_mcp": provider in {"opencode", "codex", "claude", *harness_providers.PROVIDERS},
-        "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
+        "mcp_endpoint": _agent_mcp_endpoint(),
         "result_style": result_style,
         "result_contract_version": RESULT_ENVELOPE_VERSION,
         "result_contract_status": "pending",
@@ -5629,58 +5810,60 @@ def _task_selection(team: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any
             "selection_validation": team.get("model_selection_validation")}
 
 
-def _normalize_team_task(task: Any, index: int, team_role: Optional[str],
-                         default_max_revisions: int) -> Dict[str, Any]:
-    """One team task checked and in its stored shape; index counts from 1, as in tasks[index - 1]."""
-    # provider/model/reasoning may differ per task (#52); access and result style stay one per team.
-    forbidden = {"access_mode", "result_style"}
+def _team_task_problems(task: Any, index: int, team_role: Optional[str],
+                        default_max_revisions: int) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """One team task in its stored shape, and every problem with it (#105); index counts from 1."""
+    where = f"tasks[{index - 1}]"
     if not isinstance(task, dict):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] must be an object.")
-    mixed = sorted(forbidden.intersection(task.keys()))
+        return None, [f"{where} must be an object."]
+    problems: List[str] = []
+    # provider/model/reasoning may differ per task (#52); access and result style stay one per team.
+    mixed = sorted({"access_mode", "result_style"}.intersection(task.keys()))
     if mixed:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Team child settings {mixed} must be supplied once at team level so every agent uses the same configuration.",
+        problems.append(
+            f"Team child settings {mixed} must be supplied once at team level so every agent uses the same configuration."
         )
     override = {key: str(task[key]).strip() for key in ("provider", "model", "reasoning")
                 if isinstance(task.get(key), str) and str(task[key]).strip()}
+    if override.get("provider"):
+        problem = _choice_problem(f"{where}.provider", override["provider"].lower(), _PROVIDER_NAMES)
+        if problem:
+            problems.append(problem)
     prompt = str(task.get("prompt") or task.get("task") or "").strip()
     if not prompt:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].prompt is required.")
+        problems.append(f"{where}.prompt is required.")
     task_id = str(task.get("id") or task.get("task_id") or f"task_{index}").strip()
     if not _TASK_ID_RE.fullmatch(task_id):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"tasks[{index - 1}].id must match {_TASK_ID_RE.pattern!r}.",
-        )
+        problems.append(f"{where}.id must match {_TASK_ID_RE.pattern!r}.")
     deps_raw = task.get("depends_on") or []
     if isinstance(deps_raw, str):
         deps_raw = [deps_raw]
+    depends_on: List[str] = []
     if not isinstance(deps_raw, list) or any(not isinstance(dep, str) for dep in deps_raw):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on must be a list of task ids.")
-    depends_on = [str(dep).strip() for dep in deps_raw if str(dep).strip()]
-    if len(depends_on) != len(set(depends_on)):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on contains duplicates.")
+        problems.append(f"{where}.depends_on must be a list of task ids.")
+    else:
+        depends_on = [str(dep).strip() for dep in deps_raw if str(dep).strip()]
+        if len(depends_on) != len(set(depends_on)):
+            problems.append(f"{where}.depends_on contains duplicates.")
     review_of = str(task.get("review_of") or "").strip() or None
     child_scope_raw = task.get("scope")
     if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
+        problems.append(f"{where}.scope must be an object.")
     resources_raw = task.get("resources") or []
     if not isinstance(resources_raw, list) or any(not isinstance(item, dict) for item in resources_raw):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].resources must be a list of resource claim objects.")
+        problems.append(f"{where}.resources must be a list of resource claim objects.")
+        resources_raw = []
     child_role = str(task.get("role") or team_role or "").strip().lower() or None
     if review_of and child_role is None:
         child_role = "reviewer"
     if review_of and child_role != "reviewer":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] uses review_of and must have role=reviewer.")
-    if child_role and child_role not in VALID_ROLES:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"tasks[{index - 1}].role must be one of: {', '.join(sorted(VALID_ROLES))}.",
-        )
-    task_max_revisions = int(task.get("max_revisions", default_max_revisions))
-    if task_max_revisions < 0 or task_max_revisions > 3:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].max_revisions must be between 0 and 3.")
+        problems.append(f"{where} uses review_of and must have role=reviewer.")
+    elif child_role and child_role not in VALID_ROLES:
+        problems.append(f"{where}.role must be one of: {', '.join(sorted(VALID_ROLES))}.")
+    raw_revisions = task.get("max_revisions", default_max_revisions)
+    revisions_problem = _int_problem(f"{where}.max_revisions", raw_revisions, low=0, high=3)
+    if revisions_problem:
+        problems.append(revisions_problem)
     return {
         "id": task_id,
         "prompt": prompt,
@@ -5689,10 +5872,19 @@ def _normalize_team_task(task: Any, index: int, team_role: Optional[str],
         "role": child_role,
         "depends_on": depends_on,
         "review_of": review_of,
-        "max_revisions": task_max_revisions,
+        "max_revisions": default_max_revisions if revisions_problem else int(raw_revisions),
         "resources": [dict(item) for item in resources_raw],
         "_override": override,
-    }
+    }, problems
+
+
+def _normalize_team_task(task: Any, index: int, team_role: Optional[str],
+                         default_max_revisions: int) -> Dict[str, Any]:
+    """One team task checked and in its stored shape; every problem with it in one 400."""
+    normalized, problems = _team_task_problems(task, index, team_role, default_max_revisions)
+    _raise_input_problems(problems)
+    assert normalized is not None
+    return normalized
 
 
 def _persisted_team_task(task: Dict[str, Any], team_scope: ResourceScope, workdir: Path,
@@ -5777,32 +5969,72 @@ def spawn_agents(
     git_isolation: str = "auto",
     conflict_policy: str = "advisory",
 ) -> Dict[str, Any]:
-    selection = _resolve_agent_selection(provider, model, reasoning)
+    # Every setting is checked before anything is created (#105): a bad value never leaves an empty
+    # failed team behind, and one 400 lists all of them with what is allowed.
+    problems: List[str] = []
+    selection: Dict[str, Any] = {}
+    try:
+        selection = _resolve_agent_selection(provider, model, reasoning)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_400_BAD_REQUEST:
+            raise
+        problems.append(_choice_problem("provider", str(provider or "").strip().lower(), _PROVIDER_NAMES) or str(exc.detail))
+    conflict_policy = str(conflict_policy or "advisory").strip().lower()
+    git_isolation = str(git_isolation or "auto").strip().lower()
+    team_role = str(role or "").strip().lower() or None
+    problems.extend(problem for problem in (
+        _choice_problem("result_style", result_style, _RESULT_STYLES),
+        _choice_problem("conflict_policy", conflict_policy, CONFLICT_POLICIES),
+        _choice_problem("git_isolation", git_isolation, GIT_ISOLATION_MODES),
+        _choice_problem("role", team_role, VALID_ROLES) if team_role else None,
+        _int_problem("timeout_s", timeout_s),
+        _int_problem("idle_timeout_s", idle_timeout_s),
+        _int_problem("retries", retries),
+        _int_problem("max_parallel", max_parallel, low=1, high=MAX_TEAM_SIZE),
+        _int_problem("max_revisions", max_revisions, low=0, high=3),
+        _int_problem("team_timeout_s", team_timeout_s, low=60, high=MAX_TEAM_TIMEOUT_S),
+        _int_problem("max_team_retries", max_team_retries, low=0, high=MAX_TEAM_RETRY_BUDGET),
+    ) if problem)
+    try:
+        normalize_access_mode(access_mode)
+    except ValueError:
+        problems.append(f"access_mode must be one of: {', '.join(sorted(_ACCESS_MODES))} (got {access_mode!r}).")
+    for budget_args in (
+        (admission_tool_call_budget, max_total_tool_calls, "admission_tool_call_budget", "max_total_tool_calls", MAX_TEAM_TOOL_BUDGET),
+        (admission_token_budget, max_total_tokens, "admission_token_budget", "max_total_tokens", MAX_TEAM_TOKEN_BUDGET),
+    ):
+        try:
+            _resolve_team_admission_budget(budget_args[0], budget_args[1], preferred_name=budget_args[2],
+                                           legacy_name=budget_args[3], maximum=budget_args[4])
+        except HTTPException as exc:
+            problems.append(str(exc.detail))
+    if not tasks or not isinstance(tasks, list):
+        problems.append("tasks is required.")
+        tasks = []
+    elif len(tasks) > MAX_TEAM_SIZE:
+        problems.append(f"A team can contain at most {MAX_TEAM_SIZE} tasks.")
+    task_revisions = 1 if _int_problem("max_revisions", max_revisions, low=0, high=3) else int(max_revisions)
+    normalized = []
+    for index, task in enumerate(tasks, start=1):
+        shaped, task_problems = _team_task_problems(task, index, team_role, task_revisions)
+        problems.extend(task_problems)
+        if shaped is not None:
+            normalized.append(shaped)
+    if not problems:
+        try:
+            _validate_team_graph(normalized)
+        except HTTPException as exc:
+            problems.append(str(exc.detail))
+    _raise_input_problems(problems)
+
     provider = str(selection["provider"])
     model = selection.get("model")
     reasoning = selection.get("reasoning")
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
-    conflict_policy = str(conflict_policy or "advisory").strip().lower()
-    if conflict_policy not in CONFLICT_POLICIES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"conflict_policy must be one of: {', '.join(CONFLICT_POLICIES)}.")
-    git_isolation = str(git_isolation or "auto").strip().lower()
-    if git_isolation not in GIT_ISOLATION_MODES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"git_isolation must be one of: {', '.join(sorted(GIT_ISOLATION_MODES))}")
-    team_role = str(role or "").strip().lower() or None
-    if team_role and team_role not in VALID_ROLES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"role must be one of: {', '.join(sorted(VALID_ROLES))}.")
-    if not tasks or not isinstance(tasks, list):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tasks is required.")
-    if len(tasks) > MAX_TEAM_SIZE:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"A team can contain at most {MAX_TEAM_SIZE} tasks.")
     effective_max_parallel = len(tasks) if max_parallel is None else int(max_parallel)
-    if effective_max_parallel < 1 or effective_max_parallel > MAX_TEAM_SIZE:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"max_parallel must be between 1 and {MAX_TEAM_SIZE}.")
     effective_max_parallel = min(effective_max_parallel, len(tasks))
     effective_max_revisions = int(max_revisions)
-    if effective_max_revisions < 0 or effective_max_revisions > 3:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "max_revisions must be between 0 and 3.")
     effective_child_timeout = min(max(10, int(timeout_s or DEFAULT_AGENT_TIMEOUT_S)), MAX_AGENT_TIMEOUT_S)
     waves = max(1, (len(tasks) + effective_max_parallel - 1) // effective_max_parallel)
     default_team_timeout = min(
@@ -5810,18 +6042,8 @@ def spawn_agents(
         max(DEFAULT_TEAM_TIMEOUT_FLOOR_S, effective_child_timeout * waves * max(1, 1 + effective_max_revisions)),
     )
     effective_team_timeout = default_team_timeout if team_timeout_s is None else int(team_timeout_s)
-    if effective_team_timeout < 60 or effective_team_timeout > MAX_TEAM_TIMEOUT_S:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"team_timeout_s must be between 60 and {MAX_TEAM_TIMEOUT_S} seconds.",
-        )
     child_retries = min(max(0, int(retries)), 3)
     effective_team_retries = min(MAX_TEAM_RETRY_BUDGET, child_retries * len(tasks)) if max_team_retries is None else int(max_team_retries)
-    if effective_team_retries < 0 or effective_team_retries > MAX_TEAM_RETRY_BUDGET:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"max_team_retries must be between 0 and {MAX_TEAM_RETRY_BUDGET}.",
-        )
     effective_tool_budget = _resolve_team_admission_budget(
         admission_tool_call_budget,
         max_total_tool_calls,
@@ -5837,10 +6059,6 @@ def spawn_agents(
         maximum=MAX_TEAM_TOKEN_BUDGET,
     )
 
-    normalized = [_normalize_team_task(task, index, team_role, effective_max_revisions)
-                  for index, task in enumerate(tasks, start=1)]
-
-    _validate_team_graph(normalized)
     # Preserve validation precedence: malformed team/task input must fail with 4xx
     # even on hosts where the selected provider binary is not installed (e.g. CI).
     provider_binary = _find_binary(provider)
@@ -5860,8 +6078,15 @@ def spawn_agents(
         if isinstance(selection.get("selection_validation"), dict)
         else _validate_provider_model_selection(provider, provider_binary, model, reasoning)
     )
-    for task in normalized:
-        task.update(_task_agent_selection(task.pop("_override", {}), provider, model, reasoning, access_mode))
+    selection_problems: List[str] = []
+    for index, task in enumerate(normalized):
+        try:
+            task.update(_task_agent_selection(task.pop("_override", {}), provider, model, reasoning, access_mode))
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_400_BAD_REQUEST:
+                raise
+            selection_problems.append(f"tasks[{index}]: {exc.detail}")
+    _raise_input_problems(selection_problems)
 
     persisted_tasks = [_persisted_team_task(task, team_scope, workdir, access_mode) for task in normalized]
 
@@ -6426,7 +6651,7 @@ def get_agent(
     result_mode = str(result_mode or "summary").strip().lower()
     if result_mode not in {"summary", "full"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "result_mode must be summary or full.")
-    meta = _authorize_agent_control(agent_id, "get_agent")
+    meta = _authorize_agent_control(agent_id, "get_agent", record_dependency_read=True)
     meta = _normalize(agent_id, meta)
     result: Dict[str, Any] = {"ok": True, **_public_meta(agent_id, meta)}
     if meta.get("status") in TERMINAL_STATUSES and result_mode == "full":

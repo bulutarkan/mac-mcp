@@ -366,6 +366,82 @@ struct TeamHistoryTeam: Decodable, Identifiable, Equatable {
     }
 }
 
+/// One team's conversation for Team History (#104): who wrote to whom, and who was shown or opened it.
+struct TeamMessagesEnvelope: Decodable, Equatable {
+    let messages: [TeamMessageItem]
+    let hasMore: Bool
+    let nextAfter: Int?
+    let messageCounts: TeamMessageCounts?
+    let dependencyReads: [TeamDependencyRead]?
+
+    enum CodingKeys: String, CodingKey {
+        case messages
+        case hasMore = "has_more"
+        case nextAfter = "next_after"
+        case messageCounts = "message_counts"
+        case dependencyReads = "dependency_reads"
+    }
+}
+
+struct TeamMessageItem: Decodable, Identifiable, Equatable {
+    let messageID: String
+    let from: String
+    let toLabel: String?
+    let kind: String
+    let body: String
+    let sentAt: String
+    let fromLead: Bool?
+    let forwardedFrom: String?
+    let deliveryNote: String?
+    let deliveries: [TeamMessageDelivery]
+
+    var id: String { messageID }
+
+    enum CodingKeys: String, CodingKey {
+        case from, kind, body, deliveries
+        case messageID = "message_id"
+        case toLabel = "to_label"
+        case sentAt = "sent_at"
+        case fromLead = "from_lead"
+        case forwardedFrom = "forwarded_from"
+        case deliveryNote = "delivery_note"
+    }
+}
+
+struct TeamMessageDelivery: Decodable, Equatable {
+    let label: String
+    let channel: String
+    let readAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case label, channel
+        case readAt = "read_at"
+    }
+}
+
+struct TeamMessageCounts: Decodable, Equatable {
+    let sent: Int
+    let toFinishedRecipients: Int
+    let forwarded: Int
+
+    enum CodingKeys: String, CodingKey {
+        case sent, forwarded
+        case toFinishedRecipients = "to_finished_recipients"
+    }
+}
+
+struct TeamDependencyRead: Decodable, Equatable {
+    let readerTask: String
+    let targetTask: String
+    let count: Int
+
+    enum CodingKeys: String, CodingKey {
+        case count
+        case readerTask = "reader_task"
+        case targetTask = "target_task"
+    }
+}
+
 struct TeamHistoryEnvelope: Decodable, Equatable {
     let ok: Bool
     let teams: [TeamHistoryTeam]

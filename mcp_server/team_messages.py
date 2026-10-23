@@ -30,7 +30,7 @@ import uuid
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from . import paths
 from .data_guard import redact_sensitive_text
@@ -47,7 +47,7 @@ SEND_RATE_PER_MIN = 20
 AGENT_MESSAGE_BUDGET = 10
 ROOM_NAME_LIMIT = 40
 ACTIVE_TTL_S = 2.0
-KINDS = ("update", "question", "blocker", "reply")
+KINDS = ("update", "question", "blocker", "reply", "correction")
 CHANNELS = ("mcp_result", "hook", "inbox")
 _HOOK_TOKEN_PREFIX = "mcpmsg_"
 
@@ -154,6 +154,12 @@ class Store:
         if not self._ready:
             with self._lock:
                 conn.executescript(_SCHEMA)
+                # Columns added later (#107); a database from before gets them here.
+                for column in ("forwarded_from TEXT", "delivery_note TEXT"):
+                    try:
+                        conn.execute(f"ALTER TABLE messages ADD COLUMN {column}")
+                    except sqlite3.OperationalError:
+                        pass
                 self._ready = True
         return conn
 
@@ -262,15 +268,17 @@ class Store:
                     to = None
                 recipient = self._resolve_recipient(conn, room_id, to) if to else None
                 warning = self._unheard(conn, room_id, sender.member_id, recipient)
+                finished = self._finished(conn, room_id, recipient) if recipient else None
                 recent = conn.execute("SELECT COUNT(*) FROM messages WHERE room_id = ? AND sender_id = ? "
-                                      "AND created_at > ?", (room_id, sender.member_id, now - 60)).fetchone()[0]
+                                      "AND created_at > ? AND forwarded_from IS NULL",
+                                      (room_id, sender.member_id, now - 60)).fetchone()[0]
                 if recent >= SEND_RATE_PER_MIN:
                     raise TeamMessageError("rate_limited", f"at most {SEND_RATE_PER_MIN} messages a minute; send fewer, "
                                                            "longer updates")
                 budget_left = None
                 if sender.agent_id:
-                    used = conn.execute("SELECT COUNT(*) FROM messages WHERE room_id = ? AND sender_id = ?",
-                                        (room_id, sender.member_id)).fetchone()[0]
+                    used = conn.execute("SELECT COUNT(*) FROM messages WHERE room_id = ? AND sender_id = ? "
+                                        "AND forwarded_from IS NULL", (room_id, sender.member_id)).fetchone()[0]
                     if used >= AGENT_MESSAGE_BUDGET:
                         raise TeamMessageError("message_budget_used",
                                                f"you have sent {AGENT_MESSAGE_BUDGET} messages to this team, the most an "
@@ -282,6 +290,15 @@ class Store:
                     "reply_to, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (message_id, room_id, sender.member_id, member["label"], recipient, kind, text,
                      str(reply_to or "")[:40] or None, key, now))
+                forwarded_to: List[str] = []
+                if finished is not None:
+                    # The recipient's work is over (#107): keep the message, say so, and pass it to the lead.
+                    conn.execute("UPDATE messages SET delivery_note = 'recipient_finished' WHERE message_id = ?",
+                                 (message_id,))
+                    lead = conn.execute("SELECT lead_id FROM rooms WHERE room_id = ?", (room_id,)).fetchone()
+                    if lead and lead[0] and lead[0] != sender.member_id:
+                        self._insert_forward(conn, room_id, message_id, lead[0], finished["target"], now)
+                        forwarded_to.append("lead")
                 self._prune(conn, room_id, now)
                 row = conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
                 conn.execute("COMMIT")
@@ -291,11 +308,116 @@ class Store:
         out = self._public(row)
         if clipped:
             out["clipped_to"] = BODY_LIMIT
+        if finished is not None:
+            out["delivery"] = "recipient_finished"
+            out["recipient_finished_at"] = _iso(finished["finished_at"])
+            out["finished_task"] = finished.get("task_id")
+            out["forwarded_to"] = forwarded_to
+            warning = (f"{finished['target']} had already finished, so it will not see this"
+                       + (" (it would only if the task runs again)" if finished.get("task_id") else "")
+                       + ("; a copy went to the lead" if forwarded_to else ""))
         if warning:
             out["warning"] = warning
         if budget_left is not None:
             out["messages_left"] = budget_left
         return out
+
+    def _finished(self, conn: sqlite3.Connection, room_id: str, recipient: str) -> Optional[Dict[str, Any]]:
+        """The recipient's work is over: its member left the room, or no agent of its task is still in it."""
+        if recipient.startswith("task:"):
+            task = recipient.split(":", 1)[1]
+            active = conn.execute("SELECT 1 FROM members WHERE room_id = ? AND task_id = ? AND left_at IS NULL",
+                                  (room_id, task)).fetchone()
+            if active:
+                return None
+            left = conn.execute("SELECT MAX(left_at) FROM members WHERE room_id = ? AND task_id = ? "
+                                "AND left_at IS NOT NULL", (room_id, task)).fetchone()[0]
+            return {"target": f"task {task}'s agent", "task_id": task, "finished_at": left} if left else None
+        row = conn.execute("SELECT left_at, task_id, label FROM members WHERE room_id = ? AND member_id = ?",
+                           (room_id, recipient)).fetchone()
+        if row is None or row["left_at"] is None:
+            return None
+        return {"target": row["label"] or recipient, "task_id": row["task_id"], "finished_at": row["left_at"]}
+
+    def _insert_forward(self, conn: sqlite3.Connection, room_id: str, message_id: str, to_member: str,
+                        target: str, now: float) -> str:
+        """A copy of message_id for to_member, marked as forwarded because target had finished."""
+        original = conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+        copy_id = "msg_" + uuid.uuid4().hex[:16]
+        body = f"[forwarded: {target} had finished] {original['body']}"[:BODY_LIMIT + 80]
+        conn.execute(
+            "INSERT INTO messages (message_id, room_id, sender_id, sender_label, recipient_id, kind, body, reply_to, "
+            "idempotency_key, created_at, forwarded_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+            (copy_id, room_id, original["sender_id"], original["sender_label"], to_member, original["kind"], body,
+             message_id, now, message_id))
+        return copy_id
+
+    def forward(self, message_id: str, to: str) -> Optional[str]:
+        """Forward a message whose recipient had finished to another task or member (a dependent task)."""
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                original = conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+                if original is None:
+                    conn.execute("COMMIT")
+                    return None
+                recipient = self._resolve_recipient(conn, original["room_id"], to)
+                if recipient in {original["sender_id"], original["recipient_id"]}:
+                    conn.execute("COMMIT")
+                    return None
+                finished = self._finished(conn, original["room_id"], original["recipient_id"] or "") or {}
+                copy_id = self._insert_forward(conn, original["room_id"], message_id, recipient,
+                                               finished.get("target") or "the recipient", time.time())
+                conn.execute("COMMIT")
+                return copy_id
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+
+    def finish_member(self, room_id: str, member_id: str) -> List[Dict[str, Any]]:
+        """A member's work is over: messages sent to it (or its task) that it never saw go to the lead,
+        then it leaves. Returns the messages that were passed on, so callers can also reach dependents."""
+        passed: List[Dict[str, Any]] = []
+        now = time.time()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                member = self._member(conn, room_id, member_id)
+                if member is not None:
+                    task = member["task_id"]
+                    others = task and conn.execute(
+                        "SELECT 1 FROM members WHERE room_id = ? AND task_id = ? AND member_id != ? AND left_at IS NULL",
+                        (room_id, task, member_id)).fetchone()
+                    targets = [member_id] + ([f"task:{task}"] if task and not others else [])
+                    rows = conn.execute(
+                        "SELECT * FROM messages WHERE room_id = ? AND recipient_id IN (%s) AND forwarded_from IS NULL "
+                        "AND delivery_note IS NULL AND sender_id != ? AND NOT EXISTS (SELECT 1 FROM deliveries "
+                        "WHERE deliveries.seq = messages.seq AND deliveries.member_id = ?) ORDER BY seq"
+                        % ",".join("?" * len(targets)), (room_id, *targets, member_id, member_id)).fetchall()
+                    lead = conn.execute("SELECT lead_id FROM rooms WHERE room_id = ?", (room_id,)).fetchone()
+                    for row in rows:
+                        conn.execute("UPDATE messages SET delivery_note = 'recipient_finished' WHERE seq = ?",
+                                     (row["seq"],))
+                        if lead and lead[0] and lead[0] not in {row["sender_id"], member_id}:
+                            self._insert_forward(conn, room_id, row["message_id"], lead[0], member["label"], now)
+                        passed.append({"message_id": row["message_id"], "task_id": task, "from_id": row["sender_id"]})
+                    conn.execute("UPDATE members SET left_at = ? WHERE room_id = ? AND member_id = ? AND left_at IS NULL",
+                                 (now, room_id, member_id))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        still = self.rooms_of(member_id)
+        self._mark_active(member_id, bool(still))
+        return passed
+
+    def room_stats(self, room_id: str) -> Dict[str, int]:
+        """Counts for a team's result: messages sent, how many found their recipient finished, copies passed on."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT SUM(forwarded_from IS NULL), SUM(delivery_note = 'recipient_finished'), "
+                "SUM(forwarded_from IS NOT NULL) FROM messages WHERE room_id = ?", (room_id,)).fetchone()
+        return {"sent": int(row[0] or 0), "to_finished_recipients": int(row[1] or 0), "forwarded": int(row[2] or 0)}
 
     def _unheard(self, conn: sqlite3.Connection, room_id: str, sender_id: str, recipient: Optional[str]) -> Optional[str]:
         """Say so when no one may see the message: its task or member has finished, or the room is empty."""
@@ -323,6 +445,11 @@ class Store:
         for row in rows:
             if wanted == row["member_id"] or wanted == row["member_id"].split(":", 1)[-1]:
                 return row["member_id"]
+        # A member that finished is still a known recipient (#107): the send then says it finished.
+        gone = conn.execute("SELECT member_id FROM members WHERE room_id = ? AND left_at IS NOT NULL AND "
+                            "(member_id = ? OR member_id = ?)", (room_id, wanted, f"agent:{wanted}")).fetchone()
+        if gone is not None:
+            return gone[0]
         if wanted.lower() == "lead":
             lead = conn.execute("SELECT lead_id FROM rooms WHERE room_id = ?", (room_id,)).fetchone()
             if lead and lead[0]:
@@ -485,6 +612,46 @@ class Store:
         messages = [self._public(row) for _, row in page]
         return {"messages": messages, "count": len(messages), "has_more": remaining > 0, "unread_remaining": remaining}
 
+    def history(self, room_id: str, *, after: int = 0, limit: int = 50) -> Dict[str, Any]:
+        """The whole conversation of a room, oldest first, with who was shown and who opened each message (#104).
+
+        Reading the history marks nothing read or shown: it is a record, not an inbox."""
+        limit = max(1, min(int(limit), 200))
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT * FROM messages WHERE room_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+                                (room_id, max(0, int(after)), limit + 1)).fetchall()
+            more = len(rows) > limit
+            rows = rows[:limit]
+            labels = {row["member_id"]: row["label"] for row in conn.execute(
+                "SELECT member_id, label FROM members WHERE room_id = ?", (room_id,))}
+            lead = conn.execute("SELECT lead_id FROM rooms WHERE room_id = ?", (room_id,)).fetchone()
+            seqs = [int(row["seq"]) for row in rows]
+            shown: Dict[int, List[Dict[str, Any]]] = {}
+            if seqs:
+                for item in conn.execute("SELECT seq, member_id, channel, shown_at, read_at FROM deliveries WHERE seq IN (%s) "
+                                         "ORDER BY shown_at" % ",".join("?" * len(seqs)), seqs):
+                    shown.setdefault(int(item["seq"]), []).append({
+                        "member": item["member_id"], "label": labels.get(item["member_id"], item["member_id"]),
+                        "channel": item["channel"], "shown_at": _iso(item["shown_at"]),
+                        "read_at": _iso(item["read_at"]) if item["read_at"] else None,
+                    })
+        lead_id = lead[0] if lead else None
+        messages = []
+        for row in rows:
+            item = self._public(row)
+            recipient = row["recipient_id"]
+            item["to_label"] = ("everyone" if recipient is None else "lead" if recipient == lead_id
+                                else f"task {recipient.split(':', 1)[1]}" if recipient.startswith("task:")
+                                else labels.get(recipient, recipient))
+            if row["sender_id"] == lead_id:
+                item["from_lead"] = True
+            if row["delivery_note"]:
+                item["delivery_note"] = row["delivery_note"]
+            item["deliveries"] = shown.get(int(row["seq"]), [])
+            messages.append(item)
+        return {"room": room_id, "messages": messages, "count": len(messages), "has_more": more,
+                "next_after": int(rows[-1]["seq"]) if more and rows else None}
+
     def delivery(self, message_id: str) -> Dict[str, Any]:
         """Who was shown a message, on which channel, and who opened it (shown is not read)."""
         with closing(self._connect()) as conn:
@@ -541,13 +708,19 @@ class Store:
 
     @staticmethod
     def _public(row: sqlite3.Row) -> Dict[str, Any]:
+        keys = row.keys()
         return {
             "message_id": row["message_id"], "seq": int(row["seq"]), "room": row["room_id"],
             "from": row["sender_label"], "from_id": row["sender_id"], "to": row["recipient_id"],
             "kind": row["kind"], "body": row["body"], "reply_to": row["reply_to"],
-            "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(float(row["created_at"]))),
-            **({"from_lead": True} if "from_lead" in row.keys() and row["from_lead"] else {}),
+            "sent_at": _iso(row["created_at"]),
+            **({"from_lead": True} if "from_lead" in keys and row["from_lead"] else {}),
+            **({"forwarded_from": row["forwarded_from"]} if "forwarded_from" in keys and row["forwarded_from"] else {}),
         }
+
+
+def _iso(timestamp: Any) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(float(timestamp)))
 
 
 def _hash(token: str) -> str:
@@ -594,6 +767,37 @@ _STORE = Store()
 
 def store() -> Store:
     return _STORE
+
+
+# Which unfinished tasks of a team use a task's result; tools_agents registers it (it owns the team graph).
+_DEPENDENTS: Optional[Callable[[str, str], List[str]]] = None
+
+
+def set_dependents_resolver(resolver: Optional[Callable[[str, str], List[str]]]) -> None:
+    global _DEPENDENTS
+    _DEPENDENTS = resolver
+
+
+def pass_to_dependents(room_id: str, message_id: str, task_id: Optional[str]) -> List[str]:
+    """Copies of a message whose task had finished for the team's tasks that still need that task's result (#107)."""
+    if not task_id or not room_id.startswith("team:") or _DEPENDENTS is None:
+        return []
+    passed = []
+    for dependent in _DEPENDENTS(room_id.split(":", 1)[1], task_id):
+        try:
+            if store().forward(message_id, dependent):
+                passed.append(f"task:{dependent}")
+        except TeamMessageError:
+            continue
+    return passed
+
+
+def finish_member(room_id: str, member_id: str) -> List[Dict[str, Any]]:
+    """An agent's work is over: what it never saw goes to the lead and to tasks that depend on it, then it leaves."""
+    passed = store().finish_member(room_id, member_id)
+    for item in passed:
+        pass_to_dependents(room_id, item["message_id"], item.get("task_id"))
+    return passed
 
 
 def note(messages: Sequence[Dict[str, Any]]) -> str:

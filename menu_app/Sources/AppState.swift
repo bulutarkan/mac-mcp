@@ -1646,6 +1646,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// One team's messages for its Team History card (#104); nil when they cannot be loaded.
+    func teamMessages(teamID: String) async -> TeamMessagesEnvelope? {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return nil }
+        return try? await fetch(
+            base.appendingPathComponent("dashboard/api/agents/teams/\(teamID)/messages"),
+            query: ["limit": "200"],
+            timeout: 4.0
+        )
+    }
+
     /// Only which provider CLIs the server found on this Mac (no model catalogs), for the tour.
     func refreshProviderDetection() async {
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }

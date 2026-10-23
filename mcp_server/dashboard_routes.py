@@ -63,7 +63,10 @@ from .steering import (
     SteeringIdempotencyExpired,
     SteeringManager,
 )
-from .tools_agents import agent_action, agent_catalog, dashboard_team_summary, list_agents, provider_overview, team_history
+from .tools_agents import (
+    agent_action, agent_catalog, dashboard_team_summary, list_agents, provider_overview, team_history,
+    team_message_history,
+)
 from .tools_browser import browser_activate_tab
 from .version import __version__
 
@@ -1641,6 +1644,25 @@ def create_dashboard_routes(
             )
         return JSONResponse(payload)
 
+    async def agents_team_messages(request: Request) -> Response:
+        """One team's conversation for Settings › Agents › Team History (#104): who wrote to whom, when,
+        and who was shown or opened it, plus the counts of what the tasks passed on. Reading marks nothing."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        team_id = str(request.path_params.get("team_id") or "")
+        if not re.fullmatch(r"team_[A-Za-z0-9]{1,40}", team_id):
+            return JSONResponse({"ok": False, "error": "team_id_invalid"}, status_code=400)
+        limit = max(1, min(_int_query(request, "limit", 50), 200))
+        after = max(0, _int_query(request, "after", 0))
+        try:
+            payload = await asyncio.to_thread(team_message_history, team_id, after=after, limit=limit)
+        except HTTPException as exc:
+            return JSONResponse({"ok": False, "error": "team_not_found"}, status_code=exc.status_code)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(sanitize_value(exc))}, status_code=500)
+        return JSONResponse(payload)
+
     async def provider_usage(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -2078,6 +2100,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/providers", providers, methods=["GET"]),
         Route("/dashboard/api/agent-catalog", agent_catalog_data, methods=["GET"]),
         Route("/dashboard/api/agents/history", agents_history, methods=["GET"]),
+        Route("/dashboard/api/agents/teams/{team_id}/messages", agents_team_messages, methods=["GET"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),
         Route("/dashboard/api/steering", steering_state, methods=["GET"]),
         Route("/dashboard/api/steering", steering_send, methods=["POST"]),
