@@ -102,6 +102,15 @@ struct ChatPermissionOption: Hashable {
     let kind: String
 }
 
+/// A file the owner added to a message.
+struct ChatAttachment: Hashable, Identifiable {
+    let name: String
+    let path: String
+    let kind: String
+    var id: String { path }
+    var isImage: Bool { kind == "image" }
+}
+
 struct ChatItem: Identifiable, Hashable {
     let id: String
     let type: String
@@ -118,6 +127,7 @@ struct ChatItem: Identifiable, Hashable {
     var entries: [(text: String, status: String)]
     var tool: String
     var server: String
+    var attachments: [ChatAttachment]
     var at: Double
     // A turn summary: how long the agent worked, with which model, and the tokens it reported.
     var durationSeconds: Double
@@ -147,6 +157,9 @@ struct ChatItem: Identifiable, Hashable {
         }
         tool = object["tool"] as? String ?? ""
         server = object["server"] as? String ?? ""
+        attachments = (object["attachments"] as? [[String: Any]] ?? []).map {
+            ChatAttachment(name: $0["name"] as? String ?? "", path: $0["path"] as? String ?? "", kind: $0["kind"] as? String ?? "file")
+        }
         at = (object["ended_at"] as? NSNumber ?? object["at"] as? NSNumber)?.doubleValue ?? 0
         durationSeconds = (object["duration_s"] as? NSNumber)?.doubleValue ?? 0
         model = object["model"] as? String ?? ""
@@ -171,6 +184,8 @@ final class ChatModel: ObservableObject {
     }
     @Published private(set) var turns: [ChatTurn] = []
     @Published var draft = ""
+    /// Files waiting to go with the next message.
+    @Published var attachments: [URL] = []
     @Published var error: String?
     @Published var loaded = false
 
@@ -260,16 +275,35 @@ final class ChatModel: ObservableObject {
         send()
     }
 
+    func attach(_ urls: [URL]) {
+        let files = urls.filter { url in
+            var directory: ObjCBool = false
+            return url.isFileURL && FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && !directory.boolValue
+        }
+        for url in files where !attachments.contains(url) { attachments.append(url) }
+        if attachments.count > 10 {
+            attachments = Array(attachments.prefix(10))
+            error = "Add at most 10 files to one message."
+        }
+    }
+
+    func detach(_ url: URL) {
+        attachments.removeAll { $0 == url }
+    }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let id = selectedID, !text.isEmpty, chat?.running != true else { return }
+        let files = attachments
+        guard let id = selectedID, !text.isEmpty || !files.isEmpty, chat?.running != true else { return }
         draft = ""
+        attachments = []
         chat?.running = true
         Task {
-            let result = await api("dashboard/api/chats/\(id)/prompt", ["text": text])
+            let result = await api("dashboard/api/chats/\(id)/prompt", ["text": text, "attachments": files.map(\.path)])
             if !result.ok {
                 error = result.object["message"] as? String ?? "The message was not sent."
                 draft = text
+                attachments = files
                 chat?.running = false
             }
             await poll()

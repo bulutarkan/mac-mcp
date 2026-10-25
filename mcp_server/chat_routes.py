@@ -55,7 +55,8 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
 
     async def prompt(request: Request) -> Dict[str, Any]:
         body = await _body(request)
-        return await get_host().prompt(request.path_params["chat_id"], str(body.get("text") or ""))
+        attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
+        return await get_host().prompt(request.path_params["chat_id"], str(body.get("text") or ""), attachments)
 
     async def cancel(request: Request) -> Dict[str, Any]:
         return await get_host().cancel(request.path_params["chat_id"])

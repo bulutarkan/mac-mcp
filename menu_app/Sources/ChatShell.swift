@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: Mac MCP Chat's own look: warm paper and the brand's champagne, not a stock split view.
 
@@ -435,6 +436,7 @@ private struct ChatWelcome: View {
 struct ChatComposer: View {
     @ObservedObject var model: ChatModel
     @FocusState private var focused: Bool
+    @MacMCPState private var dropping = false
 
     init(model: ChatModel) {
         self.model = model
@@ -446,6 +448,16 @@ struct ChatComposer: View {
                 Text(error).font(.caption).foregroundStyle(VisualTokens.error).frame(maxWidth: .infinity, alignment: .leading)
             }
             VStack(alignment: .leading, spacing: 10) {
+                if !model.attachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(model.attachments, id: \.self) { url in
+                                PendingAttachment(url: url) { model.detach(url) }
+                            }
+                        }
+                    }
+                    .transition(.opacity)
+                }
                 TextField(placeholder, text: $model.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
@@ -454,6 +466,12 @@ struct ChatComposer: View {
                     .onSubmit { model.send() }
                     .disabled(waiting)
                 HStack(spacing: 6) {
+                    Button(action: chooseFiles) {
+                        Image(systemName: "paperclip").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                            .frame(width: 26, height: 24).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add files or images (or drop them here)")
                     ChatSettingsBar(model: model)
                     Spacer(minLength: 8)
                     sendOrStop
@@ -463,8 +481,17 @@ struct ChatComposer: View {
             .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(ChatStyle.raised))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(focused ? ChatStyle.accent.opacity(0.7) : VisualTokens.hairline, lineWidth: focused ? 1.5 : 1)
+                    .strokeBorder(dropping ? ChatStyle.accent : focused ? ChatStyle.accent.opacity(0.7) : VisualTokens.hairline,
+                                  style: StrokeStyle(lineWidth: dropping ? 2 : focused ? 1.5 : 1, dash: dropping ? [6, 4] : []))
             )
+            .onDrop(of: [UTType.fileURL], isTargeted: $dropping) { providers in
+                for provider in providers {
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        if let url { DispatchQueue.main.async { model.attach([url]) } }
+                    }
+                }
+                return !providers.isEmpty
+            }
             .shadow(color: .black.opacity(0.07), radius: 14, y: 4)
             .animation(.easeOut(duration: 0.15), value: focused)
         }
@@ -497,6 +524,117 @@ struct ChatComposer: View {
 
     private var running: Bool { model.chat?.running == true }
     private var waiting: Bool { model.chat?.status == "waiting" }
-    private var canSend: Bool { !running && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool {
+        !running && (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.attachments.isEmpty)
+    }
+
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        if let project = model.chat?.project { panel.directoryURL = URL(fileURLWithPath: project) }
+        if panel.runModal() == .OK { model.attach(panel.urls) }
+    }
     private var placeholder: String { waiting ? "Answer the question above first" : "Ask for anything in this project" }
+}
+
+// MARK: Attachments
+
+enum AttachmentThumbnails {
+    private static let cache = NSCache<NSString, NSImage>()
+
+    /// A small copy of an image file, made once.
+    static func image(_ path: String, side: CGFloat) -> NSImage? {
+        let key = "\(path)#\(Int(side))" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        guard let image = NSImage(contentsOfFile: path), image.size.width > 0, image.size.height > 0 else { return nil }
+        let scale = side / max(image.size.width, image.size.height)
+        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let thumbnail = NSImage(size: size, flipped: false) { rect in
+            image.draw(in: rect)
+            return true
+        }
+        cache.setObject(thumbnail, forKey: key)
+        return thumbnail
+    }
+
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"]
+
+    /// A long file name keeps its start and its extension: "quarterly-report…final.pdf".
+    static func shortName(_ name: String, limit: Int = 28) -> String {
+        guard name.count > limit else { return name }
+        let tail = 10
+        return String(name.prefix(limit - tail - 1)) + "…" + String(name.suffix(tail))
+    }
+}
+
+/// A file waiting to be sent: its picture or icon, its name, and a button to take it out.
+private struct PendingAttachment: View {
+    let url: URL
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            preview.frame(width: 28, height: 28).clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Text(AttachmentThumbnails.shortName(url.lastPathComponent)).font(.system(size: 12)).lineLimit(1)
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                    .frame(width: 16, height: 16).background(Circle().fill(VisualTokens.quietFill))
+            }
+            .buttonStyle(.plain)
+            .help("Remove")
+        }
+        .padding(.leading, 4).padding(.trailing, 6).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ChatStyle.code))
+    }
+
+    @ViewBuilder private var preview: some View {
+        if AttachmentThumbnails.imageExtensions.contains(url.pathExtension.lowercased()),
+           let image = AttachmentThumbnails.image(url.path, side: 56) {
+            Image(nsImage: image).resizable().scaledToFill()
+        } else {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().scaledToFit()
+        }
+    }
+}
+
+/// What a sent message carried: images as pictures (click to open), other files as named chips.
+struct SentAttachments: View {
+    let files: [ChatAttachment]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(files) { file in
+                Button { open(file) } label: {
+                    if file.isImage, let image = AttachmentThumbnails.image(file.path, side: 240) {
+                        Image(nsImage: image).resizable().scaledToFit()
+                            .frame(maxWidth: 160, maxHeight: 120)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(VisualTokens.hairline))
+                    } else {
+                        HStack(spacing: 6) {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: file.path)).resizable().frame(width: 20, height: 20)
+                            Text(AttachmentThumbnails.shortName(file.name)).font(.system(size: 12)).lineLimit(1)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ChatStyle.userBubble))
+                        .fixedSize()
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(file.path)
+            }
+        }
+    }
+
+    private func open(_ file: ChatAttachment) {
+        let url = URL(fileURLWithPath: file.path)
+        if file.isImage {
+            NSWorkspace.shared.open(url)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
 }

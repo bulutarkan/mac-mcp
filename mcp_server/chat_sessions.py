@@ -14,8 +14,10 @@ by polling without missing a word.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -40,6 +42,11 @@ PERMISSION_WAIT_S = 30 * 60
 CREDENTIAL_TTL_S = 24 * 3600
 MAX_TEXT = 200_000
 MAX_TITLE = 120
+MAX_ATTACHMENTS = 10
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_IMAGE_BYTES = 8 * 1024 * 1024  # sent inline (base64) to agents that take images
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+               ".webp": "image/webp"}
 STREAM_KEEPALIVE_S = 15.0
 STREAM_COALESCE_S = 0.06  # at most ~15 updates a second reach the app
 EMPTY_CHAT_KEEP_S = 6 * 3600  # a chat nobody wrote in is gone at the next start after this
@@ -217,6 +224,46 @@ def _config_options(raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _attachments(paths: List[Any]) -> List[Dict[str, Any]]:
+    """Files the owner added to a message: real files, readable, within the size limits."""
+    if len(paths) > MAX_ATTACHMENTS:
+        raise ChatError(f"Add at most {MAX_ATTACHMENTS} files to one message.", "too_many_files")
+    out = []
+    for raw in paths:
+        path = Path(str(raw or "")).expanduser()
+        if not path.is_absolute() or not path.is_file():
+            raise ChatError(f"{path.name or raw} is not a file that can be added.", "bad_attachment")
+        size = path.stat().st_size
+        if size > MAX_ATTACHMENT_BYTES:
+            raise ChatError(f"{path.name} is larger than 25 MB.", "attachment_too_large")
+        image = path.suffix.lower() in IMAGE_TYPES
+        out.append({"name": path.name, "path": str(path.resolve()), "size": size,
+                    "kind": "image" if image else "file",
+                    "mime": IMAGE_TYPES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or ""})
+    return out
+
+
+def _prompt_blocks(text: str, files: List[Dict[str, Any]], caps: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """ACP prompt content: the words, images inline where the agent takes them, other files as links it can open."""
+    blocks: List[Dict[str, Any]] = [{"type": "text", "text": text}] if text else []
+    for file in files:
+        uri = Path(file["path"]).as_uri()
+        if file["kind"] == "image" and caps.get("image") and file["size"] <= MAX_IMAGE_BYTES:
+            try:
+                data = base64.b64encode(Path(file["path"]).read_bytes()).decode("ascii")
+            except OSError as exc:
+                raise ChatError(f"Could not read {file['name']}: {exc.strerror or exc}", "bad_attachment") from exc
+            blocks.append({"type": "image", "mimeType": file["mime"], "data": data, "uri": uri})
+        else:
+            link = {"type": "resource_link", "uri": uri, "name": file["name"], "size": file["size"]}
+            if file["mime"]:
+                link["mimeType"] = file["mime"]
+            blocks.append(link)
+    if not text:
+        blocks.insert(0, {"type": "text", "text": "Here are the attached files."})
+    return blocks
+
+
 def _needs_sign_in(exc: AcpError) -> bool:
     return exc.code == -32000 or "auth" in str(exc).lower()
 
@@ -307,6 +354,7 @@ class Chat:
         self.warming: Optional[asyncio.Task] = None
         self.startup_calls: set[str] = set()  # the Codex adapter's MCP start reports, not steps
         self.waiters: List[asyncio.Future] = []
+        self.prompt_caps: Dict[str, Any] = {}  # what the agent takes in a prompt besides text (image, …)
 
     @property
     def dir(self) -> Path:
@@ -468,10 +516,11 @@ class ChatHost:
             cursor = batch["cursor"]
             yield batch
 
-    async def prompt(self, chat_id: str, text: str) -> Dict[str, Any]:
+    async def prompt(self, chat_id: str, text: str, attachments: Optional[List[str]] = None) -> Dict[str, Any]:
         chat = self._chat(chat_id)
         text = str(text or "").strip()
-        if not text:
+        files = _attachments(attachments or [])
+        if not text and not files:
             raise ChatError("Write a message first.", "empty")
         if len(text) > MAX_TEXT:
             raise ChatError("That message is too long.", "too_long")
@@ -482,13 +531,13 @@ class ChatHost:
         if chat.idle is not None:
             chat.idle.cancel()
             chat.idle = None
-        chat.add("user", text=text)
+        chat.add("user", text=text, **({"attachments": files} if files else {}))
         if not chat.meta.get("titled") and chat.meta.get("title") == "New chat":
-            chat.meta["title"] = _cut(text.splitlines()[0], 60)
+            chat.meta["title"] = _cut(text.splitlines()[0] if text else files[0]["name"], 60)
         chat.meta["status"] = "running"
         chat.meta["turn_started_at"] = _now()
         chat.save()
-        chat.turn = asyncio.create_task(self._run_turn(chat, text))
+        chat.turn = asyncio.create_task(self._run_turn(chat, text, files))
         return {"ok": True, "chat": chat.public(), "cursor": chat.seq}
 
     async def cancel(self, chat_id: str) -> Dict[str, Any]:
@@ -539,13 +588,13 @@ class ChatHost:
 
     # ── one turn ────────────────────────────────────────────────────────────
 
-    async def _run_turn(self, chat: Chat, text: str) -> None:
+    async def _run_turn(self, chat: Chat, text: str, files: Optional[List[Dict[str, Any]]] = None) -> None:
         started = float(chat.meta.get("turn_started_at") or _now())
         stop, usage = "error", {}
         try:
             await self._ensure_session(chat)
             result = await chat.conn.request("session/prompt", {
-                "sessionId": chat.session_id, "prompt": [{"type": "text", "text": text}]})
+                "sessionId": chat.session_id, "prompt": _prompt_blocks(text, files or [], chat.prompt_caps)})
             stop = str(result.get("stopReason") or "end_turn")
             usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
 
@@ -625,6 +674,8 @@ class ChatHost:
                     "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
                     "clientInfo": {"name": "mac-mcp-chat", "title": "Mac MCP Chat", "version": __version__},
                 }, timeout=240)
+                caps = (init.get("agentCapabilities") or {}).get("promptCapabilities")
+                chat.prompt_caps = caps if isinstance(caps, dict) else {}
                 servers = [{"type": "http", "name": "mac-mcp", "url": _mcp_endpoint(),
                             "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}]
                 previous = chat.meta.get("acp_session_id")

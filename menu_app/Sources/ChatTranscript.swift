@@ -250,6 +250,10 @@ private struct UserMessage: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
+            if !item.attachments.isEmpty {
+                SentAttachments(files: item.attachments)
+            }
+            if !item.text.isEmpty {
             Text(item.text)
                 .font(.system(size: 14))
                 .lineSpacing(3)
@@ -257,6 +261,7 @@ private struct UserMessage: View {
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(ChatStyle.userBubble))
                 .frame(maxWidth: 560, alignment: .trailing)
+            }
             HStack(spacing: 6) {
                 Text(ChatTime.clock(item.at)).font(.system(size: 11)).foregroundStyle(.tertiary)
                 CopyButton(text: item.text, label: "Copy message")

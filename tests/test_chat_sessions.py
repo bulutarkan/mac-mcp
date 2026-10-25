@@ -96,7 +96,7 @@ FAKE_AGENT = textwrap.dedent('''\
         method, params = msg["method"], msg.get("params") or {}
         log.write(json.dumps({"method": method, "params": params}) + "\\n"); log.flush()
         if method == "initialize":
-            result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
+            result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "promptCapabilities": {"image": True}}}
         elif method == "session/new":
             if os.path.exists(LOG_PATH + ".needauth"):
                 send({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32000, "message": "Authentication required"}})
@@ -488,6 +488,40 @@ class ChatHostTest(unittest.TestCase):
             for item in batch["items"]:
                 merged[item["id"]] = item
         self.assertIn("Hello", [item.get("text") for item in merged.values()])  # chunks arrive merged, nothing lost
+
+    def test_attachments_go_to_the_agent_as_image_and_file_link(self):
+        import base64
+        picture = self.project / "shot.png"
+        picture.write_bytes(b"\x89PNG\r\n\x1a\n" + b"pixels")
+        notes = self.project / "notes.txt"
+        notes.write_text("hello")
+
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            with self.assertRaises(chat_sessions.ChatError):
+                await host.prompt(chat_id, "look", [str(self.project / "missing.png")])
+            with self.assertRaises(chat_sessions.ChatError):
+                await host.prompt(chat_id, "look", [str(notes)] * 11)
+            await host.prompt(chat_id, "", [str(picture), str(notes)])
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return state
+
+        state = self.run_async(scenario())
+        user = state["items"][0]
+        self.assertEqual([(file["name"], file["kind"]) for file in user["attachments"]],
+                         [("shot.png", "image"), ("notes.txt", "file")])
+        sent = next(entry for entry in self.agent_log() if entry["method"] == "session/prompt")["params"]["prompt"]
+        self.assertEqual([block["type"] for block in sent], ["text", "image", "resource_link"])
+        self.assertEqual(base64.b64decode(sent[1]["data"]), picture.read_bytes())
+        self.assertEqual((sent[1]["mimeType"], sent[2]["uri"]), ("image/png", notes.resolve().as_uri()))
+
+    def test_images_become_links_for_agents_without_image_support(self):
+        picture = self.project / "shot.png"
+        picture.write_bytes(b"png")
+        blocks = chat_sessions._prompt_blocks("see", chat_sessions._attachments([str(picture)]), {})
+        self.assertEqual([block["type"] for block in blocks], ["text", "resource_link"])
 
     def test_routes_need_the_dashboard_token(self):
         def guard(request):
