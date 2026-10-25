@@ -411,8 +411,10 @@ final class ChatModel: ObservableObject {
         let state = environment["MAC_MCP_STATE_DIR"].map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mac-mcp")
         let folder = state.appendingPathComponent("chats/pasted", isDirectory: true)
-        let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
-            .replacingOccurrences(of: ":", with: "-")
+        let formatter = DateFormatter()  // local time, named like a macOS screenshot
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let stamp = formatter.string(from: Date())
         let file = folder.appendingPathComponent("Pasted image \(stamp).png")
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
