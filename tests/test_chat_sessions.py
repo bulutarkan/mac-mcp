@@ -65,6 +65,15 @@ FAKE_AGENT = textwrap.dedent('''\
                          "content": [{"type": "content", "content": {"type": "text", "text": "wrote" if ok else "no"}}]})
             update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "done"}})
             return {"stopReason": "end_turn", "usage": {"inputTokens": 50, "outputTokens": 5}}
+        if text == "startup":
+            for call, why in (("s1", "MCP server `mac-mcp` was not started, because the Codex config already defines an MCP server with this name."),
+                              ("s2", "connection refused")):
+                update(sid, {"sessionUpdate": "tool_call", "toolCallId": call, "title": "mcp__mac-mcp__startup",
+                             "kind": "other", "status": "pending"})
+                update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": call, "status": "failed",
+                             "rawOutput": {"message": why}})
+            update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "ok"}})
+            return {"stopReason": "end_turn"}
         update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Info: Disabled tools: task"}})
         update(sid, {"sessionUpdate": "session_info_update", "title": "Greeting"})
         update(sid, {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "thinking"}})
@@ -396,6 +405,19 @@ class ChatHostTest(unittest.TestCase):
         self.assertIn("copilot login", chat["agent_error"])
         self.assertEqual(state["items"][-2]["tone"], "error")
         self.assertIn("Sign in to GitHub Copilot", state["items"][-2]["text"])
+
+    def test_mcp_startup_reports_are_not_steps(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "startup")
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return state
+
+        state = self.run_async(scenario())
+        self.assertEqual([item["type"] for item in state["items"]], ["user", "notice", "assistant", "turn"])
+        self.assertIn("connection refused", state["items"][1]["text"])  # a skipped server says nothing; a failed one does
 
     def test_routes_need_the_dashboard_token(self):
         def guard(request):

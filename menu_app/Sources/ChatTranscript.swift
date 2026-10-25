@@ -5,7 +5,7 @@ import SwiftUI
 // there (tools, thinking, notes in between) folds under "Worked for 1m 12s"; what the CLI reported
 // (time, model, tokens) sits under the answer with Copy and more.
 
-struct ChatTurn: Identifiable {
+struct ChatTurn: Identifiable, Equatable {
     let id: String
     var user: ChatItem?
     var steps: [ChatItem] = []
@@ -54,17 +54,18 @@ struct ChatConversation: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 26) {
-                        ForEach(turns) { turn in
+                        ForEach(model.turns) { turn in
                             TurnView(turn: turn, agent: model.chat?.agent ?? "", agentLabel: agentLabel,
-                                     live: isLive(turn), startedAt: model.chat?.turnStartedAt ?? 0,
+                                     live: running && turn.id == lastTurnID, startedAt: model.chat?.turnStartedAt ?? 0,
                                      answer: { item, option in model.answer(item, option: option) },
                                      retry: { model.retry($0) })
+                                .equatable()
                                 .id(turn.id)
                         }
                         // The lazy stack shows this only when it scrolls into view: then the owner is at the bottom.
                         Color.clear.frame(height: 1).id("end")
-                            .onAppear { atBottom = true }
-                            .onDisappear { atBottom = false }
+                            .onAppear { if !atBottom { atBottom = true } }
+                            .onDisappear { if atBottom { atBottom = false } }
                     }
                     .frame(maxWidth: ChatStyle.readingWidth)
                     .padding(.horizontal, VisualTokens.Space.l)
@@ -80,6 +81,7 @@ struct ChatConversation: View {
                 }
                 .onAppear { proxy.scrollTo("end", anchor: .bottom) }
                 .overlay(alignment: .bottom) {
+                    Group {
                     if !atBottom {
                         Button {
                             withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("end", anchor: .bottom) }
@@ -95,18 +97,17 @@ struct ChatConversation: View {
                         .padding(.bottom, 10)
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
                     }
+                    }
+                    // Only the button animates: animating the scroll view would lay the transcript out again.
+                    .animation(.easeOut(duration: 0.18), value: atBottom)
                 }
-                .animation(.easeOut(duration: 0.18), value: atBottom)
             }
             ChatComposer(model: model)
         }
     }
 
-    private var turns: [ChatTurn] { ChatTurn.group(model.items) }
-
-    private func isLive(_ turn: ChatTurn) -> Bool {
-        model.chat?.running == true && turn.id == turns.last?.id
-    }
+    private var running: Bool { model.chat?.running == true }
+    private var lastTurnID: String? { model.turns.last?.id }
 
     private var agentLabel: String {
         model.agents.first { $0.id == model.chat?.agent }?.label ?? "The agent"
@@ -115,7 +116,8 @@ struct ChatConversation: View {
 
 // MARK: One turn
 
-private struct TurnView: View {
+/// Equal when what it shows is equal, so a long chat redraws only the turn that changed.
+private struct TurnView: View, Equatable {
     let turn: ChatTurn
     let agent: String
     let agentLabel: String
@@ -124,6 +126,11 @@ private struct TurnView: View {
     let answer: (ChatItem, ChatPermissionOption) -> Void
     let retry: (String) -> Void
     @MacMCPState private var openOverride: Bool?
+
+    static func == (lhs: TurnView, rhs: TurnView) -> Bool {
+        lhs.turn == rhs.turn && lhs.live == rhs.live && lhs.agent == rhs.agent && lhs.agentLabel == rhs.agentLabel
+            && lhs.startedAt == rhs.startedAt
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -141,7 +148,11 @@ private struct TurnView: View {
                         PermissionCard(item: ask, agent: agentLabel, answer: { answer(ask, $0) })
                     }
                     if let reply = turn.answer {
-                        MarkdownView(text: reply.text)
+                        if live {
+                            StreamingAnswer(text: reply.text)
+                        } else {
+                            MarkdownView(text: reply.text)
+                        }
                     }
                     ForEach(turn.notices) { NoticeLine(item: $0) }
                     if !live, turn.answer != nil || turn.summary != nil {
@@ -177,11 +188,9 @@ private struct TurnView: View {
                 } else if let summary = turn.summary {
                     Text(summary.stop == "cancelled" ? "Stopped after \(ChatTime.duration(summary.durationSeconds))"
                          : "Worked for \(ChatTime.duration(summary.durationSeconds))")
-                } else if !turn.steps.isEmpty {
-                    Text("\(turn.steps.count) steps")
                 }
                 if !turn.steps.isEmpty {
-                    Text("· \(stepCount)").foregroundStyle(.tertiary)
+                    Text(live || turn.summary != nil ? "· \(stepCount)" : stepCount).foregroundStyle(.tertiary)
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
                         .rotationEffect(.degrees(open ? 90 : 0))
                 }
@@ -223,6 +232,33 @@ private struct UserMessage: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// A streaming answer: new words are let out smoothly rather than in the poll's bursts, and the
+/// last few are drawn faint and settle in. Text already there when it appears is shown at once.
+private struct StreamingAnswer: View {
+    let text: String
+    @MacMCPState private var shown = -1
+    @MacMCPState private var settled = 0
+
+    var body: some View {
+        let visible = shown < 0 ? text.count : min(shown, text.count)
+        MarkdownView(text: String(text.prefix(visible)), fade: min(48, max(0, visible - settled)))
+            .onAppear {
+                shown = text.count
+                settled = text.count
+            }
+            .task(id: text.count) {
+                while !Task.isCancelled {
+                    let target = text.count
+                    if shown >= target && settled >= shown { break }
+                    let backlog = max(0, target - shown)
+                    shown = min(target, shown + max(2, backlog / 6))
+                    settled = min(shown, settled + max(1, (shown - settled) / 5))
+                    try? await Task.sleep(nanoseconds: 33_000_000)
+                }
+            }
     }
 }
 

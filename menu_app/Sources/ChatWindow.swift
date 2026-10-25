@@ -165,7 +165,11 @@ final class ChatModel: ObservableObject {
     @Published var agents: [ChatAgentOption] = []
     @Published var selectedID: String?
     @Published var chat: ChatSummary?
-    @Published var items: [ChatItem] = []
+    @Published var items: [ChatItem] = [] {
+        // Grouped once per change, not on every redraw: a long chat has hundreds of items.
+        didSet { turns = ChatTurn.group(items) }
+    }
+    @Published private(set) var turns: [ChatTurn] = []
     @Published var draft = ""
     @Published var error: String?
     @Published var loaded = false
@@ -304,13 +308,20 @@ final class ChatModel: ObservableObject {
         guard result.ok, id == selectedID else { return }
         let wasRunning = chat?.running == true
         if let meta = result.object["chat"] as? [String: Any] { chat = ChatSummary(meta) }
-        for object in result.object["items"] as? [[String: Any]] ?? [] {
-            let item = ChatItem(object)
-            if let index = items.firstIndex(where: { $0.id == item.id }) {
-                items[index] = item
-            } else {
-                items.append(item)
+        let fresh = (result.object["items"] as? [[String: Any]] ?? []).map(ChatItem.init)
+        if !fresh.isEmpty {
+            // One assignment for the whole batch, so the transcript regroups and redraws once.
+            var merged = items
+            var position = Dictionary(uniqueKeysWithValues: merged.enumerated().map { ($1.id, $0) })
+            for item in fresh {
+                if let index = position[item.id] {
+                    merged[index] = item
+                } else {
+                    position[item.id] = merged.count
+                    merged.append(item)
+                }
             }
+            items = merged
         }
         cursor = (result.object["cursor"] as? NSNumber)?.intValue ?? cursor
         if wasRunning != (chat?.running == true) { await refreshList() }

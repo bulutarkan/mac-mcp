@@ -243,16 +243,63 @@ private struct SidebarToggle: View {
     }
 }
 
-/// A gold dot that breathes while the agent works.
-struct PulseDot: View {
-    @MacMCPState private var on = false
+/// A gold dot that breathes while the agent works. The breathing is a Core Animation layer animation:
+/// a SwiftUI repeatForever animation here made SwiftUI lay the whole transcript out on every frame,
+/// which pinned the main thread in long chats.
+struct PulseDot: NSViewRepresentable {
+    func makeNSView(context: Context) -> PulseDotView { PulseDotView() }
+    func updateNSView(_ view: PulseDotView, context: Context) { view.refreshColor() }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PulseDotView, context: Context) -> CGSize? {
+        CGSize(width: 7, height: 7)
+    }
+}
 
-    var body: some View {
-        Circle().fill(ChatStyle.accent).frame(width: 7, height: 7)
-            .opacity(on ? 1 : 0.35)
-            .scaleEffect(on ? 1 : 0.8)
-            .onAppear { withAnimation(.easeInOut(duration: 0.9).repeatForever()) { on = true } }
-            .accessibilityLabel("Working")
+final class PulseDotView: NSView {
+    private let dot = CALayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 7, height: 7))
+        wantsLayer = true
+        dot.frame = bounds
+        dot.cornerRadius = 3.5
+        layer?.addSublayer(dot)
+        refreshColor()
+        setAccessibilityLabel("Working")
+        setAccessibilityRole(.image)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 7, height: 7) }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshColor()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        dot.removeAllAnimations()
+        guard window != nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0.3
+        let shrink = CABasicAnimation(keyPath: "transform.scale")
+        shrink.fromValue = 1
+        shrink.toValue = 0.8
+        let breathe = CAAnimationGroup()
+        breathe.animations = [fade, shrink]
+        breathe.duration = 0.9
+        breathe.autoreverses = true
+        breathe.repeatCount = .infinity
+        breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        dot.add(breathe, forKey: "breathe")
+    }
+
+    func refreshColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            dot.backgroundColor = NSColor(ChatStyle.accent).cgColor
+        }
     }
 }
 

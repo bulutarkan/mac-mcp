@@ -231,6 +231,7 @@ def _last_log_line(path: Path) -> str:
 # How agents name an MCP tool: mcp__mac-mcp__read_file (Claude), mcp.mac-mcp.read_file (Codex),
 # mac-mcp_read_file (OpenCode), mac-mcp-read_file (Copilot).
 _MCP_TOOL = re.compile(r"^(?:mcp(?:__|\.)(?P<server>[\w.-]+?)(?:__|\.)|(?P<plain>mac[-_]mcp)[-_])(?P<tool>[a-z][a-z0-9_]*)$")
+_MCP_STARTUP = re.compile(r"^mcp(?:__|\.)[\w.-]+(?:__|\.)startup$")
 _AGENT_TOOLS = {"ToolSearch": "Looked for the right tool", "TodoWrite": "Updated its plan", "WebSearch": "Searched the web",
                 "WebFetch": "Read a web page", "Task": "Started a helper"}
 
@@ -301,6 +302,7 @@ class Chat:
         self.idle: Optional[asyncio.TimerHandle] = None
         self.save_pending = False
         self.warming: Optional[asyncio.Task] = None
+        self.startup_calls: set[str] = set()  # the Codex adapter's MCP start reports, not steps
 
     @property
     def dir(self) -> Path:
@@ -758,6 +760,9 @@ class ChatHost:
 
     def _tool(self, chat: Chat, update: Dict[str, Any], new: bool) -> None:
         call_id = str(update.get("toolCallId") or "")
+        if call_id in chat.startup_calls or _MCP_STARTUP.match(str(update.get("title") or "").strip()):
+            self._mcp_startup(chat, call_id, update)
+            return
         item = chat.tools.get(call_id)
         if item is None:
             item = chat.add("tool", call_id=call_id, title="Working", kind="other", status="running",
@@ -788,6 +793,19 @@ class ChatHost:
         chat.bump(item)
         if not new and item["status"] != "running":
             chat.tools.pop(call_id, None)
+
+    def _mcp_startup(self, chat: Chat, call_id: str, update: Dict[str, Any]) -> None:
+        """The Codex adapter reports each MCP server's start as a tool call. It is not a step: only a server
+        that failed to start is worth a line, and one it skipped because the owner's config has it is not."""
+        chat.startup_calls.add(call_id)
+        if str(update.get("status") or "") != "failed":
+            return
+        detail = _text_of(update.get("content")) if update.get("content") else ""
+        if not detail and isinstance(update.get("rawOutput"), dict):
+            detail = str(update["rawOutput"].get("message") or update["rawOutput"].get("content") or "")
+        if "already defines" in detail:
+            return
+        chat.add("notice", text=_cut(f"An MCP server did not start: {detail or 'no reason given'}", 400), tone="warning")
 
     async def _on_request(self, chat: Chat, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if method != "session/request_permission":
