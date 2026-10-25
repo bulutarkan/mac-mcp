@@ -46,8 +46,6 @@ struct ChatConversation: View {
     @MacMCPState private var atBottom = true
     /// Stay at the newest words until the owner scrolls up; scrolling back to the end follows again.
     @MacMCPState private var following = true
-    @MacMCPState private var wheelMonitor: Any?
-    @MacMCPState private var transcriptFrame: CGRect = .zero
 
     init(model: ChatModel) {
         self.model = model
@@ -66,24 +64,22 @@ struct ChatConversation: View {
                                 .equatable()
                                 .id(turn.id)
                         }
-                        // The lazy stack shows this only when it scrolls into view: then the owner is at the bottom.
                         Color.clear.frame(height: 1).id("end")
-                            .onAppear {
-                                if !atBottom { atBottom = true }
-                                if !following { following = true }
-                            }
-                            .onDisappear { if atBottom { atBottom = false } }
                     }
                     .frame(maxWidth: ChatStyle.readingWidth)
                     .padding(.horizontal, VisualTokens.Space.l)
                     .padding(.top, 22).padding(.bottom, 12)
                     .frame(maxWidth: .infinity)
+                    // Where the owner is comes from the scroll view itself, never from layout: a state change
+                    // driven by what the lazy stack happened to load made SwiftUI lay out again forever.
+                    .background(ScrollPositionReader(
+                        bottomChanged: { bottom in
+                            if bottom != atBottom { atBottom = bottom }
+                            if bottom && !following { following = true }
+                        },
+                        scrolledUp: { if following { following = false } }
+                    ))
                 }
-                .background(GeometryReader { geometry in
-                    Color.clear
-                        .onAppear { transcriptFrame = geometry.frame(in: .global) }
-                        .onChange(of: geometry.frame(in: .global)) { transcriptFrame = $0 }
-                })
                 .onChange(of: model.items.last?.rev) { _ in
                     if following { proxy.scrollTo("end", anchor: .bottom) }
                 }
@@ -98,24 +94,12 @@ struct ChatConversation: View {
                     following = true
                     DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) }
                 }
-                .onAppear {
-                    proxy.scrollTo("end", anchor: .bottom)
-                    // Scrolling up (wheel or trackpad) is the owner leaving the newest words.
-                    wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                        // Only over the transcript: scrolling the sidebar is not leaving the answer.
-                        let height = event.window?.contentView?.bounds.height ?? 0
-                        let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
-                        if event.scrollingDeltaY > 0.5, following, transcriptFrame.contains(point) { following = false }
-                        return event
-                    }
-                }
-                .onDisappear {
-                    if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
-                    wheelMonitor = nil
-                }
+                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
                 .overlay(alignment: .bottom) {
                     Group {
-                    if !atBottom && !following {
+                    // Away from the end: always when the agent is idle, and while it works only once the owner
+                    // scrolled up (otherwise the transcript is following the answer).
+                    if showJump {
                         Button {
                             following = true
                             withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("end", anchor: .bottom) }
@@ -133,7 +117,7 @@ struct ChatConversation: View {
                     }
                     }
                     // Only the button animates: animating the scroll view would lay the transcript out again.
-                    .animation(.easeOut(duration: 0.18), value: atBottom && following)
+                    .animation(.easeOut(duration: 0.18), value: showJump)
                 }
             }
             ChatComposer(model: model)
@@ -142,6 +126,7 @@ struct ChatConversation: View {
 
     private var running: Bool { model.chat?.running == true }
     private var lastTurnID: String? { model.turns.last?.id }
+    private var showJump: Bool { !atBottom && (!following || !running) }
 
     private var agentLabel: String {
         model.agents.first { $0.id == model.chat?.agent }?.label ?? "The agent"
@@ -520,5 +505,68 @@ private struct NoticeLine: View {
         }
         .font(.system(size: 12))
         .foregroundStyle(item.tone == "error" ? VisualTokens.error : item.tone == "warning" ? VisualTokens.warning : .secondary)
+    }
+}
+
+/// Reads the transcript's own NSScrollView: whether its end is in view, and when the owner scrolls up over it
+/// (wheel or trackpad). Both come from scrolling, so nothing here can be set off by a layout pass.
+private struct ScrollPositionReader: NSViewRepresentable {
+    let bottomChanged: (Bool) -> Void
+    let scrolledUp: () -> Void
+
+    func makeNSView(context: Context) -> ScrollPositionView {
+        let view = ScrollPositionView()
+        view.bottomChanged = bottomChanged
+        view.scrolledUp = scrolledUp
+        return view
+    }
+
+    func updateNSView(_ view: ScrollPositionView, context: Context) {
+        view.bottomChanged = bottomChanged
+        view.scrolledUp = scrolledUp
+    }
+}
+
+final class ScrollPositionView: NSView {
+    var bottomChanged: ((Bool) -> Void)?
+    var scrolledUp: (() -> Void)?
+    private weak var watched: NSScrollView?
+    private var lastBottom: Bool?
+    private var wheel: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self)
+        if let wheel { NSEvent.removeMonitor(wheel) }
+        wheel = nil
+        guard window != nil, let scrollView = enclosingScrollView else { return }
+        watched = scrollView
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification,
+                                               object: scrollView.contentView)
+        wheel = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            if event.scrollingDeltaY > 0.5, let self, let scrollView = self.watched, event.window === scrollView.window,
+               scrollView.bounds.contains(scrollView.convert(event.locationInWindow, from: nil)) {
+                self.scrolledUp?()
+            }
+            return event
+        }
+        scrolled()
+    }
+
+    @objc private func scrolled() {
+        guard let scrollView = watched, let document = scrollView.documentView else { return }
+        let visible = scrollView.documentVisibleRect
+        let height = document.bounds.height
+        let distance = document.isFlipped ? height - visible.maxY : visible.minY
+        let bottom = distance <= 48
+        guard bottom != lastBottom else { return }
+        lastBottom = bottom
+        DispatchQueue.main.async { [weak self] in self?.bottomChanged?(bottom) }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        if let wheel { NSEvent.removeMonitor(wheel) }
     }
 }
