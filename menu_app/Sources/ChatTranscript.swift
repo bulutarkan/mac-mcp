@@ -55,7 +55,9 @@ struct ChatConversation: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 26) {
+                    // A plain stack: a lazy one guessed the heights of rows it had not drawn, so the content changed
+                    // height while the owner scrolled and the scroll bar jumped. Turns are Equatable, so this stays cheap.
+                    VStack(alignment: .leading, spacing: 26) {
                         ForEach(model.turns) { turn in
                             TurnView(turn: turn, agent: model.chat?.agent ?? "", agentLabel: agentLabel,
                                      live: running && turn.id == lastTurnID, startedAt: model.chat?.turnStartedAt ?? 0,

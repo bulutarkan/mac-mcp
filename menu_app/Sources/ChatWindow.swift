@@ -196,7 +196,12 @@ final class ChatModel: ObservableObject {
         didSet { turns = ChatTurn.group(items) }
     }
     @Published private(set) var turns: [ChatTurn] = []
-    @Published var draft = ""
+    @Published var draft = "" {
+        didSet { if draft != oldValue { commandIndex = 0 } }
+    }
+    /// The highlighted command in the "/" list (↑ and ↓ move it), and a draft whose list Esc closed.
+    @Published var commandIndex = 0
+    @Published var dismissedCommandDraft: String?
     @Published var search = ""
     /// Files waiting to go with the next message.
     @Published var attachments: [URL] = []
@@ -337,6 +342,30 @@ final class ChatModel: ObservableObject {
             if !result.ok { error = result.object["message"] as? String }
             await poll()
         }
+    }
+
+    /// The agent's commands matching what follows a leading "/" (until the first space), short ones first.
+    var commandSuggestions: [ChatCommand] {
+        guard draft.hasPrefix("/"), !draft.contains(" "), !draft.contains("\n"), draft != dismissedCommandDraft else { return [] }
+        let typed = draft.dropFirst().lowercased()
+        let commands = chat?.commands ?? []
+        if commands.contains(where: { $0.name.lowercased() == typed }) { return [] }  // complete: Return sends
+        let matches = commands.filter { typed.isEmpty || $0.name.lowercased().hasPrefix(typed) }
+            .sorted { ($0.name.count, $0.name) < ($1.name.count, $1.name) }
+        return Array(matches.prefix(8))
+    }
+
+    func moveCommandSelection(_ step: Int) {
+        let count = commandSuggestions.count
+        guard count > 0 else { return }
+        commandIndex = (commandIndex + step + count) % count
+    }
+
+    /// Puts the highlighted (or given) command in the message box, ready for its arguments.
+    func acceptCommand(_ command: ChatCommand? = nil) {
+        let list = commandSuggestions
+        guard let picked = command ?? (list.indices.contains(commandIndex) ? list[commandIndex] : list.first) else { return }
+        draft = "/\(picked.name) "
     }
 
     func rename(_ chatID: String, to title: String) {

@@ -142,7 +142,8 @@ private struct ChatSidebar: View {
             .background(Button("", action: { searching = true }).keyboardShortcut("f", modifiers: .command).hidden())
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                // A plain stack, as for the transcript: a lazy one changes height while scrolling.
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(model.shownProjects) { project in
                         ProjectSection(project: project, model: model, renaming: $renaming)
                     }
@@ -509,6 +510,7 @@ struct ChatComposer: View {
     @ObservedObject var model: ChatModel
     @FocusState private var focused: Bool
     @MacMCPState private var dropping = false
+    @MacMCPState private var commandKeys: Any?
 
     init(model: ChatModel) {
         self.model = model
@@ -520,7 +522,8 @@ struct ChatComposer: View {
                 Text(error).font(.caption).foregroundStyle(VisualTokens.error).frame(maxWidth: .infinity, alignment: .leading)
             }
             if !suggestions.isEmpty {
-                CommandSuggestions(commands: suggestions) { complete($0) }
+                CommandSuggestions(commands: suggestions, selected: model.commandIndex,
+                                   hover: { model.commandIndex = $0 }) { complete($0) }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             VStack(alignment: .leading, spacing: 10) {
@@ -541,7 +544,7 @@ struct ChatComposer: View {
                     .focused($focused)
                     .onSubmit {
                         // Return completes a command being typed; once it is complete, Return sends.
-                        if let first = suggestions.first { complete(first) } else { model.send() }
+                        if !suggestions.isEmpty { model.acceptCommand() } else { model.send() }
                     }
                     .disabled(waiting)
                 HStack(spacing: 6) {
@@ -577,7 +580,14 @@ struct ChatComposer: View {
         .frame(maxWidth: ChatStyle.readingWidth + 40)
         .padding(.horizontal, VisualTokens.Space.l)
         .padding(.bottom, 18).padding(.top, 4)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            installCommandKeys()
+        }
+        .onDisappear {
+            if let commandKeys { NSEvent.removeMonitor(commandKeys) }
+            commandKeys = nil
+        }
     }
 
     @ViewBuilder private var sendOrStop: some View {
@@ -602,21 +612,31 @@ struct ChatComposer: View {
     }
 
     /// The agent's commands matching what follows a leading "/" (until the first space).
-    private var suggestions: [ChatCommand] {
-        let draft = model.draft
-        guard draft.hasPrefix("/"), !draft.contains(" "), !draft.contains("\n") else { return [] }
-        let typed = draft.dropFirst().lowercased()
-        let commands = model.chat?.commands ?? []
-        if commands.contains(where: { $0.name.lowercased() == typed }) { return [] }  // complete: Return sends
-        // The agent's own short commands (/compact, /config) before long skill names.
-        let matches = commands.filter { typed.isEmpty || $0.name.lowercased().hasPrefix(typed) }
-            .sorted { ($0.name.count, $0.name) < ($1.name.count, $1.name) }
-        return Array(matches.prefix(8))
-    }
+    private var suggestions: [ChatCommand] { model.commandSuggestions }
 
     private func complete(_ command: ChatCommand) {
-        model.draft = "/\(command.name) "
+        model.acceptCommand(command)
         focused = true
+    }
+
+    /// ↑ ↓ move through the "/" list, Return and Tab take the highlighted command, Esc closes the list.
+    /// A key monitor, since the text field keeps those keys for itself (and onKeyPress needs macOS 14).
+    private func installCommandKeys() {
+        guard commandKeys == nil else { return }
+        let model = model
+        commandKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard !model.commandSuggestions.isEmpty, event.window?.isKeyWindow == true,
+                  event.window?.firstResponder is NSTextView,
+                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
+            switch event.keyCode {
+            case 125: model.moveCommandSelection(1)  // ↓
+            case 126: model.moveCommandSelection(-1)  // ↑
+            case 36, 76, 48: model.acceptCommand()  // Return, Enter, Tab
+            case 53: model.dismissedCommandDraft = model.draft  // Esc
+            default: return event
+            }
+            return nil
+        }
     }
 
     private var running: Bool { model.chat?.running == true }
@@ -739,6 +759,8 @@ struct SentAttachments: View {
 /// The agent's commands for what is being typed after "/": name, what it does, and what it expects after it.
 private struct CommandSuggestions: View {
     let commands: [ChatCommand]
+    let selected: Int
+    let hover: (Int) -> Void
     let pick: (ChatCommand) -> Void
 
     var body: some View {
@@ -747,22 +769,29 @@ private struct CommandSuggestions: View {
                 Button { pick(command) } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text("/" + command.name).font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(index == 0 ? ChatStyle.accent : Color.primary)
+                            .foregroundStyle(index == selected ? ChatStyle.accent : Color.primary)
                         Text(command.description).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 8)
                         if !command.hint.isEmpty {
                             Text(command.hint).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
                         }
-                        if index == 0 {
+                        if index == selected {
                             Text("↩").font(.system(size: 11)).foregroundStyle(.tertiary)
                         }
                     }
                     .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(index == 0 ? ChatStyle.selection.opacity(0.7) : Color.clear)
+                    .background(index == selected ? ChatStyle.selection.opacity(0.7) : Color.clear)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { inside in if inside { hover(index) } }
             }
+            HStack {
+                Spacer()
+                Text("↑↓ to choose · ↩ or ⇥ to use · esc to close").font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .background(ChatStyle.code.opacity(0.5))
         }
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ChatStyle.raised))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(VisualTokens.hairline))
