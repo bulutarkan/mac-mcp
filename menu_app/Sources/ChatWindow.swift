@@ -175,11 +175,14 @@ final class ChatModel: ObservableObject {
     @Published var loaded = false
 
     private let api: ChatAPI
+    /// The request for a chat's event stream (server-sent events); without one the transcript is polled.
+    private let eventsRequest: ((String) -> URLRequest?)?
     private var cursor = 0
     private var poller: Task<Void, Never>?
 
-    init(api: @escaping ChatAPI) {
+    init(api: @escaping ChatAPI, eventsRequest: ((String) -> URLRequest?)? = nil) {
         self.api = api
+        self.eventsRequest = eventsRequest
     }
 
     var allChats: [ChatSummary] { projects.flatMap(\.chats) }
@@ -218,7 +221,7 @@ final class ChatModel: ObservableObject {
         poller = Task { [weak self] in
             // Opening a chat starts its agent, so the models and modes it offers show before the first message.
             _ = await self?.api("dashboard/api/chats/\(id)/connect", [:])
-            await self?.pollLoop()
+            await self?.follow(id)
         }
     }
 
@@ -297,8 +300,37 @@ final class ChatModel: ObservableObject {
     }
 
     private func restartPolling() {
+        guard eventsRequest == nil, let id = selectedID else { return }  // the event stream needs no restart
         poller?.cancel()
-        poller = Task { [weak self] in await self?.pollLoop() }
+        poller = Task { [weak self] in await self?.follow(id) }
+    }
+
+    /// Keep the open chat current: its event stream when there is one, else polling.
+    private func follow(_ id: String) async {
+        guard eventsRequest != nil else { return await pollLoop() }
+        await poll()  // everything up to now, then only changes
+        var failures = 0
+        while !Task.isCancelled && id == selectedID {
+            if let request = eventsRequest?("dashboard/api/chats/\(id)/events?after=\(cursor)") {
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                    failures = 0
+                    for try await line in bytes.lines {
+                        guard !Task.isCancelled, id == selectedID else { return }
+                        guard line.hasPrefix("data: "), let data = line.dropFirst(6).data(using: .utf8),
+                              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+                        await apply(object, for: id)
+                    }
+                } catch {
+                    if Task.isCancelled { return }
+                }
+            }
+            // The stream ended (server restart, sleep): catch up once, then reconnect, slower each time.
+            failures += 1
+            try? await Task.sleep(nanoseconds: UInt64(min(failures, 5)) * 1_000_000_000)
+            await poll()
+        }
     }
 
     private func pollLoop() async {
@@ -313,10 +345,16 @@ final class ChatModel: ObservableObject {
     func poll() async {
         guard let id = selectedID else { return }
         let result = await api("dashboard/api/chats/\(id)?after=\(cursor)", nil)
-        guard result.ok, id == selectedID else { return }
+        guard result.ok else { return }
+        await apply(result.object, for: id)
+    }
+
+    /// One update from the server (a poll answer or a stream event): the chat's state and its changed items.
+    private func apply(_ object: [String: Any], for id: String) async {
+        guard id == selectedID else { return }
         let wasRunning = chat?.running == true
-        if let meta = result.object["chat"] as? [String: Any] { chat = ChatSummary(meta) }
-        let fresh = (result.object["items"] as? [[String: Any]] ?? []).map(ChatItem.init)
+        if let meta = object["chat"] as? [String: Any] { chat = ChatSummary(meta) }
+        let fresh = (object["items"] as? [[String: Any]] ?? []).map(ChatItem.init)
         if !fresh.isEmpty {
             // One assignment for the whole batch, so the transcript regroups and redraws once.
             var merged = items
@@ -331,7 +369,7 @@ final class ChatModel: ObservableObject {
             }
             items = merged
         }
-        cursor = (result.object["cursor"] as? NSNumber)?.intValue ?? cursor
+        cursor = (object["cursor"] as? NSNumber)?.intValue ?? cursor
         if wasRunning != (chat?.running == true) { await refreshList() }
     }
 }
@@ -349,7 +387,17 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let model = ChatModel { path, body in await state.taskAPI(path, body: body) }
+        let model = ChatModel(api: { path, body in await state.taskAPI(path, body: body) }, eventsRequest: { path in
+            guard let base = URL(string: "http://127.0.0.1:\(state.settings.serverPort)/") else { return nil }
+            var components = URLComponents(url: base.appendingPathComponent(path.components(separatedBy: "?")[0]),
+                                           resolvingAgainstBaseURL: false)
+            components?.percentEncodedQuery = path.components(separatedBy: "?").dropFirst().first
+            guard let url = components?.url else { return nil }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 35  // the server sends a keep-alive every 15 s; silence past this reconnects
+            state.authorizeDashboardRequest(&request)
+            return request
+        })
         let window = NSWindow(contentViewController: NSHostingController(rootView: ChatView(model: model)))
         window.title = "Mac MCP Chat"
         window.titleVisibility = .hidden  // the chat draws its own header in the title bar's place

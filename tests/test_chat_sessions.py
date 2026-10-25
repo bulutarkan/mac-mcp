@@ -450,6 +450,45 @@ class ChatHostTest(unittest.TestCase):
         self.assertNotIn("kept", gone)
         self.assertFalse((chat_sessions.chats_root() / empty).exists())
 
+    def test_event_stream_pushes_changes_as_they_happen(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            stop = asyncio.Event()
+
+            async def disconnected():
+                return stop.is_set()
+
+            batches = []
+
+            async def listen():
+                async for batch in host.stream(chat_id, 0, disconnected):
+                    batches.append(batch)
+                    if batch is not None and any(item["type"] == "turn" for item in batch["items"]):
+                        stop.set()
+
+            with mock.patch.object(chat_sessions, "STREAM_KEEPALIVE_S", 0.2):
+                listener = asyncio.create_task(listen())
+                await asyncio.sleep(0.5)  # quiet: keep-alives only
+                await host.prompt(chat_id, "hello")
+                await asyncio.wait_for(listener, 15)
+            await host.shutdown()
+            return batches
+
+        batches = self.run_async(scenario())
+        self.assertIn(None, batches[:3])  # keep-alive while nothing happened
+        updates = [batch for batch in batches if batch is not None]
+        cursors = [batch["cursor"] for batch in updates]
+        self.assertEqual(cursors, sorted(cursors))
+        seen = [item["type"] for batch in updates for item in batch["items"]]
+        for kind in ("user", "thought", "assistant", "turn"):
+            self.assertIn(kind, seen)
+        merged = {}
+        for batch in updates:
+            for item in batch["items"]:
+                merged[item["id"]] = item
+        self.assertIn("Hello", [item.get("text") for item in merged.values()])  # chunks arrive merged, nothing lost
+
     def test_routes_need_the_dashboard_token(self):
         def guard(request):
             from starlette.responses import JSONResponse
@@ -471,6 +510,9 @@ class ChatHostTest(unittest.TestCase):
         empty = client.post(f"/dashboard/api/chats/{chat_id}/prompt", headers={"Authorization": "Bearer good"},
                             json={"text": "  "})
         self.assertEqual((empty.status_code, empty.json()["error"]), (400, "empty"))
+        self.assertEqual(client.get(f"/dashboard/api/chats/{chat_id}/events").status_code, 401)
+        self.assertEqual(client.get("/dashboard/api/chats/chat_000000000000/events",
+                                    headers={"Authorization": "Bearer good"}).status_code, 404)
 
 
 if __name__ == "__main__":

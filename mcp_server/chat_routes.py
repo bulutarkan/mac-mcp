@@ -5,7 +5,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .chat_sessions import ChatError, get_host
@@ -65,6 +65,31 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         return get_host().answer(request.path_params["chat_id"], str(body.get("item_id") or ""),
                                  str(body.get("option_id") or ""))
 
+    async def events(request: Request) -> Response:
+        """Server-sent events: each `data:` is the same object as GET /chats/{id}?after=…"""
+        denied = dashboard_guard(request)
+        if denied is not None:
+            return denied
+        try:
+            after = max(0, int(request.query_params.get("after") or 0))
+        except ValueError:
+            after = 0
+        host = get_host()
+        try:
+            host.read(request.path_params["chat_id"], after)  # 404 before the stream starts
+        except ChatError as exc:
+            return _error(exc)
+
+        async def generator():
+            async for batch in host.stream(request.path_params["chat_id"], after, request.is_disconnected):
+                if batch is None:
+                    yield ": keepalive\n\n"
+                else:
+                    yield "data: " + json.dumps(batch, ensure_ascii=False) + "\n\n"
+
+        return StreamingResponse(generator(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
+
     async def connect(request: Request) -> Dict[str, Any]:
         return get_host().connect(request.path_params["chat_id"])
 
@@ -83,6 +108,7 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         Route("/dashboard/api/chats/{chat_id}/prompt", guarded(prompt), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/cancel", guarded(cancel), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/permission", guarded(permission), methods=["POST"]),
+        Route("/dashboard/api/chats/{chat_id}/events", events, methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}/connect", guarded(connect), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/config", guarded(config), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/delete", guarded(delete), methods=["POST"]),

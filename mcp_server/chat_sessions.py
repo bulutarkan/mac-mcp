@@ -40,6 +40,8 @@ PERMISSION_WAIT_S = 30 * 60
 CREDENTIAL_TTL_S = 24 * 3600
 MAX_TEXT = 200_000
 MAX_TITLE = 120
+STREAM_KEEPALIVE_S = 15.0
+STREAM_COALESCE_S = 0.06  # at most ~15 updates a second reach the app
 EMPTY_CHAT_KEEP_S = 6 * 3600  # a chat nobody wrote in is gone at the next start after this
 
 # Claude Code and Codex speak ACP through their official adapters; the others have it built in.
@@ -304,6 +306,7 @@ class Chat:
         self.save_pending = False
         self.warming: Optional[asyncio.Task] = None
         self.startup_calls: set[str] = set()  # the Codex adapter's MCP start reports, not steps
+        self.waiters: List[asyncio.Future] = []
 
     @property
     def dir(self) -> Path:
@@ -316,6 +319,26 @@ class Chat:
         else:
             self.meta["rev"] = self.seq
         self.meta["updated_at"] = _now()
+        # Wake whoever streams this chat (the app's event stream).
+        waiters, self.waiters = self.waiters, []
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    async def changed(self, after: int, timeout: float) -> bool:
+        """Wait until the transcript moves past `after`; False when nothing happened in time."""
+        if self.seq > after:
+            return True
+        waiter: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.waiters.append(waiter)
+        try:
+            await asyncio.wait_for(waiter, timeout)
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            if waiter in self.waiters:
+                self.waiters.remove(waiter)
+        return self.seq > after
 
     def add(self, item_type: str, **fields: Any) -> Dict[str, Any]:
         item = {"id": f"{item_type[0]}{len(self.items) + 1}_{secrets.token_hex(3)}", "type": item_type, "at": _now(),
@@ -431,6 +454,19 @@ class ChatHost:
         chat = self._chat(chat_id)
         items = [item for item in chat.items if int(item.get("rev") or 0) > after]
         return {"ok": True, "chat": chat.public(), "items": items, "cursor": chat.seq}
+
+    async def stream(self, chat_id: str, after: int, disconnected) -> Any:
+        """The chat's changes as they happen: one read() batch per burst, a keep-alive when quiet."""
+        chat = self._chat(chat_id)
+        cursor = max(0, int(after))
+        while not await disconnected():
+            if not await chat.changed(cursor, STREAM_KEEPALIVE_S):
+                yield None
+                continue
+            await asyncio.sleep(STREAM_COALESCE_S)  # a burst of words goes out as one update
+            batch = self.read(chat_id, cursor)
+            cursor = batch["cursor"]
+            yield batch
 
     async def prompt(self, chat_id: str, text: str) -> Dict[str, Any]:
         chat = self._chat(chat_id)
@@ -602,8 +638,10 @@ class ChatHost:
                     except AcpError as exc:
                         if _needs_sign_in(exc):
                             raise
-                        chat.add("notice", text="The earlier conversation could not be reopened; the agent starts fresh.",
-                                 tone="warning")
+                        if any(item.get("type") == "turn" for item in chat.items):
+                            # Only worth saying when there was a conversation (an empty session is not kept).
+                            chat.add("notice", text="The earlier conversation could not be reopened; the agent starts fresh.",
+                                     tone="warning")
                     finally:
                         chat.replaying = False
                 if not chat.session_id:
