@@ -97,6 +97,7 @@ private struct ChatSidebar: View {
     let hide: () -> Void
     @FocusState private var searching: Bool
     @MacMCPState private var renaming: String?
+    @MacMCPState private var deleting: ChatSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -145,7 +146,7 @@ private struct ChatSidebar: View {
                 // A plain stack, as for the transcript: a lazy one changes height while scrolling.
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(model.shownProjects) { project in
-                        ProjectSection(project: project, model: model, renaming: $renaming)
+                        ProjectSection(project: project, model: model, renaming: $renaming, deleting: $deleting)
                     }
                     if model.shownProjects.isEmpty && !model.search.isEmpty {
                         Text("No chats match “\(model.search)”").font(.caption).foregroundStyle(.secondary)
@@ -158,6 +159,15 @@ private struct ChatSidebar: View {
         }
         .background(ChatStyle.sidebar)
         .overlay(alignment: .trailing) { Rectangle().fill(VisualTokens.hairline).frame(width: 1) }
+        .alert("Delete “\(deleting?.title ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Delete", role: .destructive) {
+                if let chat = deleting { model.delete(chat.id) }
+                deleting = nil
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: {
+            Text("The conversation and its history are removed from Mac MCP. The files the agent changed stay as they are.")
+        }
     }
 }
 
@@ -166,6 +176,7 @@ private struct ProjectSection: View {
     let project: ChatProjectGroup
     @ObservedObject var model: ChatModel
     @Binding var renaming: String?
+    @Binding var deleting: ChatSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -190,7 +201,7 @@ private struct ProjectSection: View {
                         .contextMenu {
                             Button("Rename…") { renaming = chat.id }
                             Divider()
-                            Button("Delete Chat", role: .destructive) { model.delete(chat.id) }
+                            Button("Delete Chat…", role: .destructive) { deleting = chat }
                         }
                 }
             }
@@ -553,7 +564,7 @@ struct ChatComposer: View {
                             .frame(width: 26, height: 24).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Add files or images (or drop them here)")
+                    .help("Add files or images (or drop or paste them here)")
                     ChatSettingsBar(model: model)
                     Spacer(minLength: 8)
                     sendOrStop
@@ -584,6 +595,8 @@ struct ChatComposer: View {
             focused = true
             installCommandKeys()
         }
+        .onChange(of: focused) { model.composerFocused = $0 }
+        .onChange(of: model.focusComposer) { _ in focused = true }
         .onDisappear {
             if let commandKeys { NSEvent.removeMonitor(commandKeys) }
             commandKeys = nil
@@ -625,6 +638,11 @@ struct ChatComposer: View {
         guard commandKeys == nil else { return }
         let model = model
         commandKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // ⌘V with an image or files on the clipboard adds them to the message (the text field takes only text).
+            if event.keyCode == 9, event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+               event.window?.isKeyWindow == true, model.composerFocused, model.pasteFiles() {
+                return nil
+            }
             guard !model.commandSuggestions.isEmpty, event.window?.isKeyWindow == true,
                   event.window?.firstResponder is NSTextView,
                   event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }

@@ -94,6 +94,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/ChatTranscript.swift"
   "${SCRIPT_DIR}/Sources/ChatMarkdown.swift"
   "${SCRIPT_DIR}/Sources/ChatUsageSection.swift"
+  "${SCRIPT_DIR}/Sources/ChatSyntax.swift"
   "${SCRIPT_DIR}/Sources/ToolActivityBubbleController.swift"
   "${SCRIPT_DIR}/Sources/DesktopCursorOverlay.swift"
   "${SCRIPT_DIR}/Sources/BrowserTabPulse.swift"

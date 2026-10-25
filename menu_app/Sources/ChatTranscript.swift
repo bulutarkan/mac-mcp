@@ -62,7 +62,7 @@ struct ChatConversation: View {
                             TurnView(turn: turn, agent: model.chat?.agent ?? "", agentLabel: agentLabel,
                                      live: running && turn.id == lastTurnID, startedAt: model.chat?.turnStartedAt ?? 0,
                                      answer: { item, option in model.answer(item, option: option) },
-                                     retry: { model.retry($0) })
+                                     retry: { model.retry($0) }, edit: { model.edit($0) })
                                 .equatable()
                                 .id(turn.id)
                         }
@@ -146,6 +146,7 @@ private struct TurnView: View, Equatable {
     let startedAt: Double
     let answer: (ChatItem, ChatPermissionOption) -> Void
     let retry: (String) -> Void
+    let edit: (ChatItem) -> Void
     @MacMCPState private var openOverride: Bool?
 
     static func == (lhs: TurnView, rhs: TurnView) -> Bool {
@@ -156,7 +157,7 @@ private struct TurnView: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let user = turn.user {
-                UserMessage(item: user)
+                UserMessage(item: user, edit: live ? nil : { edit(user) })
             }
             if hasAgentPart {
                 VStack(alignment: .leading, spacing: 12) {
@@ -233,6 +234,7 @@ private struct TurnView: View, Equatable {
 
 private struct UserMessage: View {
     let item: ChatItem
+    let edit: (() -> Void)?
     @MacMCPState private var hovering = false
 
     var body: some View {
@@ -251,6 +253,14 @@ private struct UserMessage: View {
             }
             HStack(spacing: 6) {
                 Text(ChatTime.clock(item.at)).font(.system(size: 11)).foregroundStyle(.tertiary)
+                if let edit {
+                    Button(action: edit) {
+                        Image(systemName: "pencil").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                            .frame(width: 22, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit and send again")
+                }
                 CopyButton(text: item.text, label: "Copy message")
             }
             .opacity(hovering ? 1 : 0)
@@ -326,6 +336,9 @@ private struct StepRow: View {
                     if !source.isEmpty {
                         Text(source).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
                     }
+                    if !item.diffs.isEmpty {
+                        DiffCounts(added: item.diffs.reduce(0) { $0 + $1.added }, removed: item.diffs.reduce(0) { $0 + $1.removed })
+                    }
                     statusMark
                     if hasDetail {
                         Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.tertiary)
@@ -344,7 +357,7 @@ private struct StepRow: View {
         }
     }
 
-    private var hasDetail: Bool { !item.output.isEmpty || !item.input.isEmpty }
+    private var hasDetail: Bool { !item.output.isEmpty || !item.input.isEmpty || !item.diffs.isEmpty }
 
     private var source: String {
         if item.server == "mac-mcp" { return "Mac MCP" }
@@ -403,7 +416,9 @@ private struct StepDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(item.input.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+            // An edit shows what changed; its raw old and new text would only repeat that.
+            ForEach(item.diffs) { DiffBlock(diff: $0) }
+            ForEach(item.diffs.isEmpty ? item.input.sorted(by: { $0.key < $1.key }) : [], id: \.key) { key, value in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(key).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 84, alignment: .leading)
                     Text(value).font(.system(size: 11.5, design: .monospaced)).textSelection(.enabled).lineLimit(4)
@@ -570,5 +585,67 @@ final class ScrollPositionView: NSView {
     deinit {
         NotificationCenter.default.removeObserver(self)
         if let wheel { NSEvent.removeMonitor(wheel) }
+    }
+}
+
+/// "+12 −3": what an edit added and took away.
+private struct DiffCounts: View {
+    let added: Int
+    let removed: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if added > 0 { Text("+\(added)").foregroundStyle(VisualTokens.success) }
+            if removed > 0 { Text("−\(removed)").foregroundStyle(VisualTokens.error) }
+        }
+        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+        .monospacedDigit()
+    }
+}
+
+/// One file's edit: added lines on green, removed on red, the rest as context.
+private struct DiffBlock: View {
+    let diff: ChatDiff
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: diff.created ? "doc.badge.plus" : "doc.text").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text((diff.path as NSString).lastPathComponent).font(.system(size: 12, weight: .semibold))
+                    .help(diff.path)
+                if diff.created { Text("new file").font(.system(size: 11)).foregroundStyle(.tertiary) }
+                DiffCounts(added: diff.added, removed: diff.removed)
+                Spacer()
+                CopyButton(text: diff.lines.joined(separator: "\n"), label: "Copy diff")
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(ChatStyle.code)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
+                        Text(line.isEmpty ? " " : line)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(line.hasPrefix("@@") ? Color.secondary : Color.primary.opacity(0.9))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.vertical, 1)
+                            .background(tint(line))
+                    }
+                    if diff.truncated {
+                        Text("… more changes not shown").font(.system(size: 11)).foregroundStyle(.tertiary).padding(10)
+                    }
+                }
+                .textSelection(.enabled)
+            }
+            .frame(maxHeight: 320)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(VisualTokens.hairline))
+    }
+
+    private func tint(_ line: String) -> Color {
+        if line.hasPrefix("+") { return VisualTokens.success.opacity(0.14) }
+        if line.hasPrefix("-") { return VisualTokens.error.opacity(0.12) }
+        if line.hasPrefix("@@") { return ChatStyle.code.opacity(0.6) }
+        return .clear
     }
 }

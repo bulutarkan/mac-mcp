@@ -115,6 +115,17 @@ struct ChatPermissionOption: Hashable {
     let kind: String
 }
 
+/// An edit as a unified diff: its file, how many lines came and went, and the lines themselves.
+struct ChatDiff: Hashable, Identifiable {
+    let path: String
+    let added: Int
+    let removed: Int
+    let created: Bool
+    let lines: [String]
+    let truncated: Bool
+    var id: String { path + "#\(lines.count)" }
+}
+
 /// A file the owner added to a message.
 struct ChatAttachment: Hashable, Identifiable {
     let name: String
@@ -141,6 +152,7 @@ struct ChatItem: Identifiable, Hashable {
     var tool: String
     var server: String
     var attachments: [ChatAttachment]
+    var diffs: [ChatDiff]
     var at: Double
     // A turn summary: how long the agent worked, with which model, and the tokens it reported.
     var durationSeconds: Double
@@ -170,6 +182,11 @@ struct ChatItem: Identifiable, Hashable {
         }
         tool = object["tool"] as? String ?? ""
         server = object["server"] as? String ?? ""
+        diffs = (object["diffs"] as? [[String: Any]] ?? []).map {
+            ChatDiff(path: $0["path"] as? String ?? "", added: ($0["added"] as? NSNumber)?.intValue ?? 0,
+                     removed: ($0["removed"] as? NSNumber)?.intValue ?? 0, created: $0["created"] as? Bool ?? false,
+                     lines: $0["lines"] as? [String] ?? [], truncated: $0["truncated"] as? Bool ?? false)
+        }
         attachments = (object["attachments"] as? [[String: Any]] ?? []).map {
             ChatAttachment(name: $0["name"] as? String ?? "", path: $0["path"] as? String ?? "", kind: $0["kind"] as? String ?? "file")
         }
@@ -230,10 +247,78 @@ final class ChatModel: ObservableObject {
         }
         error = nil
         agents = (result.object["agents"] as? [[String: Any]] ?? []).map(ChatAgentOption.init)
-        projects = (result.object["projects"] as? [[String: Any]] ?? []).map { project in
+        setProjects(result.object)
+    }
+
+    // MARK: The chat list, live
+
+    /// Says a chat finished or is waiting for the owner, unless they are looking at it: (chat id, title, body).
+    var notify: ((String, String, String) -> Void)?
+    /// Whether the owner has this chat open in front of them.
+    var isLooking: (String) -> Bool = { _ in false }
+    private var listFollower: Task<Void, Never>?
+    private var lastStates: [String: (running: Bool, status: String)] = [:]
+
+    /// Follow the whole chat list (any chat starting, finishing, waiting), so the sidebar is right about chats
+    /// working in the background. One stream for the app's life; it reconnects on its own.
+    func followList() {
+        guard listFollower == nil, eventsRequest != nil else { return }
+        listFollower = Task { [weak self] in await self?.listLoop() }
+    }
+
+    private func listLoop() async {
+        var failures = 0
+        while !Task.isCancelled {
+            if let request = eventsRequest?("dashboard/api/chats/list-events") {
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                    failures = 0
+                    for try await line in bytes.lines {
+                        guard !Task.isCancelled else { return }
+                        guard line.hasPrefix("data: "), let data = line.dropFirst(6).data(using: .utf8),
+                              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+                        setProjects(object)
+                    }
+                } catch {
+                    if Task.isCancelled { return }
+                }
+            }
+            failures += 1
+            try? await Task.sleep(nanoseconds: UInt64(min(failures, 5)) * 1_000_000_000)
+            await refreshList()
+        }
+    }
+
+    private func setProjects(_ object: [String: Any]) {
+        let groups = (object["projects"] as? [[String: Any]] ?? []).map { project in
             ChatProjectGroup(id: project["path"] as? String ?? "", name: project["name"] as? String ?? "",
                              chats: (project["chats"] as? [[String: Any]] ?? []).map(ChatSummary.init))
         }
+        let known = !lastStates.isEmpty
+        for summary in groups.flatMap(\.chats) {
+            if known, let before = lastStates[summary.id], !isLooking(summary.id) {
+                let agent = agents.first { $0.id == summary.agent }?.label ?? "The agent"
+                if before.status != "waiting" && summary.status == "waiting" {
+                    notify?(summary.id, summary.title, "\(agent) asks before it continues.")
+                } else if before.running && !summary.running {
+                    notify?(summary.id, summary.title, "\(agent) finished.")
+                }
+            }
+            lastStates[summary.id] = (summary.running, summary.status)
+        }
+        projects = groups
+    }
+
+    /// Puts one of the owner's own messages back in the message box, to change and send again.
+    @Published var focusComposer = 0
+
+    func edit(_ message: ChatItem) {
+        guard chat?.running != true else { return }
+        draft = message.text
+        attachments = message.attachments.map { URL(fileURLWithPath: $0.path) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        focusComposer += 1
     }
 
     func select(_ id: String?) {
@@ -304,6 +389,41 @@ final class ChatModel: ObservableObject {
             attachments = Array(attachments.prefix(10))
             error = "Add at most 10 files to one message."
         }
+    }
+
+    /// Whether the message box has the keyboard (⌘V adds images and files only there).
+    var composerFocused = false
+
+    /// Adds what is on the clipboard if it is files or an image: files as they are, an image saved as a PNG next to
+    /// the chats. False when it holds neither, so the text field pastes text as usual.
+    func pasteFiles() -> Bool {
+        let board = NSPasteboard.general
+        if let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            attach(urls)
+            return true
+        }
+        guard board.canReadObject(forClasses: [NSImage.self], options: nil),
+              let image = (board.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage])?.first,
+              let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return false }
+        let environment = ProcessInfo.processInfo.environment
+        let state = environment["MAC_MCP_STATE_DIR"].map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mac-mcp")
+        let folder = state.appendingPathComponent("chats/pasted", isDirectory: true)
+        let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
+            .replacingOccurrences(of: ":", with: "-")
+        let file = folder.appendingPathComponent("Pasted image \(stamp).png")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try png.write(to: file, options: .atomic)
+        } catch {
+            self.error = "Could not keep the pasted image: \(error.localizedDescription)"
+            return true
+        }
+        attach([file])
+        return true
     }
 
     func detach(_ url: URL) {
@@ -483,8 +603,20 @@ final class ChatModel: ObservableObject {
 final class ChatWindowController: NSObject, NSWindowDelegate {
     static let shared = ChatWindowController()
     private var windowController: NSWindowController?
+    private var model: ChatModel?
+    private weak var state: AppState?
+
+    /// Opens the chat window on one chat (a notification was clicked).
+    func open(chat id: String) {
+        guard let state else { return }
+        show(state: state)
+        model?.select(id)
+    }
 
     func show(state: AppState) {
+        self.state = state
+        // In the Dock and in ⌘Tab while the chat is open, like any app window; back to the menu bar when it closes.
+        NSApplication.shared.setActivationPolicy(.regular)
         if let window = windowController?.window {
             NSApplication.shared.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -501,7 +633,19 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
             state.authorizeDashboardRequest(&request)
             return request
         })
+        self.model = model
         let window = NSWindow(contentViewController: NSHostingController(rootView: ChatView(model: model)))
+        model.isLooking = { [weak window, weak model] id in
+            guard let window, let model else { return false }
+            return NSApp.isActive && window.isKeyWindow && window.isVisible && model.selectedID == id
+        }
+        if Bundle.main.bundleIdentifier != nil {  // macOS notifications need an app bundle
+            model.notify = { id, title, body in
+                Task { await AgentNotificationController.shared.scheduleChat(id: id, title: title, body: body) }
+            }
+            AgentNotificationController.shared.chatHandler = { [weak self] id in self?.open(chat: id) }
+        }
+        model.followList()
         window.title = "Mac MCP Chat"
         window.titleVisibility = .hidden  // the chat draws its own header in the title bar's place
         window.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
@@ -518,6 +662,11 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Only the menu bar again (LSUIElement); the chat list keeps following, so finished chats still notify.
+        DispatchQueue.main.async { NSApplication.shared.setActivationPolicy(.accessory) }
     }
 }
 

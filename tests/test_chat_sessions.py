@@ -63,7 +63,8 @@ FAKE_AGENT = textwrap.dedent('''\
             ok = outcome.get("optionId") == "allow_once"
             update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1",
                          "status": "completed" if ok else "failed",
-                         "content": [{"type": "content", "content": {"type": "text", "text": "wrote" if ok else "no"}}]})
+                         "content": [{"type": "content", "content": {"type": "text", "text": "wrote" if ok else "no"}},
+                                     {"type": "diff", "path": "hello.txt", "oldText": "a\\nb\\n", "newText": "a\\nc\\nd\\n"}]})
             update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "done"}})
             return {"stopReason": "end_turn", "usage": {"inputTokens": 50, "outputTokens": 5}}
         if text == "startup":
@@ -288,6 +289,8 @@ class ChatHostTest(unittest.TestCase):
         permission = next(item for item in state["items"] if item["type"] == "permission")
         self.assertEqual((tool["status"], tool["output"], tool["files"]), ("done", "wrote", ["hello.txt"]))
         self.assertEqual(tool["title"], "Created hello.txt")
+        self.assertEqual(tool["diffs"][0], {"path": "hello.txt", "added": 2, "removed": 1, "created": False,
+                                            "lines": ["@@ -1,2 +1,3 @@", " a", "-b", "+c", "+d"], "truncated": False})
         self.assertEqual((permission["status"], permission["choice"]), ("answered", "allow_once"))
         self.assertEqual(permission["files"], ["hello.txt"])
         self.assertEqual([option["id"] for option in permission["options"]], ["allow_once", "reject_once"])
@@ -627,6 +630,41 @@ class ChatHostTest(unittest.TestCase):
                                                              "Failed to resolve provider: Configuration value not found: GOOSE_PROVIDER")))
         self.assertTrue(chat_sessions._needs_sign_in(AcpError("Authentication required", -32000)))
         self.assertFalse(chat_sessions._needs_sign_in(AcpError("Session not found", -32602)))
+
+    def test_list_stream_shows_a_chat_working_in_the_background(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            busy = host.create(str(self.project), "copilot")["chat"]["id"]
+            host.create(str(self.project), "copilot")  # the one the owner looks at
+            stop = asyncio.Event()
+
+            async def disconnected():
+                return stop.is_set()
+
+            seen = []
+
+            async def listen():
+                async for listing in host.list_stream(disconnected):
+                    if listing is None:
+                        continue
+                    state = {chat["id"]: chat["running"] for project in listing["projects"] for chat in project["chats"]}
+                    seen.append(state.get(busy))
+                    if seen[-1] is False and True in seen:
+                        stop.set()
+
+            listener = asyncio.create_task(listen())
+            await asyncio.sleep(0.1)
+            await host.prompt(busy, "slow")
+            await asyncio.sleep(1.5)
+            await host.cancel(busy)
+            await asyncio.wait_for(listener, 10)
+            await host.shutdown()
+            return seen
+
+        seen = self.run_async(scenario())
+        self.assertIn(True, seen)
+        self.assertEqual(seen[-1], False)
+        self.assertNotIn("agents", chat_sessions.get_host().list(agents=False))
 
     def test_routes_need_the_dashboard_token(self):
         def guard(request):

@@ -66,6 +66,23 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         return get_host().answer(request.path_params["chat_id"], str(body.get("item_id") or ""),
                                  str(body.get("option_id") or ""))
 
+    async def list_events(request: Request) -> Response:
+        """Server-sent events of the chat list (the same object as GET /chats, without agents)."""
+        denied = dashboard_guard(request)
+        if denied is not None:
+            return denied
+        host = get_host()
+
+        async def generator():
+            async for listing in host.list_stream(request.is_disconnected):
+                if listing is None:
+                    yield ": keepalive\n\n"
+                else:
+                    yield "data: " + json.dumps(listing, ensure_ascii=False) + "\n\n"
+
+        return StreamingResponse(generator(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
+
     async def usage(request: Request) -> Dict[str, Any]:
         try:
             days = int(request.query_params.get("days") or 30)
@@ -117,6 +134,7 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
     return [
         Route("/dashboard/api/chats", guarded(chats), methods=["GET", "POST"]),
         Route("/dashboard/api/chats/usage", guarded(usage), methods=["GET"]),
+        Route("/dashboard/api/chats/list-events", list_events, methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}", guarded(chat), methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}/prompt", guarded(prompt), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/cancel", guarded(cancel), methods=["POST"]),

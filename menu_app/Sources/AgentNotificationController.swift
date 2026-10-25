@@ -359,6 +359,22 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         }
     }
 
+    /// Opens a chat when its notification is clicked (set by the chat window).
+    var chatHandler: ((String) -> Void)?
+
+    /// A chat finished, or its agent asks before it continues, while the owner was elsewhere.
+    func scheduleChat(id: String, title: String, body: String) async {
+        guard await authorizationState() == .authorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.threadIdentifier = "mac-mcp.chat." + id
+        content.userInfo = ["kind": "chat", "chat_id": id]
+        try? await center.add(UNNotificationRequest(identifier: "mac-mcp.chat.\(id).\(Date().timeIntervalSince1970)",
+                                                    content: content, trigger: nil))
+    }
+
     func removeUpdateReady() {
         center.removeDeliveredNotifications(withIdentifiers: [Self.updateReadyIdentifier])
     }
@@ -384,6 +400,11 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         defer { completionHandler() }
         if response.notification.request.content.userInfo["kind"] as? String == "update" {
             DispatchQueue.main.async { [weak self] in self?.updateHandler?() }
+            return
+        }
+        if response.notification.request.content.userInfo["kind"] as? String == "chat",
+           let id = response.notification.request.content.userInfo["chat_id"] as? String {
+            DispatchQueue.main.async { [weak self] in self?.chatHandler?(id) }
             return
         }
         if response.notification.request.content.userInfo["kind"] as? String == "fleet_request" {

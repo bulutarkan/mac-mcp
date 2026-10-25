@@ -26,7 +26,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import extra_harness_providers as harness
 from . import paths
@@ -49,7 +49,8 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024  # sent inline (base64) to agents that take im
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                ".webp": "image/webp"}
 STREAM_KEEPALIVE_S = 15.0
-STREAM_COALESCE_S = 0.06  # at most ~15 updates a second reach the app
+STREAM_COALESCE_S = 0.06
+LIST_COALESCE_S = 0.5  # at most ~15 updates a second reach the app
 EMPTY_CHAT_KEEP_S = 6 * 3600  # a chat nobody wrote in is gone at the next start after this
 
 # Claude Code and Codex speak ACP through their official adapters; the others have it built in.
@@ -406,6 +407,29 @@ def _needs_sign_in(exc: AcpError) -> bool:
     return exc.code == -32000 or any(word in text for word in ("auth", "login", "goose_provider", "configure"))
 
 
+MAX_DIFF_LINES = 400
+
+
+def _diffs(content: Any) -> List[Dict[str, Any]]:
+    """ACP diff blocks (an edit's old and new text) as unified diffs with their added and removed line counts."""
+    import difflib
+    out = []
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict) or block.get("type") != "diff":
+            continue
+        path = str(block.get("path") or "")
+        old = str(block.get("oldText") or "").splitlines()
+        new = str(block.get("newText") or "").splitlines()
+        lines = list(difflib.unified_diff(old, new, lineterm="", n=2))[2:]  # without the ---/+++ header
+        added = sum(1 for line in lines if line.startswith("+"))
+        removed = sum(1 for line in lines if line.startswith("-"))
+        out.append({"path": path, "added": added, "removed": removed, "created": block.get("oldText") in (None, ""),
+                    # Not _cut: a diff line's leading space (an unchanged line) matters.
+                    "lines": [line if len(line) <= 400 else line[:399] + "…" for line in lines[:MAX_DIFF_LINES]],
+                    "truncated": len(lines) > MAX_DIFF_LINES})
+    return out[:20]
+
+
 def _last_log_line(path: Path) -> str:
     try:
         with path.open("rb") as handle:
@@ -466,7 +490,7 @@ def _text_of(content: Any) -> str:
         if content.get("type") == "content":
             return _text_of(content.get("content"))
         if content.get("type") == "diff":
-            return f"Changed {content.get('path') or 'a file'}"
+            return ""  # shown as the step's diff instead
         return ""
     if isinstance(content, list):
         return "\n".join(part for part in (_text_of(item) for item in content) if part)
@@ -494,6 +518,7 @@ class Chat:
         self.startup_calls: set[str] = set()  # the Codex adapter's MCP start reports, not steps
         self.waiters: List[asyncio.Future] = []
         self.prompt_caps: Dict[str, Any] = {}  # what the agent takes in a prompt besides text (image, …)
+        self.on_change: Optional[Callable[[], None]] = None
 
     @property
     def dir(self) -> Path:
@@ -506,11 +531,13 @@ class Chat:
         else:
             self.meta["rev"] = self.seq
         self.meta["updated_at"] = _now()
-        # Wake whoever streams this chat (the app's event stream).
+        # Wake whoever streams this chat (the app's event stream), and the chat list's stream.
         waiters, self.waiters = self.waiters, []
         for waiter in waiters:
             if not waiter.done():
                 waiter.set_result(None)
+        if self.on_change is not None:
+            self.on_change()
 
     async def changed(self, after: int, timeout: float) -> bool:
         """Wait until the transcript moves past `after`; False when nothing happened in time."""
@@ -554,6 +581,36 @@ class ChatHost:
     def __init__(self) -> None:
         self._chats: Dict[str, Chat] = {}
         self._loaded = False
+        self._version = 0  # moves with any chat's change; the chat list's stream follows it
+        self._list_waiters: List[asyncio.Future] = []
+
+    def _changed(self) -> None:
+        self._version += 1
+        waiters, self._list_waiters = self._list_waiters, []
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    async def list_stream(self, disconnected) -> Any:
+        """The chat list as it changes (any chat starting, finishing, waiting, renamed): for the sidebar, so a
+        chat working in the background shows it. A keep-alive (None) when quiet."""
+        self._load_all()
+        cursor = self._version
+        while not await disconnected():
+            if self._version == cursor:
+                waiter: asyncio.Future = asyncio.get_running_loop().create_future()
+                self._list_waiters.append(waiter)
+                try:
+                    await asyncio.wait_for(waiter, STREAM_KEEPALIVE_S)
+                except asyncio.TimeoutError:
+                    yield None
+                    continue
+                finally:
+                    if waiter in self._list_waiters:
+                        self._list_waiters.remove(waiter)
+            await asyncio.sleep(LIST_COALESCE_S)  # a streaming answer changes its chat many times a second
+            cursor = self._version
+            yield self.list(agents=False)
 
     # ── store ───────────────────────────────────────────────────────────────
 
@@ -577,6 +634,7 @@ class ChatHost:
             if meta.get("status") in ("running", "waiting"):
                 meta["status"] = "idle"  # the server stopped mid-turn
             chat = Chat(meta, items if isinstance(items, list) else [])
+            chat.on_change = self._changed
             for item in chat.items:
                 if item.get("type") == "permission" and item.get("status") == "pending":
                     item["status"] = "expired"
@@ -599,7 +657,7 @@ class ChatHost:
 
     # ── API ─────────────────────────────────────────────────────────────────
 
-    def list(self) -> Dict[str, Any]:
+    def list(self, agents: bool = True) -> Dict[str, Any]:
         self._load_all()
         chats = sorted(self._chats.values(), key=lambda chat: float(chat.meta.get("updated_at") or 0), reverse=True)
         projects: Dict[str, Dict[str, Any]] = {}
@@ -607,7 +665,10 @@ class ChatHost:
             project = chat.meta["project"]
             entry = projects.setdefault(project, {"path": project, "name": Path(project).name or project, "chats": []})
             entry["chats"].append(chat.public())
-        return {"ok": True, "projects": list(projects.values()), "agents": available_agents()}
+        out: Dict[str, Any] = {"ok": True, "projects": list(projects.values())}
+        if agents:
+            out["agents"] = available_agents()
+        return out
 
     def create(self, project: str, agent: str, model: str = "", title: str = "") -> Dict[str, Any]:
         self._load_all()
@@ -630,6 +691,7 @@ class ChatHost:
             "usage": {"input_tokens": 0, "output_tokens": 0}, "context": None,
         }
         chat = Chat(meta, [])
+        chat.on_change = self._changed
         chat.dir.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             chat.dir.chmod(0o700)
@@ -767,6 +829,7 @@ class ChatHost:
         await self._stop_agent(chat)
         self._chats.pop(chat.meta["id"], None)
         shutil.rmtree(chat.dir, ignore_errors=True)
+        self._changed()
         return {"ok": True}
 
     async def shutdown(self) -> None:
@@ -1102,6 +1165,9 @@ class ChatHost:
                 item["intent"] = update["rawInput"]["description"].strip()
         if update.get("locations"):
             item["files"] = [str(place.get("path") or "") for place in update["locations"] if isinstance(place, dict)][:20]
+        diffs = _diffs(update.get("content"))
+        if diffs:
+            item["diffs"] = diffs
         output = _text_of(update.get("content")) if update.get("content") else ""
         if not output and isinstance(update.get("rawOutput"), dict):
             raw = update["rawOutput"]

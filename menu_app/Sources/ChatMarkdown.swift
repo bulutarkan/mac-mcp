@@ -371,7 +371,8 @@ struct CodeBlockView: View {
             }
             .padding(.horizontal, 12).padding(.top, 7).padding(.bottom, 3)
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(code).font(.system(size: 12.5, design: .monospaced)).textSelection(.enabled)
+                Text(SyntaxHighlighter.highlight(code, language: language))
+                    .font(.system(size: 12.5, design: .monospaced)).textSelection(.enabled)
                     .padding(.horizontal, 12).padding(.bottom, 10).padding(.top, 2)
                     .fixedSize(horizontal: true, vertical: true)
             }
