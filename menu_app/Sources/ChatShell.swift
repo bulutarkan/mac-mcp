@@ -95,6 +95,8 @@ private struct ChatSidebar: View {
     @ObservedObject var model: ChatModel
     let newChat: () -> Void
     let hide: () -> Void
+    @FocusState private var searching: Bool
+    @MacMCPState private var renaming: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -123,10 +125,30 @@ private struct ChatSidebar: View {
             .keyboardShortcut("n", modifiers: .command)
             .padding(.horizontal, 10)
 
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.tertiary)
+                TextField("Search chats", text: $model.search).textFieldStyle(.plain).font(.system(size: 12.5))
+                    .focused($searching)
+                if !model.search.isEmpty {
+                    Button { model.search = "" } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain).help("Clear")
+                }
+            }
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(ChatStyle.selection.opacity(0.6)))
+            .padding(.horizontal, 12).padding(.top, 8)
+            .background(Button("", action: { searching = true }).keyboardShortcut("f", modifiers: .command).hidden())
+
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(model.projects) { project in
-                        ProjectSection(project: project, model: model)
+                    ForEach(model.shownProjects) { project in
+                        ProjectSection(project: project, model: model, renaming: $renaming)
+                    }
+                    if model.shownProjects.isEmpty && !model.search.isEmpty {
+                        Text("No chats match “\(model.search)”").font(.caption).foregroundStyle(.secondary)
+                            .padding(.horizontal, 10).padding(.top, 18)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -142,6 +164,7 @@ private struct ChatSidebar: View {
 private struct ProjectSection: View {
     let project: ChatProjectGroup
     @ObservedObject var model: ChatModel
+    @Binding var renaming: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -155,13 +178,51 @@ private struct ProjectSection: View {
             .padding(.bottom, 6)
             .help(project.id)
             ForEach(project.chats) { chat in
-                ChatRow(chat: chat, selected: chat.id == model.selectedID) { model.select(chat.id) }
-                    .contextMenu {
-                        Button("Delete Chat", role: .destructive) { model.delete(chat.id) }
+                if renaming == chat.id {
+                    RenameField(title: chat.title) { title in
+                        if let title { model.rename(chat.id, to: title) }
+                        renaming = nil
                     }
+                    .padding(.leading, 24)
+                } else {
+                    ChatRow(chat: chat, selected: chat.id == model.selectedID) { model.select(chat.id) }
+                        .contextMenu {
+                            Button("Rename…") { renaming = chat.id }
+                            Divider()
+                            Button("Delete Chat", role: .destructive) { model.delete(chat.id) }
+                        }
+                }
             }
         }
         .padding(.top, 18)
+    }
+}
+
+/// Editing a chat's name in place: Return keeps it, Escape or leaving the field puts the old one back.
+struct RenameField: View {
+    let title: String
+    let done: (String?) -> Void
+    @MacMCPState private var text: String
+    @FocusState private var focused: Bool
+
+    init(title: String, done: @escaping (String?) -> Void) {
+        self.title = title
+        self.done = done
+        _text = MacMCPState(initialValue: title)
+    }
+
+    var body: some View {
+        TextField("Chat name", text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(ChatStyle.raised))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ChatStyle.accent.opacity(0.7)))
+            .focused($focused)
+            .onSubmit { done(text.trimmingCharacters(in: .whitespaces).isEmpty || text == title ? nil : text) }
+            .onExitCommand { done(nil) }
+            .onAppear { focused = true }
+            .onChange(of: focused) { now in if !now { done(nil) } }
     }
 }
 
@@ -343,6 +404,7 @@ private struct ChatHeaderBar: View {
     let sidebarShown: Bool
     let toggleSidebar: () -> Void
     let newChat: () -> Void
+    @MacMCPState private var renaming = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -359,7 +421,17 @@ private struct ChatHeaderBar: View {
             if let chat = model.chat {
                 AgentAvatar(agent: chat.agent, size: 24)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(chat.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    if renaming {
+                        RenameField(title: chat.title) { title in
+                            if let title { model.rename(chat.id, to: title) }
+                            renaming = false
+                        }
+                        .frame(maxWidth: 360)
+                    } else {
+                        Text(chat.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                            .onTapGesture(count: 2) { renaming = true }
+                            .help("Double-click to rename")
+                    }
                     Text("\(chat.projectName) · \(agentLabel)").font(.system(size: 11)).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -447,6 +519,10 @@ struct ChatComposer: View {
             if let error = model.error {
                 Text(error).font(.caption).foregroundStyle(VisualTokens.error).frame(maxWidth: .infinity, alignment: .leading)
             }
+            if !suggestions.isEmpty {
+                CommandSuggestions(commands: suggestions) { complete($0) }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
             VStack(alignment: .leading, spacing: 10) {
                 if !model.attachments.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -463,7 +539,10 @@ struct ChatComposer: View {
                     .font(.system(size: 14))
                     .lineLimit(1...10)
                     .focused($focused)
-                    .onSubmit { model.send() }
+                    .onSubmit {
+                        // Return completes a command being typed; once it is complete, Return sends.
+                        if let first = suggestions.first { complete(first) } else { model.send() }
+                    }
                     .disabled(waiting)
                 HStack(spacing: 6) {
                     Button(action: chooseFiles) {
@@ -520,6 +599,24 @@ struct ChatComposer: View {
             .buttonStyle(.plain).disabled(!canSend).help("Send (Return)")
             .animation(.easeOut(duration: 0.15), value: canSend)
         }
+    }
+
+    /// The agent's commands matching what follows a leading "/" (until the first space).
+    private var suggestions: [ChatCommand] {
+        let draft = model.draft
+        guard draft.hasPrefix("/"), !draft.contains(" "), !draft.contains("\n") else { return [] }
+        let typed = draft.dropFirst().lowercased()
+        let commands = model.chat?.commands ?? []
+        if commands.contains(where: { $0.name.lowercased() == typed }) { return [] }  // complete: Return sends
+        // The agent's own short commands (/compact, /config) before long skill names.
+        let matches = commands.filter { typed.isEmpty || $0.name.lowercased().hasPrefix(typed) }
+            .sorted { ($0.name.count, $0.name) < ($1.name.count, $1.name) }
+        return Array(matches.prefix(8))
+    }
+
+    private func complete(_ command: ChatCommand) {
+        model.draft = "/\(command.name) "
+        focused = true
     }
 
     private var running: Bool { model.chat?.running == true }
@@ -636,5 +733,40 @@ struct SentAttachments: View {
         } else {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
+    }
+}
+
+/// The agent's commands for what is being typed after "/": name, what it does, and what it expects after it.
+private struct CommandSuggestions: View {
+    let commands: [ChatCommand]
+    let pick: (ChatCommand) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(commands.enumerated()), id: \.element.id) { index, command in
+                Button { pick(command) } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("/" + command.name).font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(index == 0 ? ChatStyle.accent : Color.primary)
+                        Text(command.description).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 8)
+                        if !command.hint.isEmpty {
+                            Text(command.hint).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                        }
+                        if index == 0 {
+                            Text("↩").font(.system(size: 11)).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(index == 0 ? ChatStyle.selection.opacity(0.7) : Color.clear)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ChatStyle.raised))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(VisualTokens.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
     }
 }

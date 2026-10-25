@@ -21,6 +21,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shlex
 import shutil
 import tempfile
 import time
@@ -60,13 +61,38 @@ AGENTS: Dict[str, Dict[str, Any]] = {
     "codex": {
         "label": "Codex", "cli": "codex", "login": "codex login",
         "command": ["npx", "-y", "@agentclientprotocol/codex-acp@2.2.2"],
+        # The owner's ~/.codex config has its own `mac-mcp` (the adapter would keep that one, unscoped), and
+        # Codex's ChatGPT apps include the owner's Mac MCP connector. As for delegated Codex agents, the chat's
+        # Mac MCP goes in under a name of its own on the app-server's command line, with both of those off
+        # (see _codex_wrapper): MCP servers given over ACP become a session table that overrides them.
+        "mcp_name": "mac-mcp-chat",
+        "mcp_on_command_line": True,
     },
     "opencode": {
         "label": "OpenCode", "cli": "opencode", "login": "opencode auth login",
         "command": ["{cli}", "acp"],
     },
+    "kilo": {
+        "label": "Kilo Code", "cli": "kilo", "login": "kilo auth login",
+        "command": ["{cli}", "acp"],
+    },
+    "kimi": {
+        "label": "Kimi Code", "cli": "kimi", "login": "kimi login",
+        "command": ["{cli}", "acp"],
+    },
+    "goose": {
+        "label": "Goose", "cli": "goose", "login": "goose configure",
+        "command": ["{cli}", "acp"],
+    },
+    "cline": {
+        "label": "Cline", "cli": "cline", "login": "cline auth",
+        "command": ["{cli}", "--acp"],
+    },
     "copilot": {
         "label": "GitHub Copilot", "cli": "copilot", "login": "copilot login",
+        # Copilot offers no model over ACP: the chat lists the models its own CLI documents and restarts it
+        # with --model / --reasoning-effort when the owner picks one (the conversation reopens).
+        "restart_options": True,
         # Copilot's own subagents and workflows are left out, as for delegated agents; Mac MCP is the only MCP.
         # Copilot sends its own status lines ("Info: Disabled tools: …") as whole message chunks.
         "status_line": re.compile(r"^(Info|Warning): "),
@@ -151,6 +177,35 @@ def _command(agent: str) -> Optional[List[str]]:
     return command
 
 
+def _codex_wrapper() -> Optional[Path]:
+    """The Codex the adapter starts (CODEX_PATH): the owner's codex, with their own `mac-mcp` entry and ChatGPT
+    apps (which hold their Mac MCP connector) turned off. Session config cannot do it: the adapter's own
+    mcp_servers table for the chat is merged over it, so these go on the app-server's command line."""
+    codex = _binary("codex")
+    if not codex:
+        return None
+    from .tools_agents import _owner_codex_has_mac_mcp
+    name = AGENTS["codex"]["mcp_name"]
+    overrides = ["features.apps=false",
+                 f"mcp_servers.{name}.url={json.dumps(_mcp_endpoint())}",
+                 f'mcp_servers.{name}.bearer_token_env_var="MAC_MCP_CHAT_TOKEN"']
+    if _owner_codex_has_mac_mcp():
+        overrides.append("mcp_servers.mac-mcp.enabled=false")
+    flags = " ".join(f"-c {shlex.quote(override)}" for override in overrides)
+    script = f'#!/bin/sh\n# Mac MCP Chat: the owner\'s codex for the chat adapter (see chat_sessions._codex_wrapper).\n' \
+             f'if [ "$1" = "app-server" ]; then shift; exec {shlex.quote(codex)} app-server {flags} "$@"; fi\n' \
+             f'exec {shlex.quote(codex)} "$@"\n'
+    path = chats_root() / "codex-for-chat"
+    try:
+        if not path.exists() or path.read_text(encoding="utf-8") != script:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(script, encoding="utf-8")
+        path.chmod(0o755)
+    except OSError:
+        return None
+    return path
+
+
 def _copilot_byok(model: str) -> bool:
     vendor, _, name = str(model or "").partition("/")
     return bool(os.getenv("COPILOT_PROVIDER_BASE_URL")) or (vendor.lower() in harness.COPILOT_BYOK and bool(name))
@@ -166,7 +221,7 @@ def _mcp_endpoint() -> str:
     return _agent_mcp_endpoint()
 
 
-def _agent_env(agent: str, model: str) -> Dict[str, str]:
+def _agent_env(agent: str, model: str, token: str = "") -> Dict[str, str]:
     """What the agent process sees: the owner's home (their sign-in and settings), no server secrets."""
     home = Path.home()
     user = os.getenv("USER") or home.name
@@ -174,6 +229,15 @@ def _agent_env(agent: str, model: str) -> Dict[str, str]:
         "HOME": str(home), "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
         "PATH": _search_path(), "TMPDIR": os.getenv("TMPDIR", "/tmp"), "NO_COLOR": "1", "TERM": "dumb",
     }
+    if agent == "codex":
+        wrapper = _codex_wrapper()
+        if wrapper:
+            env["CODEX_PATH"] = str(wrapper)
+            # The adapter writes its own `features` table into each session, merged with this one: without it
+            # the session table turns ChatGPT apps back on over the command line's features.apps=false.
+            env["CODEX_CONFIG"] = json.dumps({"features": {"apps": False}})
+            if token:
+                env["MAC_MCP_CHAT_TOKEN"] = token  # read by Codex for the chat's Mac MCP (bearer_token_env_var)
     if agent == "opencode":
         # The owner's shell gives OpenCode their OpenRouter key; the server keeps it in the Keychain.
         key = os.getenv("OPENROUTER_API_KEY") or _keychain_lookup("OPENROUTER_API_KEY")
@@ -264,8 +328,82 @@ def _prompt_blocks(text: str, files: List[Dict[str, Any]], caps: Dict[str, Any])
     return blocks
 
 
+_CLI_HELP: Dict[str, Any] = {}
+
+
+def _cli_help(args: List[str]) -> str:
+    """A CLI's own help text (what it documents it can do), read once per binary version."""
+    binary = _binary("copilot")
+    if not binary:
+        return ""
+    try:
+        stamp = os.stat(binary).st_mtime
+    except OSError:
+        return ""
+    key = (binary, stamp, tuple(args))
+    if key not in _CLI_HELP:
+        import subprocess
+        try:
+            done = subprocess.run([binary, *args], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                                  env={"HOME": str(Path.home()), "PATH": _search_path(), "NO_COLOR": "1"})
+            _CLI_HELP[key] = done.stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            _CLI_HELP[key] = ""
+    return _CLI_HELP[key]
+
+
+def copilot_models() -> List[str]:
+    """The models the installed Copilot CLI documents for its `model` setting (`copilot help config`)."""
+    text = _cli_help(["help", "config"])
+    match = re.search(r"`model`:[^\n]*\n((?:\s+- \"[^\"]+\"\n?)+)", text)
+    return re.findall(r'- "([^"]+)"', match.group(1)) if match else []
+
+
+def copilot_efforts() -> List[str]:
+    text = _cli_help(["--help"])
+    match = re.search(r"--reasoning-effort.*?possible values:\s*([^\]]+)\]", text, re.S)
+    return [value.strip() for value in match.group(1).split(",") if value.strip()] if match else []
+
+
+def _pretty_model(name: str) -> str:
+    words = name.replace("-", " ").split()
+    return " ".join(word.upper() if word in ("gpt", "mai") else word.capitalize() for word in words)
+
+
+def _local_options(chat: "Chat", offered: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copilot's model and thinking, which it takes only when it starts (--model, --reasoning-effort)."""
+    choices = chat.meta.get("choices") or {}
+    categories = {option["category"] for option in offered}
+    out = []
+    models = copilot_models()
+    if "model" not in categories and models and not _copilot_byok(chat.meta.get("model") or ""):
+        out.append({"id": "model", "name": "Model", "category": "model", "local": True,
+                    "current": choices.get("model", "auto"),
+                    "options": [{"value": "auto", "name": "Auto", "description": "Copilot picks", "group": ""}]
+                    + [{"value": name, "name": _pretty_model(name), "description": "", "group": ""} for name in models]})
+    efforts = copilot_efforts()
+    if "thought_level" not in categories and efforts:
+        out.append({"id": "reasoning_effort", "name": "Thinking", "category": "thought_level", "local": True,
+                    "current": choices.get("reasoning_effort", "default"),
+                    "options": [{"value": "default", "name": "Default", "description": "", "group": ""}]
+                    + [{"value": level, "name": level.capitalize(), "description": "", "group": ""} for level in efforts]})
+    return out
+
+
+def _restart_args(chat: "Chat") -> List[str]:
+    choices = chat.meta.get("choices") or {}
+    args: List[str] = []
+    if choices.get("model") not in (None, "", "auto") and choices["model"] in copilot_models():
+        args += ["--model", choices["model"]]
+    if choices.get("reasoning_effort") not in (None, "", "default") and choices["reasoning_effort"] in copilot_efforts():
+        args += ["--reasoning-effort", choices["reasoning_effort"]]
+    return args
+
+
 def _needs_sign_in(exc: AcpError) -> bool:
-    return exc.code == -32000 or "auth" in str(exc).lower()
+    """Not signed in, or no model provider set up yet (Goose says so as an internal error)."""
+    text = f"{exc} {exc.data or ''}".lower()
+    return exc.code == -32000 or any(word in text for word in ("auth", "login", "goose_provider", "configure"))
 
 
 def _last_log_line(path: Path) -> str:
@@ -292,7 +430,8 @@ def _tool_source(agent_title: str) -> tuple[str, str]:
     if not match:
         return "", ""
     server = match.group("plain") or match.group("server") or ""
-    return ("mac-mcp" if server.replace("_", "-") == "mac-mcp" else server), match.group("tool")
+    mine = server.replace("_", "-") in ("mac-mcp", "mac-mcp-chat")  # Codex's chat connection has its own name
+    return ("mac-mcp" if mine else server), match.group("tool")
 
 
 def _friendly_title(item: Dict[str, Any], fallback: str) -> str:
@@ -498,6 +637,59 @@ class ChatHost:
         self._chats[chat_id] = chat
         return {"ok": True, "chat": chat.public()}
 
+    def rename(self, chat_id: str, title: str) -> Dict[str, Any]:
+        chat = self._chat(chat_id)
+        title = " ".join(str(title or "").split())
+        if not title:
+            raise ChatError("Give the chat a name.", "empty")
+        chat.meta["title"] = _cut(title, MAX_TITLE)
+        chat.meta["titled"] = True  # the agent's own title no longer replaces it
+        chat.bump()
+        chat.save()
+        return {"ok": True, "chat": chat.public()}
+
+    def usage(self, days: int = 30) -> Dict[str, Any]:
+        """Mac MCP Chat's own usage, apart from delegated agents: tokens and answers by agent, model and day."""
+        self._load_all()
+        days = max(1, min(int(days or 30), 365))
+        since = time.time() - days * 86400
+        totals = {"turns": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "chats": 0, "seconds": 0.0}
+        agents: Dict[str, Dict[str, Any]] = {}
+        models: Dict[tuple, Dict[str, Any]] = {}
+        daily: Dict[str, Dict[str, Any]] = {}
+        for chat in self._chats.values():
+            turns = [item for item in chat.items if item.get("type") == "turn" and float(item.get("ended_at") or 0) >= since]
+            if not turns:
+                continue
+            agent = chat.meta["agent"]
+            row = agents.setdefault(agent, {"agent": agent, "label": AGENTS.get(agent, {}).get("label", agent),
+                                            "turns": 0, "input_tokens": 0, "output_tokens": 0, "chats": 0})
+            row["chats"] += 1
+            totals["chats"] += 1
+            for turn in turns:
+                tokens_in, tokens_out = int(turn.get("input_tokens") or 0), int(turn.get("output_tokens") or 0)
+                for bucket in (totals, row):
+                    bucket["turns"] += 1
+                    bucket["input_tokens"] += tokens_in
+                    bucket["output_tokens"] += tokens_out
+                totals["cached_tokens"] += int(turn.get("cached_tokens") or 0)
+                totals["seconds"] += float(turn.get("duration_s") or 0)
+                model = models.setdefault((agent, str(turn.get("model") or "")), {
+                    "agent": agent, "model": str(turn.get("model") or "") or "default", "turns": 0, "tokens": 0})
+                model["turns"] += 1
+                model["tokens"] += tokens_in + tokens_out
+                day = time.strftime("%Y-%m-%d", time.localtime(float(turn.get("ended_at") or 0)))
+                bucket = daily.setdefault(day, {"date": day, "turns": 0, "tokens": 0})
+                bucket["turns"] += 1
+                bucket["tokens"] += tokens_in + tokens_out
+        totals["seconds"] = round(totals["seconds"], 1)
+        return {
+            "ok": True, "days": days, "totals": totals,
+            "agents": sorted(agents.values(), key=lambda row: -(row["input_tokens"] + row["output_tokens"])),
+            "models": sorted(models.values(), key=lambda row: -row["tokens"])[:12],
+            "daily": [daily[key] for key in sorted(daily)],
+        }
+
     def read(self, chat_id: str, after: int = 0) -> Dict[str, Any]:
         chat = self._chat(chat_id)
         items = [item for item in chat.items if int(item.get("rev") or 0) > after]
@@ -664,7 +856,9 @@ class ChatHost:
             chat.meta["credential_id"] = credential_id
             conn = AcpConnection(lambda method, params: self._on_update(chat, method, params),
                                  lambda method, params: self._on_request(chat, method, params))
-            await conn.start(command, cwd=project, env=_agent_env(agent, chat.meta.get("model") or ""),
+            if spec.get("restart_options"):
+                command[1:1] = _restart_args(chat)  # before Copilot's variadic --excluded-tools
+            await conn.start(command, cwd=project, env=_agent_env(agent, chat.meta.get("model") or "", token),
                              stderr_path=chat.dir / "agent.log")
             chat.conn = conn
             try:
@@ -676,8 +870,9 @@ class ChatHost:
                 }, timeout=240)
                 caps = (init.get("agentCapabilities") or {}).get("promptCapabilities")
                 chat.prompt_caps = caps if isinstance(caps, dict) else {}
-                servers = [{"type": "http", "name": "mac-mcp", "url": _mcp_endpoint(),
-                            "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}]
+                servers = [] if spec.get("mcp_on_command_line") else [
+                    {"type": "http", "name": spec.get("mcp_name", "mac-mcp"), "url": _mcp_endpoint(),
+                     "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}]
                 previous = chat.meta.get("acp_session_id")
                 opened: Dict[str, Any] = {}
                 if previous and (init.get("agentCapabilities") or {}).get("loadSession"):
@@ -707,7 +902,9 @@ class ChatHost:
                                     "auth_required", 409) from exc
                 raise
             if "configOptions" in opened:
-                chat.meta["config"] = _config_options(opened.get("configOptions"))
+                self._set_config(chat, opened.get("configOptions"))
+            elif spec.get("restart_options"):
+                self._set_config(chat, [])
             await self._apply_choices(chat)
             chat.meta.pop("agent_error", None)
             chat.bump()
@@ -717,7 +914,7 @@ class ChatHost:
         """The owner's picks (model, thinking, mode) survive a restart of the agent: set them again."""
         for config_id, value in dict(chat.meta.get("choices") or {}).items():
             option = next((entry for entry in chat.meta.get("config") or [] if entry["id"] == config_id), None)
-            if option is None or option["current"] == value:
+            if option is None or option.get("local") or option["current"] == value:
                 continue
             if value not in {choice["value"] for choice in option["options"]}:
                 chat.meta["choices"].pop(config_id, None)  # the agent no longer offers it
@@ -728,7 +925,13 @@ class ChatHost:
             except AcpError:
                 continue
             if "configOptions" in result:
-                chat.meta["config"] = _config_options(result.get("configOptions"))
+                self._set_config(chat, result.get("configOptions"))
+
+    def _set_config(self, chat: Chat, raw: Any) -> None:
+        options = _config_options(raw)
+        if AGENTS.get(chat.meta["agent"], {}).get("restart_options"):
+            options += _local_options(chat, options)
+        chat.meta["config"] = options
 
     def _arm_idle(self, chat: Chat) -> None:
         if chat.idle is not None:
@@ -770,6 +973,17 @@ class ChatHost:
             raise ChatError("The agent does not offer that setting.", "bad_option")
         if value not in {choice["value"] for choice in option["options"]}:
             raise ChatError("Unknown choice.", "bad_option")
+        if option.get("local"):
+            # Set by starting the agent again with it (Copilot's model and thinking).
+            if chat.turn is not None and not chat.turn.done():
+                raise ChatError("Change it after this answer.", "busy", 409)
+            chat.meta.setdefault("choices", {})[config_id] = value
+            option["current"] = value
+            chat.bump()
+            chat.save()
+            await self._stop_agent(chat)
+            chat.warming = asyncio.create_task(self._warm(chat))
+            return {"ok": True, "chat": chat.public()}
         chat.meta.setdefault("choices", {})[config_id] = value
         if chat.conn is not None and chat.conn.running and chat.session_id:
             try:
@@ -778,7 +992,7 @@ class ChatHost:
             except AcpError as exc:
                 raise ChatError(_cut(f"The agent did not take it: {exc}", 300), "agent_failed", 409) from exc
             if "configOptions" in result:
-                chat.meta["config"] = _config_options(result.get("configOptions"))
+                self._set_config(chat, result.get("configOptions"))
             else:
                 option["current"] = value
         else:
@@ -839,7 +1053,17 @@ class ChatHost:
                 chat.meta["title"] = _cut(title, MAX_TITLE)
                 chat.bump()
         elif kind == "config_option_update":
-            chat.meta["config"] = _config_options(update.get("configOptions"))
+            self._set_config(chat, update.get("configOptions"))
+            chat.bump()
+        elif kind == "available_commands_update":
+            commands = []
+            for command in update.get("availableCommands") or []:
+                if isinstance(command, dict) and command.get("name"):
+                    hint = (command.get("input") or {}).get("hint") if isinstance(command.get("input"), dict) else ""
+                    commands.append({"name": str(command["name"]).lstrip("/")[:60],
+                                     "description": _cut(str(command.get("description") or ""), 200),
+                                     "hint": _cut(str(hint or ""), 80)})
+            chat.meta["commands"] = commands[:500]  # Claude lists its skills as commands too
             chat.bump()
         elif kind == "current_mode_update":
             for option in chat.meta.get("config") or []:

@@ -10,6 +10,11 @@
 - Add files and images to a message with the paperclip or by dropping them on the message box; images go to the agent as pictures (all four agents read them), other files as links the agent opens, and the sent message shows them (click an image to open it, a file to show it in Finder). Up to 10 files, 25 MB each.
 - Live updates: the open chat follows the server over server-sent events (`/dashboard/api/chats/{id}/events`) instead of asking three times a second, and reconnects on its own after a restart or sleep.
 - On/off settings (Fast mode, Copilot's allow-all) are named switches and the agent's other settings sit under a named "More" menu; a chat left without a message is removed when you move on; a streaming table's columns no longer shift; the transcript keeps to the newest words until you scroll up.
+- More agents: Kilo Code, Kimi Code, Goose and Cline (turn them on in Settings › Agents); an agent that is not signed in says which command to run (`kimi login`, `goose configure`, `cline auth`, …).
+- Copilot gets a model and thinking picker: the models its own CLI documents; picking one starts Copilot again with it and the conversation continues.
+- Codex in a chat uses the chat's own Mac MCP, limited to the project (as `mac-mcp-chat`), with your `mac-mcp` entry and ChatGPT apps (your Mac MCP connector among them) turned off for it, as for delegated Codex agents.
+- Rename a chat (right-click › Rename…, or double-click its title) and search chats in the sidebar (⌘F). Type `/` for the agent's own commands (`/compact`, `/review`, …) with what they do.
+- Settings › Usage has a Chat section of its own: tokens, answers, chats and time worked in Mac MCP Chat by agent, model and day, apart from Delegated Agents.
 - Agents speak the Agent Client Protocol: Copilot and OpenCode natively, Claude Code and Codex through their official adapters (`npx`). Mac MCP reaches them on a credential limited to the project folder; an agent whose own config already names a `mac-mcp` server keeps that one. Only agents turned on in Settings › Agents are offered. Dashboard API: `/dashboard/api/chats`.
 
 ### Maintainers: `mac-mcp promote`

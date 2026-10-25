@@ -66,6 +66,17 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         return get_host().answer(request.path_params["chat_id"], str(body.get("item_id") or ""),
                                  str(body.get("option_id") or ""))
 
+    async def usage(request: Request) -> Dict[str, Any]:
+        try:
+            days = int(request.query_params.get("days") or 30)
+        except ValueError:
+            days = 30
+        return get_host().usage(days)
+
+    async def rename(request: Request) -> Dict[str, Any]:
+        body = await _body(request)
+        return get_host().rename(request.path_params["chat_id"], str(body.get("title") or ""))
+
     async def events(request: Request) -> Response:
         """Server-sent events: each `data:` is the same object as GET /chats/{id}?after=…"""
         denied = dashboard_guard(request)
@@ -105,12 +116,14 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
 
     return [
         Route("/dashboard/api/chats", guarded(chats), methods=["GET", "POST"]),
+        Route("/dashboard/api/chats/usage", guarded(usage), methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}", guarded(chat), methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}/prompt", guarded(prompt), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/cancel", guarded(cancel), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/permission", guarded(permission), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/events", events, methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}/connect", guarded(connect), methods=["POST"]),
+        Route("/dashboard/api/chats/{chat_id}/rename", guarded(rename), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/config", guarded(config), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/delete", guarded(delete), methods=["POST"]),
     ]

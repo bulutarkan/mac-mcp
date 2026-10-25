@@ -21,6 +21,7 @@ from mcp_server.scoped_auth import ScopedCredentialStore
 FAKE_AGENT = textwrap.dedent('''\
     import json, os, queue, sys, threading, time
     log = open(LOG_PATH, "a")
+    log.write(json.dumps({"argv": sys.argv[1:]}) + "\\n"); log.flush()
     inbox = queue.Queue()
     replies = {}
     cancelled = threading.Event()
@@ -76,6 +77,9 @@ FAKE_AGENT = textwrap.dedent('''\
             return {"stopReason": "end_turn"}
         update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Info: Disabled tools: task"}})
         update(sid, {"sessionUpdate": "session_info_update", "title": "Greeting"})
+        update(sid, {"sessionUpdate": "available_commands_update", "availableCommands": [
+            {"name": "compact", "description": "Summarize the conversation", "input": None},
+            {"name": "review", "description": "Review changes", "input": {"hint": "what to review"}}]})
         update(sid, {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "thinking"}})
         update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Hel"}})
         update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "lo"}})
@@ -101,14 +105,16 @@ FAKE_AGENT = textwrap.dedent('''\
             if os.path.exists(LOG_PATH + ".needauth"):
                 send({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32000, "message": "Authentication required"}})
                 continue
-            result = {"sessionId": "sess-1", "configOptions": options()}
+            result = {"sessionId": "sess-1"}
+            if not os.path.exists(LOG_PATH + ".nooptions"):  # like Copilot, which offers no model over ACP
+                result["configOptions"] = options()
         elif method == "session/set_config_option":
             config[params["configId"]] = params["value"]
             result = {"configOptions": options()}
         elif method == "session/load":
             update(params["sessionId"], {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "old"}})
             update(params["sessionId"], {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "old"}})
-            result = {"configOptions": options()}
+            result = {} if os.path.exists(LOG_PATH + ".nooptions") else {"configOptions": options()}
         elif method == "session/prompt":
             threading.Thread(target=lambda m=msg: send({"jsonrpc": "2.0", "id": m["id"], "result": prompt(m)}),
                              daemon=True).start()
@@ -230,7 +236,7 @@ class ChatHostTest(unittest.TestCase):
         self.assertEqual(state["chat"]["context"], {"used": 1200, "size": 128000})
         self.assertEqual(state["chat"]["usage"]["input_tokens"], 100)
         self.assertNotIn("acp_session_id", state["chat"])
-        new = next(entry for entry in self.agent_log() if entry["method"] == "session/new")
+        new = next(entry for entry in self.agent_log() if entry.get("method") == "session/new")
         self.assertEqual(new["params"]["cwd"], str(self.project.resolve()))
         server = new["params"]["mcpServers"][0]
         self.assertEqual(server["type"], "http")
@@ -247,7 +253,7 @@ class ChatHostTest(unittest.TestCase):
             chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
             await host.prompt(chat_id, "hello")
             await self.wait_idle(host, chat_id)
-            new = next(entry for entry in self.agent_log() if entry["method"] == "session/new")
+            new = next(entry for entry in self.agent_log() if entry.get("method") == "session/new")
             token = new["params"]["mcpServers"][0]["headers"][0]["value"].removeprefix("Bearer ")
             credential = self.store.resolve(token)
             await host.shutdown()
@@ -341,7 +347,7 @@ class ChatHostTest(unittest.TestCase):
             return state, fresh
 
         state, fresh = self.run_async(second())
-        load = next(entry for entry in self.agent_log() if entry["method"] == "session/load")
+        load = next(entry for entry in self.agent_log() if entry.get("method") == "session/load")
         self.assertEqual(load["params"]["sessionId"], "sess-1")
         self.assertEqual([item["type"] for item in state["items"]],
                          ["user", "thought", "assistant", "turn", "user", "thought", "assistant", "turn"])
@@ -380,7 +386,7 @@ class ChatHostTest(unittest.TestCase):
             return state
 
         state = self.run_async(second())
-        sets = [entry["params"] for entry in self.agent_log() if entry["method"] == "session/set_config_option"]
+        sets = [entry["params"] for entry in self.agent_log() if entry.get("method") == "session/set_config_option"]
         self.assertEqual(len(sets), 2)  # chosen once, then set again after session/load
         self.assertEqual(state["chat"]["config"][0]["current"], "sonnet")
 
@@ -512,7 +518,7 @@ class ChatHostTest(unittest.TestCase):
         user = state["items"][0]
         self.assertEqual([(file["name"], file["kind"]) for file in user["attachments"]],
                          [("shot.png", "image"), ("notes.txt", "file")])
-        sent = next(entry for entry in self.agent_log() if entry["method"] == "session/prompt")["params"]["prompt"]
+        sent = next(entry for entry in self.agent_log() if entry.get("method") == "session/prompt")["params"]["prompt"]
         self.assertEqual([block["type"] for block in sent], ["text", "image", "resource_link"])
         self.assertEqual(base64.b64decode(sent[1]["data"]), picture.read_bytes())
         self.assertEqual((sent[1]["mimeType"], sent[2]["uri"]), ("image/png", notes.resolve().as_uri()))
@@ -522,6 +528,105 @@ class ChatHostTest(unittest.TestCase):
         picture.write_bytes(b"png")
         blocks = chat_sessions._prompt_blocks("see", chat_sessions._attachments([str(picture)]), {})
         self.assertEqual([block["type"] for block in blocks], ["text", "resource_link"])
+
+    def test_rename_keeps_the_owner_title_and_commands_are_listed(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            with self.assertRaises(chat_sessions.ChatError):
+                host.rename(chat_id, "   ")
+            host.rename(chat_id, "  Launch   plan ")
+            await host.prompt(chat_id, "hello")  # the agent then offers its own title, "Greeting"
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return state
+
+        state = self.run_async(scenario())
+        self.assertEqual(state["chat"]["title"], "Launch plan")
+        self.assertEqual(state["chat"]["commands"], [
+            {"name": "compact", "description": "Summarize the conversation", "hint": ""},
+            {"name": "review", "description": "Review changes", "hint": "what to review"}])
+
+    def test_usage_counts_chat_turns_apart_from_agents(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "hello")
+            await self.wait_idle(host, chat_id)
+            await host.prompt(chat_id, "hello again")
+            await self.wait_idle(host, chat_id)
+            usage = host.usage(30)
+            await host.shutdown()
+            return usage
+
+        usage = self.run_async(scenario())
+        self.assertEqual((usage["totals"]["turns"], usage["totals"]["input_tokens"], usage["totals"]["output_tokens"]),
+                         (2, 200, 4))
+        self.assertEqual(usage["agents"][0]["agent"], "copilot")
+        self.assertEqual(usage["agents"][0]["chats"], 1)
+        self.assertEqual(sum(day["turns"] for day in usage["daily"]), 2)
+
+    def test_copilot_model_and_thinking_restart_the_agent_with_flags(self):
+        Path(str(self.log) + ".nooptions").write_text("1")
+        with mock.patch.object(chat_sessions, "copilot_models", return_value=["claude-sonnet-5.5", "gpt-6-luna"]), \
+                mock.patch.object(chat_sessions, "copilot_efforts", return_value=["low", "high"]):
+            async def scenario():
+                host = chat_sessions.get_host()
+                chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+                host.connect(chat_id)
+                for _ in range(200):
+                    if host.read(chat_id)["chat"]["config"]:
+                        break
+                    await asyncio.sleep(0.02)
+                config = json.loads(json.dumps(host.read(chat_id)["chat"]["config"]))  # as first offered
+                await host.configure(chat_id, "model", "gpt-6-luna")
+                await host.configure(chat_id, "reasoning_effort", "high")
+                for _ in range(200):
+                    chat = host.read(chat_id)["chat"]
+                    if chat["agent_alive"] and not chat["connecting"]:
+                        break
+                    await asyncio.sleep(0.02)
+                await host.prompt(chat_id, "hello")
+                state = await self.wait_idle(host, chat_id)
+                await host.shutdown()
+                return config, state
+
+            config, state = self.run_async(scenario())
+        by_id = {option["id"]: option for option in config}
+        self.assertEqual(by_id["model"]["current"], "auto")
+        self.assertEqual([choice["value"] for choice in by_id["model"]["options"]], ["auto", "claude-sonnet-5.5", "gpt-6-luna"])
+        self.assertEqual(by_id["reasoning_effort"]["category"], "thought_level")
+        starts = [entry["argv"] for entry in self.agent_log() if "argv" in entry]
+        self.assertEqual(starts[-1][:4], ["--model", "gpt-6-luna", "--reasoning-effort", "high"])
+        self.assertEqual({option["id"]: option["current"] for option in state["chat"]["config"]}["model"], "gpt-6-luna")
+
+    def test_codex_chat_gets_its_own_mac_mcp_and_no_chatgpt_apps(self):
+        fake_codex = Path(self.tmp.name) / "codex"
+        fake_codex.write_text("#!/bin/sh\necho \"$@\"\n")
+        fake_codex.chmod(0o755)
+        import subprocess
+        with mock.patch("mcp_server.tools_agents._owner_codex_has_mac_mcp", return_value=True), \
+                mock.patch.dict(os.environ, {"MAC_MCP_CODEX_BINARY": str(fake_codex), "MAC_MCP_PORT": "8765"}):
+            env = chat_sessions._agent_env("codex", "", "mcs_token")
+        self.assertEqual(env["MAC_MCP_CHAT_TOKEN"], "mcs_token")
+        self.assertEqual(json.loads(env["CODEX_CONFIG"]), {"features": {"apps": False}})
+        started = subprocess.run([env["CODEX_PATH"], "app-server", "--listen", "stdio://"], capture_output=True, text=True)
+        self.assertEqual(started.stdout.split(), [
+            "app-server", "-c", "features.apps=false",
+            "-c", 'mcp_servers.mac-mcp-chat.url="http://127.0.0.1:8765/mcp"',
+            "-c", 'mcp_servers.mac-mcp-chat.bearer_token_env_var="MAC_MCP_CHAT_TOKEN"',
+            "-c", "mcp_servers.mac-mcp.enabled=false", "--listen", "stdio://"])
+        other = subprocess.run([env["CODEX_PATH"], "--version"], capture_output=True, text=True)
+        self.assertEqual(other.stdout.split(), ["--version"])
+        self.assertEqual(chat_sessions.AGENTS["codex"]["mcp_name"], "mac-mcp-chat")
+        self.assertEqual(chat_sessions._tool_source("mcp.mac-mcp-chat.write_file"), ("mac-mcp", "write_file"))
+
+    def test_sign_in_problems_are_recognised(self):
+        from mcp_server.acp_client import AcpError
+        self.assertTrue(chat_sessions._needs_sign_in(AcpError("Internal error", -32603,
+                                                             "Failed to resolve provider: Configuration value not found: GOOSE_PROVIDER")))
+        self.assertTrue(chat_sessions._needs_sign_in(AcpError("Authentication required", -32000)))
+        self.assertFalse(chat_sessions._needs_sign_in(AcpError("Session not found", -32602)))
 
     def test_routes_need_the_dashboard_token(self):
         def guard(request):

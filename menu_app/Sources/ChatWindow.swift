@@ -67,6 +67,7 @@ struct ChatSummary: Identifiable, Hashable {
     var agentAlive: Bool
     var agentError: String
     var turnStartedAt: Double
+    var commands: [ChatCommand]
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
@@ -85,9 +86,21 @@ struct ChatSummary: Identifiable, Hashable {
         agentAlive = object["agent_alive"] as? Bool ?? false
         agentError = object["agent_error"] as? String ?? ""
         turnStartedAt = (object["turn_started_at"] as? NSNumber)?.doubleValue ?? 0
+        commands = (object["commands"] as? [[String: Any]] ?? []).map {
+            ChatCommand(name: $0["name"] as? String ?? "", description: $0["description"] as? String ?? "",
+                        hint: $0["hint"] as? String ?? "")
+        }
     }
 
     var projectName: String { (project as NSString).lastPathComponent }
+}
+
+/// A command the agent offers (Claude's /compact, Codex's /review, …), sent as "/name" in a message.
+struct ChatCommand: Hashable, Identifiable {
+    let name: String
+    let description: String
+    let hint: String
+    var id: String { name }
 }
 
 struct ChatProjectGroup: Identifiable, Hashable {
@@ -184,6 +197,7 @@ final class ChatModel: ObservableObject {
     }
     @Published private(set) var turns: [ChatTurn] = []
     @Published var draft = ""
+    @Published var search = ""
     /// Files waiting to go with the next message.
     @Published var attachments: [URL] = []
     @Published var error: String?
@@ -322,6 +336,32 @@ final class ChatModel: ObservableObject {
             let result = await api("dashboard/api/chats/\(id)/permission", ["item_id": item.id, "option_id": option.id])
             if !result.ok { error = result.object["message"] as? String }
             await poll()
+        }
+    }
+
+    func rename(_ chatID: String, to title: String) {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        Task {
+            let result = await api("dashboard/api/chats/\(chatID)/rename", ["title": title])
+            if result.ok, chatID == selectedID, let meta = result.object["chat"] as? [String: Any] {
+                chat = ChatSummary(meta)
+            }
+            if !result.ok { error = result.object["message"] as? String }
+            await refreshList()
+        }
+    }
+
+    /// The sidebar's projects with only the chats whose title or project matches the search.
+    var shownProjects: [ChatProjectGroup] {
+        let words = search.lowercased().split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return projects }
+        return projects.compactMap { project in
+            let chats = project.chats.filter { chat in
+                let text = (chat.title + " " + project.name).lowercased()
+                return words.allSatisfy { text.contains($0) }
+            }
+            return chats.isEmpty ? nil : ChatProjectGroup(id: project.id, name: project.name, chats: chats)
         }
     }
 

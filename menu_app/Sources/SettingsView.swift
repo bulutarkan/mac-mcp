@@ -1375,6 +1375,8 @@ struct SettingsView: View {
                     }
                 }
 
+                ChatUsageSection(state: state)
+
                 usageStorageCard
 
                 Spacer(minLength: 0)
