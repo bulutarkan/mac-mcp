@@ -40,6 +40,7 @@ PERMISSION_WAIT_S = 30 * 60
 CREDENTIAL_TTL_S = 24 * 3600
 MAX_TEXT = 200_000
 MAX_TITLE = 120
+EMPTY_CHAT_KEEP_S = 6 * 3600  # a chat nobody wrote in is gone at the next start after this
 
 # Claude Code and Codex speak ACP through their official adapters; the others have it built in.
 AGENTS: Dict[str, Dict[str, Any]] = {
@@ -360,6 +361,9 @@ class ChatHost:
             if not isinstance(meta, dict) or meta.get("id") != folder.name:
                 continue
             items = _read_json(folder / "transcript.json", [])
+            if not items and time.time() - float(meta.get("updated_at") or 0) > EMPTY_CHAT_KEEP_S:
+                shutil.rmtree(folder, ignore_errors=True)  # opened and left without a word
+                continue
             if meta.get("status") in ("running", "waiting"):
                 meta["status"] = "idle"  # the server stopped mid-turn
             chat = Chat(meta, items if isinstance(items, list) else [])
@@ -477,8 +481,10 @@ class ChatHost:
         future.set_result(option_id)
         return {"ok": True}
 
-    async def delete(self, chat_id: str) -> Dict[str, Any]:
+    async def delete(self, chat_id: str, only_if_empty: bool = False) -> Dict[str, Any]:
         chat = self._chat(chat_id)
+        if only_if_empty and (chat.items or (chat.turn is not None and not chat.turn.done())):
+            return {"ok": True, "kept": True}  # the app thought it was empty; the transcript decides
         if chat.turn is not None and not chat.turn.done():
             await self.cancel(chat_id)
         await self._stop_agent(chat)

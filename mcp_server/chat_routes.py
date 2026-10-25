@@ -74,7 +74,8 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
                                           str(body.get("value") or ""))
 
     async def delete(request: Request) -> Dict[str, Any]:
-        return await get_host().delete(request.path_params["chat_id"])
+        body = await _body(request) if await request.body() else {}
+        return await get_host().delete(request.path_params["chat_id"], only_if_empty=bool(body.get("only_if_empty")))
 
     return [
         Route("/dashboard/api/chats", guarded(chats), methods=["GET", "POST"]),

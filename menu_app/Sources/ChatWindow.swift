@@ -201,6 +201,14 @@ final class ChatModel: ObservableObject {
 
     func select(_ id: String?) {
         guard id != selectedID || chat == nil else { return }
+        // A chat left without a word is not kept: the sidebar shows only chats with something in them.
+        if let previous = selectedID, previous != id, items.isEmpty, chat?.running != true {
+            Task {
+                // Only if the server finds it empty too: its items may not have loaded here yet.
+                _ = await api("dashboard/api/chats/\(previous)/delete", ["only_if_empty": true])
+                await refreshList()
+            }
+        }
         selectedID = id
         items = []
         cursor = 0
@@ -489,19 +497,31 @@ struct ChatSettingsBar: View {
                             ConfigMenu(option: option) { model.choose(option, value: $0) }
                         }
                     }
+                    ForEach(toggles) { option in
+                        ToggleChip(option: option) { model.choose(option, value: $0) }
+                    }
                     if !more.isEmpty {
+                        // The agent's other settings, each under its own name.
                         Menu {
                             ForEach(more) { option in
-                                Picker(option.name, selection: Binding(get: { option.current },
-                                                                        set: { model.choose(option, value: $0) })) {
-                                    ForEach(option.options) { Text($0.name).tag($0.value) }
+                                Section(option.name) {
+                                    ForEach(option.options) { choice in
+                                        Button { model.choose(option, value: choice.value) } label: {
+                                            if choice.value == option.current {
+                                                Label(choice.name, systemImage: "checkmark")
+                                            } else {
+                                                Text(choice.name)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         } label: {
-                            Image(systemName: "ellipsis.circle")
+                            ChipLabel(symbol: "slider.horizontal.3", text: "More")
                         }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                        .help("More settings")
+                        .modifier(ChipBackground())
+                        .help(more.map(\.name).joined(separator: ", "))
                     }
                 }
             }
@@ -517,8 +537,46 @@ struct ChatSettingsBar: View {
             .sorted { (Self.order.firstIndex(of: $0.category) ?? 9) < (Self.order.firstIndex(of: $1.category) ?? 9) }
     }
 
+    /// Settings that are only on or off (Claude's and Codex's Fast mode, Copilot's allow-all) are switches.
+    private var toggles: [ChatConfigOption] {
+        (model.chat?.config ?? []).filter { !Self.order.contains($0.category) && ToggleChip.isSwitch($0) }
+    }
+
     private var more: [ChatConfigOption] {
-        (model.chat?.config ?? []).filter { !Self.order.contains($0.category) && $0.options.count > 1 }
+        (model.chat?.config ?? []).filter {
+            !Self.order.contains($0.category) && $0.options.count > 1 && !ToggleChip.isSwitch($0)
+        }
+    }
+}
+
+/// An on/off setting as a chip named after it, lit while on. Allowing everything is lit in the warning colour.
+private struct ToggleChip: View {
+    let option: ChatConfigOption
+    let choose: (String) -> Void
+
+    static func isSwitch(_ option: ChatConfigOption) -> Bool {
+        Set(option.options.map { $0.value.lowercased() }) == ["on", "off"]
+    }
+
+    var body: some View {
+        let on = option.current.lowercased() == "on"
+        let risky = option.category == "permissions"
+        Button {
+            let target = option.options.first { $0.value.lowercased() == (on ? "off" : "on") }?.value ?? (on ? "off" : "on")
+            choose(target)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: risky ? "exclamationmark.shield" : "bolt.fill").font(.caption)
+                Text(option.name).font(.caption).lineLimit(1)
+            }
+            .foregroundStyle(on ? (risky ? VisualTokens.warning : ChatStyle.accent) : Color.secondary)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Capsule().fill(on ? (risky ? VisualTokens.warning : ChatStyle.accent).opacity(0.16) : VisualTokens.quietFill))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("\(option.name): \(on ? "on" : "off")")
+        .accessibilityValue(on ? "On" : "Off")
     }
 }
 

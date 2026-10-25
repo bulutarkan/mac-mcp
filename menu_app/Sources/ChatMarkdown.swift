@@ -285,6 +285,7 @@ private struct MarkdownTable: View {
     let size: CGFloat
     var fade: Int = 0
     @MacMCPState private var available: CGFloat = ChatStyle.readingWidth - 34
+    @MacMCPState private var grown: [CGFloat] = []  // widest each column has been: a streaming table never narrows
 
     init(header: [String], rows: [[String]], size: CGFloat, fade: Int = 0) {
         self.header = header
@@ -294,7 +295,8 @@ private struct MarkdownTable: View {
     }
 
     var body: some View {
-        let widths = Self.fit(columnWidths, into: available)
+        let natural = columnWidths
+        let widths = Self.fit(Self.steady(natural, grown), into: available)
         ScrollView(.horizontal, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 row(header, widths: widths, bold: true, fade: 0).background(ChatStyle.code)
@@ -310,6 +312,7 @@ private struct MarkdownTable: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // The width the answer gives the table; it does not depend on the table, so this settles at once.
+        .onChange(of: natural) { next in grown = Self.steady(next, grown) }
         .background(GeometryReader { geometry in
             Color.clear
                 .onAppear { available = geometry.size.width }
@@ -337,6 +340,10 @@ private struct MarkdownTable: View {
             let longest = ([header] + rows).map { column < $0.count ? $0[column].count : 0 }.max() ?? 0
             return min(320, max(72, CGFloat(longest) * (size - 1) * 0.56 + 24))
         }
+    }
+
+    static func steady(_ natural: [CGFloat], _ grown: [CGFloat]) -> [CGFloat] {
+        natural.indices.map { max(natural[$0], $0 < grown.count ? grown[$0] : 0) }
     }
 
     /// Wide columns give way first; no column drops below 72 pt. A table that still does not fit scrolls.

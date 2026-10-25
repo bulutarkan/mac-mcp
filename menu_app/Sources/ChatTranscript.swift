@@ -44,6 +44,10 @@ struct ChatTurn: Identifiable, Equatable {
 struct ChatConversation: View {
     @ObservedObject var model: ChatModel
     @MacMCPState private var atBottom = true
+    /// Stay at the newest words until the owner scrolls up; scrolling back to the end follows again.
+    @MacMCPState private var following = true
+    @MacMCPState private var wheelMonitor: Any?
+    @MacMCPState private var transcriptFrame: CGRect = .zero
 
     init(model: ChatModel) {
         self.model = model
@@ -64,7 +68,10 @@ struct ChatConversation: View {
                         }
                         // The lazy stack shows this only when it scrolls into view: then the owner is at the bottom.
                         Color.clear.frame(height: 1).id("end")
-                            .onAppear { if !atBottom { atBottom = true } }
+                            .onAppear {
+                                if !atBottom { atBottom = true }
+                                if !following { following = true }
+                            }
                             .onDisappear { if atBottom { atBottom = false } }
                     }
                     .frame(maxWidth: ChatStyle.readingWidth)
@@ -72,18 +79,45 @@ struct ChatConversation: View {
                     .padding(.top, 22).padding(.bottom, 12)
                     .frame(maxWidth: .infinity)
                 }
+                .background(GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { transcriptFrame = geometry.frame(in: .global) }
+                        .onChange(of: geometry.frame(in: .global)) { transcriptFrame = $0 }
+                })
                 .onChange(of: model.items.last?.rev) { _ in
-                    // Follow a streaming answer only while the owner is at the bottom.
-                    if atBottom { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) } }
+                    if following { proxy.scrollTo("end", anchor: .bottom) }
+                }
+                .task(id: running) {
+                    // The answer also grows between updates (it is let out smoothly), so keep to the end while it runs.
+                    while running && !Task.isCancelled {
+                        if following { proxy.scrollTo("end", anchor: .bottom) }
+                        try? await Task.sleep(nanoseconds: 180_000_000)
+                    }
                 }
                 .onChange(of: model.selectedID) { _ in
+                    following = true
                     DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) }
                 }
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+                .onAppear {
+                    proxy.scrollTo("end", anchor: .bottom)
+                    // Scrolling up (wheel or trackpad) is the owner leaving the newest words.
+                    wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                        // Only over the transcript: scrolling the sidebar is not leaving the answer.
+                        let height = event.window?.contentView?.bounds.height ?? 0
+                        let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+                        if event.scrollingDeltaY > 0.5, following, transcriptFrame.contains(point) { following = false }
+                        return event
+                    }
+                }
+                .onDisappear {
+                    if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
+                    wheelMonitor = nil
+                }
                 .overlay(alignment: .bottom) {
                     Group {
-                    if !atBottom {
+                    if !atBottom && !following {
                         Button {
+                            following = true
                             withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("end", anchor: .bottom) }
                         } label: {
                             Image(systemName: "arrow.down").font(.system(size: 12, weight: .semibold))
@@ -99,7 +133,7 @@ struct ChatConversation: View {
                     }
                     }
                     // Only the button animates: animating the scroll view would lay the transcript out again.
-                    .animation(.easeOut(duration: 0.18), value: atBottom)
+                    .animation(.easeOut(duration: 0.18), value: atBottom && following)
                 }
             }
             ChatComposer(model: model)

@@ -419,6 +419,37 @@ class ChatHostTest(unittest.TestCase):
         self.assertEqual([item["type"] for item in state["items"]], ["user", "notice", "assistant", "turn"])
         self.assertIn("connection refused", state["items"][1]["text"])  # a skipped server says nothing; a failed one does
 
+    def test_old_empty_chats_are_removed_at_start(self):
+        host = chat_sessions.get_host()
+        empty = host.create(str(self.project), "copilot")["chat"]["id"]
+        fresh = host.create(str(self.project), "copilot")["chat"]["id"]
+        meta_path = chat_sessions.chats_root() / empty / "chat.json"
+        meta = json.loads(meta_path.read_text())
+        meta["updated_at"] = 1000.0  # long ago
+        meta_path.write_text(json.dumps(meta))
+        chat_sessions.reset_host_for_tests()
+        listed = [chat["id"] for project in chat_sessions.get_host().list()["projects"] for chat in project["chats"]]
+        self.assertEqual(listed, [fresh])  # the new empty one stays: the owner may be about to write
+        self.assertFalse((chat_sessions.chats_root() / empty).exists())
+
+    def test_delete_only_if_empty_keeps_a_chat_with_messages(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "hello")
+            await self.wait_idle(host, chat_id)
+            kept = await host.delete(chat_id, only_if_empty=True)
+            still = host.read(chat_id)["ok"]
+            empty = host.create(str(self.project), "copilot")["chat"]["id"]
+            gone = await host.delete(empty, only_if_empty=True)
+            await host.shutdown()
+            return kept, still, gone, empty
+
+        kept, still, gone, empty = self.run_async(scenario())
+        self.assertEqual((kept.get("kept"), still), (True, True))
+        self.assertNotIn("kept", gone)
+        self.assertFalse((chat_sessions.chats_root() / empty).exists())
+
     def test_routes_need_the_dashboard_token(self):
         def guard(request):
             from starlette.responses import JSONResponse
