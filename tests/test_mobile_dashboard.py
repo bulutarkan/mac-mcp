@@ -314,6 +314,61 @@ class MobileDashboardTests(unittest.TestCase):
             self.assertEqual(429, status_codes[-1])
             self.assertEqual("60", response.headers.get("retry-after"))
 
+    def test_manual_pairing_limiter_stays_bounded_across_many_sources(self):
+        from mcp_server import mobile_routes
+
+        limiter = mobile_routes.ManualPairingLimiter()
+        total = mobile_routes.MANUAL_PAIR_ATTEMPTS_TOTAL
+        now = 1_000_000.0
+        outcomes = [limiter.limited(f"2001:db8::{index:x}", now=now + index * 0.001) for index in range(5000)]
+        self.assertEqual([False] * total, outcomes[:total])
+        self.assertTrue(all(outcomes[total:]), "attempts past the total limit are refused")
+        self.assertLessEqual(len(limiter.by_client), total)
+        self.assertLessEqual(len(limiter.total), total)
+
+        # Once the window passes, stale sources are pruned instead of kept forever.
+        later = now + mobile_routes.MANUAL_PAIR_WINDOW_S + 10
+        self.assertFalse(limiter.limited("198.51.100.1", now=later))
+        self.assertEqual(["198.51.100.1"], list(limiter.by_client))
+
+        # A steady trickle of fresh sources over hours never accumulates.
+        for index in range(20000):
+            limiter.limited(f"203.0.{index // 250}.{index % 250}", now=later + index)
+        self.assertLessEqual(len(limiter.by_client), mobile_routes.MANUAL_PAIR_WINDOW_S + 1)
+
+    def test_manual_pairing_limiter_keeps_the_per_source_limit(self):
+        from mcp_server import mobile_routes
+
+        limiter = mobile_routes.ManualPairingLimiter()
+        per_client = mobile_routes.MANUAL_PAIR_ATTEMPTS_PER_CLIENT
+        outcomes = [limiter.limited("203.0.113.5", now=500.0 + index) for index in range(per_client + 1)]
+        self.assertEqual([False] * per_client + [True], outcomes)
+        self.assertFalse(limiter.limited("203.0.113.6", now=510.0), "other sources are unaffected")
+        self.assertTrue(limiter.limited("203.0.113.5", now=500.0 + mobile_routes.MANUAL_PAIR_WINDOW_S - 1))
+        self.assertFalse(limiter.limited("203.0.113.5", now=500.0 + mobile_routes.MANUAL_PAIR_WINDOW_S + per_client))
+
+    def test_many_failing_pairing_sources_are_refused_past_the_total_limit(self):
+        from mcp_server import mobile_routes
+
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            client = TestClient(app, base_url="https://testserver")
+            total = mobile_routes.MANUAL_PAIR_ATTEMPTS_TOTAL
+            with patch(
+                "mcp_server.mobile_routes._client_address",
+                side_effect=lambda request: request.headers.get("x-test-source", "unknown"),
+            ):
+                codes = [
+                    client.post(
+                        "/mobile/pair",
+                        json={"code": "ZZZZ-ZZZZ", "device_name": "Stranger"},
+                        headers={"x-test-source": f"198.18.{index // 250}.{index % 250}"},
+                    ).status_code
+                    for index in range(total + 20)
+                ]
+            self.assertEqual({401}, set(codes[:total]))
+            self.assertEqual({429}, set(codes[total:]))
+
     def test_new_pairing_invalidates_previous_manual_code(self):
         with tempfile.TemporaryDirectory() as td:
             app, _telemetry, _store = self.make_app(Path(td))

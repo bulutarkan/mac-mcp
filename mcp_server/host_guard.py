@@ -8,23 +8,46 @@ and hosts the owner lists in MAC_MCP_ALLOWED_HOSTS, so anything else is
 refused (421) before any route runs, for HTTP and WebSocket alike.
 
 When the server runs without authentication (loopback-only development
-mode), a browser Origin must also be loopback, the public endpoint or a
-browser extension, because there is no key a hostile page would lack.
+mode), a browser Origin must also be loopback, the public endpoint or Mac
+MCP's own Chrome companion, because there is no key a hostile page or a
+foreign extension would lack.
 
 A server bound to all interfaces is reached by LAN names the owner chose and
 always requires authentication, so it skips the Host allowlist.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, Set
 from urllib.parse import urlsplit
 
 LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 EXTENSION_SCHEMES = ("chrome-extension://", "safari-web-extension://", "moz-extension://")
 _PUBLIC_HOST_TTL_S = 10.0
+_HEX_TO_EXTENSION_ID = str.maketrans("0123456789abcdef", "abcdefghijklmnop")
+
+
+def chrome_unpacked_extension_id(path: Path) -> str:
+    """Chrome's ID for an unpacked extension whose manifest has no "key": the
+    first 32 hex digits of SHA-256 over its absolute path, mapped 0-f to a-p."""
+    digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:32]
+    return digest.translate(_HEX_TO_EXTENSION_ID)
+
+
+def companion_extension_origins() -> frozenset[str]:
+    """Origins of Mac MCP's own browser extensions that call this server.
+
+    Only the Chrome companion does (its background bridge WebSocket). Chrome
+    loads it unpacked from this runtime, the folder holding the
+    bridge_config.js this server writes, so its ID follows from that path. The
+    Safari companion is a content script only and never calls the server.
+    """
+    companion = Path(__file__).resolve().parent.parent / "menu_app" / "ChromeVisualCompanion"
+    return frozenset({"chrome-extension://" + chrome_unpacked_extension_id(companion)})
 
 
 def _hostname(value: str) -> str:
@@ -48,6 +71,7 @@ class HostGuard:
         no_auth: bool,
         public_hosts: Callable[[], Iterable[str]],
         extra_hosts: Optional[Iterable[str]] = None,
+        extension_origins: Optional[Iterable[str]] = None,
     ) -> None:
         self.app = app
         self.enforce_hosts = enforce_hosts
@@ -55,6 +79,8 @@ class HostGuard:
         self._public_hosts = public_hosts
         self._extra = {_hostname(item) for item in (extra_hosts or ()) if _hostname(item)}
         self._cache: Dict[str, Any] = {"at": 0.0, "hosts": set()}
+        origins = companion_extension_origins() if extension_origins is None else extension_origins
+        self._extension_origins = frozenset(str(item).strip().rstrip("/").lower() for item in origins)
 
     def allowed_hosts(self) -> Set[str]:
         now = time.monotonic()
@@ -67,8 +93,8 @@ class HostGuard:
         return set(LOOPBACK_NAMES) | self._extra | set(self._cache["hosts"])
 
     def _origin_allowed(self, origin: str, allowed: Set[str]) -> bool:
-        if origin.startswith(EXTENSION_SCHEMES):
-            return True
+        if origin.lower().startswith(EXTENSION_SCHEMES):
+            return origin.strip().rstrip("/").lower() in self._extension_origins
         if origin == "null":
             return False
         return _hostname(urlsplit(origin).netloc) in allowed

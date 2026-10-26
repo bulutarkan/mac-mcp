@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -29,6 +30,38 @@ MOBILE_COOKIE = "mac_mcp_mobile"
 # One phone refresh asks for status and agents in parallel; both read the same
 # short-lived agent inventory instead of listing agents twice.
 AGENT_SNAPSHOT_TTL_S = 1.5
+# Manual pairing codes are rate limited per source and across all sources. The
+# total matches the store's per-window failure budget (a window is burned after
+# that many wrong codes anyway) and also caps how many sources are tracked, so
+# many addresses on a public tunnel cannot grow memory without bound.
+MANUAL_PAIR_WINDOW_S = 60
+MANUAL_PAIR_ATTEMPTS_PER_CLIENT = 8
+MANUAL_PAIR_ATTEMPTS_TOTAL = 200
+
+
+class ManualPairingLimiter:
+    def __init__(self) -> None:
+        self.by_client: dict[str, list[float]] = {}
+        self.total: deque[float] = deque(maxlen=MANUAL_PAIR_ATTEMPTS_TOTAL)
+
+    def limited(self, address: str, now: Optional[float] = None) -> bool:
+        now = time.time() if now is None else now
+        # Forget sources whose last attempt left the window; the map holds at
+        # most MANUAL_PAIR_ATTEMPTS_TOTAL live sources after this.
+        for client, stamps in list(self.by_client.items()):
+            if not stamps or now - stamps[-1] >= MANUAL_PAIR_WINDOW_S:
+                del self.by_client[client]
+        recent = [ts for ts in self.by_client.get(address, []) if now - ts < MANUAL_PAIR_WINDOW_S]
+        if len(recent) >= MANUAL_PAIR_ATTEMPTS_PER_CLIENT:
+            self.by_client[address] = recent
+            return True
+        total_full = len(self.total) >= MANUAL_PAIR_ATTEMPTS_TOTAL and now - self.total[0] < MANUAL_PAIR_WINDOW_S
+        if total_full or (address not in self.by_client and len(self.by_client) >= MANUAL_PAIR_ATTEMPTS_TOTAL):
+            return True
+        recent.append(now)
+        self.by_client[address] = recent
+        self.total.append(now)
+        return False
 
 
 def _management_guard(request: Request, dashboard_token: str) -> Optional[Response]:
@@ -139,7 +172,7 @@ def create_mobile_routes(
     auth_store: Optional[MobileAuthStore] = None,
 ) -> list[Route]:
     store = auth_store or MobileAuthStore()
-    manual_attempts_by_client: dict[str, list[float]] = {}
+    manual_limiter = ManualPairingLimiter()
     agent_snapshot: Dict[str, Any] = {"at": 0.0, "agents": None}
     agent_snapshot_lock = threading.Lock()
 
@@ -160,18 +193,7 @@ def create_mobile_routes(
             agent_snapshot.update({"at": 0.0, "agents": None})
 
     def manual_pairing_rate_limited(request: Request) -> bool:
-        now = time.time()
-        address = _client_address(request)
-        recent = [
-            ts for ts in manual_attempts_by_client.get(address, [])
-            if now - ts < 60
-        ]
-        if len(recent) >= 8:
-            manual_attempts_by_client[address] = recent
-            return True
-        recent.append(now)
-        manual_attempts_by_client[address] = recent
-        return False
+        return manual_limiter.limited(_client_address(request))
 
     def mobile_session(request: Request) -> Optional[Dict[str, Any]]:
         cookie_token = request.cookies.get(MOBILE_COOKIE)
