@@ -699,6 +699,7 @@ class ChatHostTest(unittest.TestCase):
         self.assertEqual(usage["agents"][0]["agent"], "copilot")
         self.assertEqual(usage["agents"][0]["chats"], 1)
         self.assertEqual(sum(day["turns"] for day in usage["daily"]), 2)
+        self.assertEqual(sum(day["agents"].get("copilot", 0) for day in usage["daily"]), 204)
 
     def test_copilot_model_and_thinking_restart_the_agent_with_flags(self):
         Path(str(self.log) + ".nooptions").write_text("1")

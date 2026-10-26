@@ -103,6 +103,10 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         self.assertIn(".accessibilityAddTraits(selection == item ? .isSelected : [])", self.view)
         self.assertIn('.accessibilityLabel("Search Settings")', self.view)
         self.assertIn(".focused($searchFocused)", self.view)
+        # A full-size search field (not the caption-sized rounded border), and no title text over the sidebar.
+        self.assertIn('Image(systemName: "magnifyingglass")', self.view)
+        self.assertNotIn(".textFieldStyle(.roundedBorder)\n                .font(.caption)", self.view)
+        self.assertIn("window.titleVisibility = .hidden", self.window)
         self.assertIn('.keyboardShortcut("f", modifiers: .command)', self.view)
         heatmap = self.view[self.view.index("private func usageHeatmap"):self.view.index("private func usageHeatCells")]
         self.assertIn(".accessibilityRepresentation", heatmap)

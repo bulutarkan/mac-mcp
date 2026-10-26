@@ -890,15 +890,39 @@ struct SettingsView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 8)
 
-            TextField("Search Settings", text: $settingsSearch)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .focused($searchFocused)
-                .accessibilityLabel("Search Settings")
-                .accessibilityHint("Filters the settings sections. Press Command-F to jump here.")
-                .help("Search Settings (⌘F)")
-                .padding(.horizontal, 10)
-                .padding(.bottom, 5)
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField("Search Settings", text: $settingsSearch)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .focused($searchFocused)
+                    .accessibilityLabel("Search Settings")
+                    .accessibilityHint("Filters the settings sections. Press Command-F to jump here.")
+                if !settingsSearch.isEmpty {
+                    Button { settingsSearch = "" } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear Search")
+                    .accessibilityLabel("Clear Search")
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.06)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(searchFocused ? Color.accentColor.opacity(0.75) : Color.primary.opacity(0.08),
+                                  lineWidth: searchFocused ? 2 : 1)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture { searchFocused = true }
+            .help("Search Settings (⌘F)")
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
                 .background {
                     // ⌘F focuses search while the Settings window is key.
                     Button("Find in Settings") { searchFocused = true }

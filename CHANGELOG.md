@@ -11,6 +11,8 @@
 - Delete Chat asks first. While the Chat window is open, Mac MCP is in the Dock and ⌘Tab; it goes back to the menu bar only when the window closes.
 - File edits show their change: the step reads "Edited greet.py +2 −1" and opens to the diff, with added and removed lines in colour and Copy.
 - ⌘V in the message box pastes an image (saved as a file and attached) or copied files; text pastes as before. Hover your message and click the pencil to edit it and send it again.
+- Settings › Usage › Chat, simpler: one line for the total, the days as bars split by agent (hover for the day), the agents in the same colours with their share; a row opens to the models it used, and Sent, Written and From cache sit under Token details with what each means.
+- Settings: the window no longer shows "Mac MCP Settings" over the sidebar, and Search Settings is a full-size field.
 - Write while the agent works: the message waits above the box and goes out when the answer ends (kept on the server, so it goes even with the window closed). "Send Now" stops the answer and sends it; × takes it back. After Stop nothing goes on its own.
 - Commands show their output as a terminal: Codex streams it live (the newest lines under the step while it runs), Claude when the command ends; the step then shows all of it with the exit code and Copy. The agents still run their commands themselves.
 - Fixed: Stop while the agent was still starting waited 10 seconds and then shut the agent down; it now stops at once.

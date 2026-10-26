@@ -32,7 +32,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             rootView: SettingsView(state: state, settings: settings, initialSection: section ?? .general)
         )
         let window = NSWindow(contentViewController: hostingController)
+        // Named for the Window menu, Mission Control and VoiceOver, not shown: the sidebar already says Settings.
+        // (An untitled window would read as the menu bar popup that showing Settings dismisses.)
         window.title = "Mac MCP Settings"
+        window.titleVisibility = .hidden
         window.styleMask = [.titled, .closable, .resizable]
         window.setContentSize(NSSize(width: 920, height: 640))
         // Content sizes, like SettingsView's own frame: a frame size would count the title bar

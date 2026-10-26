@@ -823,9 +823,10 @@ class ChatHost:
                 model["turns"] += 1
                 model["tokens"] += tokens_in + tokens_out
                 day = time.strftime("%Y-%m-%d", time.localtime(float(turn.get("ended_at") or 0)))
-                bucket = daily.setdefault(day, {"date": day, "turns": 0, "tokens": 0})
+                bucket = daily.setdefault(day, {"date": day, "turns": 0, "tokens": 0, "agents": {}})
                 bucket["turns"] += 1
                 bucket["tokens"] += tokens_in + tokens_out
+                bucket["agents"][agent] = bucket["agents"].get(agent, 0) + tokens_in + tokens_out  # the day's bar, by agent
         totals["seconds"] = round(totals["seconds"], 1)
         return {
             "ok": True, "days": days, "totals": totals,
