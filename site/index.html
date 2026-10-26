@@ -52,6 +52,7 @@
     <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.6"/><path d="M10.5 5h3"/></symbol>
     <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4.5 9.5 9 5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v4.5h14V15"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M5.5 5h13A2.5 2.5 0 0 1 21 7.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V17h-1A2.5 2.5 0 0 1 3 14.5v-7A2.5 2.5 0 0 1 5.5 5Z"/><path d="M7.5 9.5h9M7.5 12.8h5.5"/></symbol>
     <symbol id="i-team" viewBox="0 0 24 24"><circle cx="8.5" cy="9" r="3"/><circle cx="16.5" cy="9" r="2.4"/><path d="M3.5 19a5 5 0 0 1 10 0M14 14.6a4.2 4.2 0 0 1 6.5 3.9"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5.2c0 4.5 2.9 8 7 9.8 4.1-1.8 7-5.3 7-9.8V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
     <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3.5 12S6.6 6.5 12 6.5c1.5 0 2.8 .4 4 1M20.5 12s-1.2 2.2-3.4 3.8M10 17.2c.6.2 1.3 .3 2 .3"/><path d="m4.5 19.5 15-15"/></symbol>
@@ -96,7 +97,7 @@
     <section class="hero" id="top" data-reveal>
       <div class="aura" aria-hidden="true"></div>
       <div class="wrap hero-in">
-        <a class="pill r" href="#new"><span class="pill-dot" aria-hidden="true"></span>New in {{version}}: your other Macs, your iPhone, and undo in your apps<svg aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        <a class="pill r" href="#new"><span class="pill-dot" aria-hidden="true"></span>New in {{version}}: Mac MCP Chat with your own agents<svg aria-hidden="true"><use href="#i-arrow"/></svg></a>
         <h1 class="r">Let your AI apps<br><span class="gild">use your Mac.</span></h1>
         <p class="lede r">Mac MCP is a local server and menu bar app that lets Claude, ChatGPT, Codex, OpenCode and other MCP apps work in your Mac's apps, files, terminal and browser, with approvals you control.</p>
         <div class="cta r">
@@ -337,42 +338,40 @@
     <section class="new" id="new" aria-labelledby="new-title" data-reveal>
       <div class="wrap">
         <div class="head split r">
-          <div><p class="kicker">Mac MCP {{version}}</p><h2 id="new-title">Your devices, safer changes, browser work that tells the truth.</h2></div>
+          <div><p class="kicker">Mac MCP {{version}}</p><h2 id="new-title">Your own agents in a chat, a calmer app, steadier teams.</h2></div>
           <a class="more" href="{{release_url}}">Release notes<svg aria-hidden="true"><use href="#i-out"/></svg></a>
         </div>
         <div class="grid-new">
           <article class="card glow r">
-            <span class="ico"><svg aria-hidden="true"><use href="#i-macs"/></svg></span>
-            <h3>Your other Macs</h3>
-            <p>Pair them once in Settings › Devices with a one-time code and a 6-digit check on both Macs. An agent on one can then work on the others, under each Mac's own permissions.</p>
-            <ul class="rows"><li><span>Studio</span><b>Full access</b></li><li><span>MacBook Air</span><b class="dim">Read only</b></li><li><span>Mac mini</span><b class="warn">Busy</b></li></ul>
+            <span class="ico"><svg aria-hidden="true"><use href="#i-chat"/></svg></span>
+            <h3>Mac MCP Chat</h3>
+            <p>Pick a project folder and talk to your own agents, each signed in as you through its own CLI, with Mac MCP added for the Mac. Models, thinking and modes come from the agent itself.</p>
+            <ul class="rows"><li><span>Claude Code</span><b>Working</b></li><li><span>Codex</span><b class="dim">Idle</b></li><li><span>Copilot</span><b class="warn">Asks you</b></li></ul>
           </article>
           <article class="card glow r">
-            <span class="ico"><svg aria-hidden="true"><use href="#i-phone"/></svg></span>
-            <h3>Your iPhone</h3>
-            <p>Agents use it through iPhone Mirroring, with no app on the phone. They see and read the screen; with full access they open apps, tap, type and scroll. Read only by default.</p>
-            <ul class="rows"><li><span>Access</span><b class="dim">Read only</b></li><li><span>Cursor</span><b>Tapping</b></li></ul>
+            <span class="ico"><svg aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <h3>See every step</h3>
+            <p>Each step opens to show what it did: file edits show their diff, commands their output as a terminal. When the agent asks before a change, you answer in the chat.</p>
           </article>
           <article class="card glow r">
-            <span class="ico"><svg aria-hidden="true"><use href="#i-undo"/></svg></span>
-            <h3>Undo in your apps</h3>
-            <p>What an agent changes in Notes, Reminders, Calendar and Mail can be undone like file changes, and never over an edit you made since.</p>
+            <span class="ico"><svg aria-hidden="true"><use href="#i-agents"/></svg></span>
+            <h3>Nine agents</h3>
+            <p>Claude, Codex, OpenCode, GitHub Copilot, Antigravity, Kilo Code, Kimi Code, Goose and Cline. Add files and images, and write while one works: the message waits its turn.</p>
           </article>
           <article class="card glow r">
-            <span class="ico"><svg aria-hidden="true"><use href="#i-upload"/></svg></span>
-            <h3>Uploads ask first</h3>
-            <p>Safari uploads ask you first, naming the file and the site. Every upload is checked for keys and passwords inside the file, not only by its name.</p>
+            <span class="ico"><svg aria-hidden="true"><use href="#i-apps"/></svg></span>
+            <h3>One calm app</h3>
+            <p>Settings speak one quiet language, with logos and status dots instead of long cards, and Usage in tabs. The menu shows one card at a time and says just "Ready" when idle.</p>
           </article>
           <article class="card glow r">
             <span class="ico"><svg aria-hidden="true"><use href="#i-team"/></svg></span>
-            <h3>Agent teams</h3>
-            <p>Teams take new tasks while they run, give each task its own provider and model, and pick up where they stopped.</p>
+            <h3>Steadier agent teams</h3>
+            <p>Teams check every setting before they start, read the full report of a task they depend on, and never lose a message to an agent that already finished.</p>
           </article>
           <article class="card glow r">
-            <span class="ico"><svg aria-hidden="true"><use href="#i-plug"/></svg></span>
-            <h3>Claude Desktop in one step</h3>
-            <p>It keeps its connection after idle time and always uses the key in Mac MCP's <code>.env</code>.</p>
-            <p class="paths"><code>mac-mcp connect --client claude-desktop</code></p>
+            <span class="ico"><svg aria-hidden="true"><use href="#i-brain"/></svg></span>
+            <h3>Memory and skills</h3>
+            <p>Delegated agents look up your memories and skills before they search, and keep a lasting preference quietly. GitHub Copilot joins as an agent, also on your own key.</p>
           </article>
         </div>
       </div>
