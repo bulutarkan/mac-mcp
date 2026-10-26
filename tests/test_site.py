@@ -141,7 +141,11 @@ class PageTests(unittest.TestCase):
             self.assertEqual("", body.strip())
         self.assertNotIn("style=", self.page)
         for value in re.findall(r'\ssrc="([^"]+)"', self.page):
-            self.assertFalse(value.startswith(("http:", "https:", "//")), value)
+            if value.startswith("https://"):
+                # MacNative's official SVG badges are the only external image assets.
+                self.assertRegex(value, r"^https://macnative\.io/badge\?kind=listed&amp;theme=(?:light|dark)&amp;slug=mac-mcp&amp;small=1$")
+            else:
+                self.assertFalse(value.startswith(("http:", "//")), value)
         self.assertNotIn("offers", self.page)
         # The typeface is served from the site itself, with its licence beside it.
         self.assertIn("font-src 'self'", self.page)
@@ -149,6 +153,21 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("fonts.googleapis", (SITE / "css" / "site.css").read_text())
         # The live star count is the only request that leaves the site.
         self.assertIn("connect-src https://api.github.com;", self.page)
+
+    def test_macnative_small_badge_responds_to_site_theme(self) -> None:
+        # Both official embed variants share one link; no third-party script or
+        # custom theme toggler is needed because the site already handles Device.
+        self.assertIn("img-src 'self' https://macnative.io;", self.page)
+        self.assertEqual(1, self.page.count('class="macnative-badge"'))
+        self.assertIn('href="https://macnative.io/apps/mac-mcp?utm_source=macnative-badge&amp;utm_medium=referral"', self.page)
+        for theme, cls in (("light", "on-light"), ("dark", "on-dark")):
+            src = f'https://macnative.io/badge?kind=listed&amp;theme={theme}&amp;slug=mac-mcp&amp;small=1'
+            expected = f'<img class="{cls}" src="{src}" alt="Listed on MacNative" width="168" height="44">'
+            self.assertIn(expected, self.page)
+        styles = (SITE / "css" / "site.css").read_text()
+        self.assertIn(':root[data-theme="light"] .on-light { display: block; }', styles)
+        self.assertIn(':root:not([data-theme="dark"]):not([data-theme="light"]) .on-light { display: block; }', styles)
+        self.assertIn(".macnative-badge {", styles)
 
     def test_scenes_follow_the_video(self) -> None:
         # Each scene starts where its caption starts in the demo video, with the caption as its title.

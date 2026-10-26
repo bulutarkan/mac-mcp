@@ -581,6 +581,10 @@ h2 { font-size: clamp(2.1rem, 4.4vw, 3.4rem); font-weight: 300; line-height: 1.1
 .foot-in { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 32px; }
 .foot-brand p { margin: 12px 0 16px; color: var(--muted); }
 .foot-brand .star { width: max-content; }
+/* The official Small badge follows the same Dark/Light/Device rules as the brand mark. */
+.macnative-badge { display: block; width: 168px; max-width: 100%; margin-top: 16px; line-height: 0; }
+.macnative-badge img { max-width: 100%; height: auto; }
+
 .foot-nav { display: grid; align-content: start; gap: 10px; font-size: 15px; }
 .foot-nav h3 { font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--faint); margin-bottom: 4px; }
 .foot-nav a { color: var(--muted); text-decoration: none; }
