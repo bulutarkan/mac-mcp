@@ -394,7 +394,11 @@ async function startServer() {
 async function runPrimary() {
   const id = SCREENS[current].id;
   const { action } = primaryAction(id, evaluation);
-  if (action === 'next') return go(nextScreen(id, evaluation));
+  if (action === 'next') {
+    // The welcome and the tour do not poll: read the status first, so a running server skips Start.
+    if (SCREENS[current].kind !== 'setup' && SCREENS[current].kind !== 'finish') await refresh();
+    return go(nextScreen(id, evaluation));
+  }
   if (action === 'finish') return call('finish', { outcome: 'completed' });
   if (action === 'refresh') return refresh();
   if (action === 'startServer') return startServer();
@@ -655,7 +659,8 @@ function renderApps() {
   // Rows that need a click first, ChatGPT always in view; the apps Mac MCP is already added to share one row.
   const groups = appGroups(apps, evaluation.remote, evaluation.chatgpt.connected);
   $('[data-live="apps-count"]').textContent = groups.present ? `${groups.added.length} of ${groups.present} added` : '';
-  const shown = groups.action.slice(0, 2);
+  // One row to act on keeps the card within the window; the rest are a count and the All apps list.
+  const shown = groups.action.slice(0, 1);
   const hidden = groups.action.length - shown.length;
   for (const { client, row } of shown) list.append(appElement(client, row));
   if (groups.chatgpt) list.append(appElement(groups.chatgpt.client, groups.chatgpt.row));
@@ -667,9 +672,12 @@ function renderApps() {
     const name = document.createElement('strong');
     name.textContent = `Added to ${groups.added.length} ${groups.added.length === 1 ? 'app' : 'apps'}`;
     const detail = document.createElement('span');
-    detail.textContent = groups.added.map(({ client }) => client.name).join(', ');
+    // One line: what is left to set up, else the apps by name (three, then a number).
+    const names = groups.added.map(({ client }) => client.name);
+    detail.textContent = hidden
+      ? `${hidden} more ${hidden === 1 ? 'app' : 'apps'} to set up`
+      : (names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', '));
     text.append(name, detail);
-    if (hidden) detail.textContent += ` · ${hidden} more to set up`;
     const stack = document.createElement('span');
     stack.className = 'stack';
     element.append(fillStack(stack, groups.added.map(({ client }) => client), 'apps'), text);
@@ -798,7 +806,7 @@ function wire() {
   secondary.addEventListener('click', runSecondary);
   back.addEventListener('click', goBack);
   skip.addEventListener('click', () => {
-    if (SCREENS[current].kind === 'tour') go(nextScreen('safety', evaluation));
+    if (SCREENS[current].kind === 'tour') refresh().then(() => go(nextScreen('safety', evaluation)));
     else call('finish', { outcome: 'skipped' });
   });
   for (const row of $$('.perm[data-perm]')) {

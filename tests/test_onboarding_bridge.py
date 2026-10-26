@@ -89,6 +89,14 @@ class OnboardingBridgeTests(unittest.TestCase):
             if path.suffix in {".html", ".css", ".js"}:
                 self.assertIsNone(re.search(r"https?://(?!127\.0\.0\.1)", path.read_text(encoding="utf-8")), path.name)
 
+    def test_set_up_now_reads_the_status_before_choosing_start(self) -> None:
+        # The welcome and the tour do not poll; without a fresh status a running server still showed Start.
+        page = (ROOT / "menu_app" / "Onboarding" / "onboarding.js").read_text(encoding="utf-8")
+        run_primary = page[page.index("async function runPrimary()"):page.index("if (action === 'finish')")]
+        self.assertIn("await refresh();", run_primary)
+        self.assertLess(run_primary.index("await refresh();"), run_primary.index("go(nextScreen(id, evaluation))"))
+        self.assertIn("refresh().then(() => go(nextScreen('safety', evaluation)))", page)
+
     def test_the_build_bundles_the_page_and_links_webkit(self) -> None:
         build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
         self.assertIn("-framework WebKit", build)

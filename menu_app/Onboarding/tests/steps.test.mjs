@@ -153,14 +153,16 @@ test('the agents row sums them up in one line, whatever their number', () => {
   const summary = agentsSummary(AGENTS, apps, state);
   assert.equal(summary.rows.length, 5);
   assert.equal(summary.title, '2 agents are on');
-  assert.equal(summary.detail, 'Codex, Claude Code · OpenCode, Kimi Code and Grok Build are off');
+  // One line: the names of the agents that are on; how many are off is the count beside the title.
+  assert.equal(summary.detail, 'Codex, Claude Code');
   assert.equal(summary.count, '2 on · 3 off');
   assert.equal(agentsSummary(AGENTS, apps, { enabled: { codex: true } }).title, 'Codex is on');
   assert.equal(agentsSummary(AGENTS, apps, { enabled: {} }).title, 'No agent is on yet');
   // Past three names, a number says the rest.
   const many = { enabled: { codex: true, claude: true, opencode: true, kimi: true }, installed: { kimi: true, grok: true, antigravity: true, pi: true, cline: true, kilo: true, goose: true, copilot: true } };
-  assert.equal(agentsSummary(AGENTS, apps, many).detail, 'Codex, Claude Code, OpenCode +1 · 7 others are off');
-  assert.equal(agentsSummary(AGENTS, apps, { enabled: {}, installed: many.installed }).detail, '11 on this Mac, all off');
+  assert.equal(agentsSummary(AGENTS, apps, many).detail, 'Codex, Claude Code, OpenCode +1');
+  assert.equal(agentsSummary(AGENTS, apps, { enabled: {}, installed: many.installed }).detail, 'Choose which ones may take work');
+  assert.equal(agentsSummary(AGENTS, apps, { enabled: { codex: true } }).detail, '2 more on this Mac');
 });
 
 test('a logo stack shows five and keeps the rest behind a +N', () => {
@@ -279,9 +281,9 @@ test('connected is an app checking in; it worked is a successful request (#126)'
   assert.equal(seen.request, false);
   assert.deepEqual(seen.connected, ['ChatGPT']);
   assert.deepEqual(seen.chatgpt, { connected: true, worked: false });
-  assert.deepEqual(connectStatus(seen), { done: true, title: 'ChatGPT is connected', line: 'Next, try one request.' });
+  assert.deepEqual(connectStatus(seen), { done: true, title: "You're connected", line: 'ChatGPT reached this Mac. Next, try one request.' });
   assert.equal(requestStatus(seen).state, 'waiting');
-  assert.equal(requestStatus(seen).title, 'ChatGPT is connected');
+  assert.equal(requestStatus(seen).title, "You're connected");
   const worked = evaluate({ server_running: true, clients_seen: [{ name: 'Claude', seen_at: 1, first_success_at: 2 }] });
   assert.equal(worked.request, true);
   assert.equal(requestStatus(worked).state, 'done');
@@ -290,7 +292,12 @@ test('connected is an app checking in; it worked is a successful request (#126)'
   assert.equal(connectStatus(evaluate({ server_running: true })).done, false);
   assert.equal(connectStatus(evaluate({ server_running: false })).title, 'Mac MCP is not running');
   const two = evaluate({ server_running: true, clients_seen: [{ name: 'Claude' }, { name: 'Codex' }] });
-  assert.equal(connectStatus(two).title, 'Claude and Codex are connected');
+  assert.equal(connectStatus(two).line, 'Claude and Codex reached this Mac. Next, try one request.');
+  // A client known only by a raw library name ("mcp") is never shown by it.
+  const raw = evaluate({ server_running: true, clients_seen: [{ name: 'mcp' }] });
+  assert.deepEqual(raw.connected, []);
+  assert.deepEqual(connectStatus(raw), { done: true, title: "You're connected", line: 'Next, try one request.' });
+  assert.equal(requestStatus(raw).title, "You're connected");
 });
 
 test('the first-request screen offers help that fits what Mac MCP saw (#126)', () => {

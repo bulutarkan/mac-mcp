@@ -69,6 +69,10 @@ const HELP_AFTER_MS = 45000;
 // How long after copying ChatGPT's address before the ChatGPT screen offers help.
 const CHATGPT_HELP_AFTER_MS = 60000;
 
+// AI apps as Mac MCP names them (observability.client_display_name); anything else stays unnamed.
+const KNOWN_APPS = new Set(['ChatGPT', 'Claude', 'Claude Code', 'Claude Desktop', 'Codex', 'Cursor', 'OpenCode',
+  'Gemini CLI', 'GitHub Copilot', 'Goose', 'Cline', 'Kilo Code', 'Kimi Code', 'Grok Build', 'Antigravity', 'pi']);
+
 function indexOf(id) {
   return SCREENS.findIndex((screen) => screen.id === id);
 }
@@ -106,7 +110,10 @@ function evaluate(status) {
     // The owner's "Start Mac MCP when you log in" setting; null when the page was not told (#22).
     startsAtLogin: typeof s.start_at_login === 'boolean' ? s.start_at_login : null,
     connect: running && (Boolean(firstCall) || seen.length > 0),
-    connected: seen.map((client) => client.name),
+    // Only names people know the app by: an unknown client (a script, a library default such as "mcp")
+    // is never shown by its raw name.
+    connected: seen.map((client) => client.name).filter((name) => KNOWN_APPS.has(name)),
+    anyConnected: seen.length > 0,
     request: worked,
     // The request reached Mac MCP but did not work (denied, blocked, an error).
     requestFailed: !worked && Boolean(firstCall) && firstCall.status !== 'success',
@@ -224,10 +231,10 @@ function connectStatus(evaluation) {
     return { done: false, title: 'Waiting for your AI app', line: 'Set it up here, then open it. It checks in with Mac MCP when it starts.' };
   }
   if (e.connected.length) {
-    const names = listWords(e.connected);
-    return { done: true, title: `${names} ${e.connected.length === 1 ? 'is' : 'are'} connected`, line: 'Next, try one request.' };
+    return { done: true, title: "You're connected", line: `${listWords(e.connected)} reached this Mac. Next, try one request.` };
   }
-  return { done: true, title: 'Mac MCP is connected', line: callSentence(e.firstTool) };
+  if (e.anyConnected) return { done: true, title: "You're connected", line: 'Next, try one request.' };
+  return { done: true, title: "You're connected", line: callSentence(e.firstTool) };
 }
 
 /** The first-request screen's status card: "connected" is not yet "it worked". */
@@ -244,8 +251,7 @@ function requestStatus(evaluation) {
     };
   }
   if (e.connect) {
-    const who = e.connected.length ? listWords(e.connected) : 'Your AI app';
-    return { state: 'waiting', title: `${who} ${e.connected.length > 1 ? 'are' : 'is'} connected`, line: 'Waiting for the request. Paste it into your AI app and send it.' };
+    return { state: 'waiting', title: "You're connected", line: 'Waiting for the request. Paste it into your AI app and send it.' };
   }
   return { state: 'waiting', title: 'Waiting for the request', line: 'Paste it into your AI app and send it.' };
 }
@@ -425,12 +431,12 @@ function agentsSummary(agents, apps, state) {
   if (on.length === 0) title = 'No agent is on yet';
   else if (on.length === 1) title = `${on[0]} is on`;
   else title = `${on.length} agents are on`;
-  const parts = [];
-  // Names while they fit on a line; past three, a number says the rest.
-  if (on.length > 1) parts.push(on.length > 3 ? `${on.slice(0, 3).join(', ')} +${on.length - 3}` : on.join(', '));
-  if (off.length > 3) parts.push(on.length ? `${off.length} others are off` : `${off.length} on this Mac, all off`);
-  else if (off.length) parts.push(`${listWords(off)} ${off.length === 1 ? 'is' : 'are'} off`);
-  return { rows, title, detail: parts.join(' · '), count: `${on.length} on · ${off.length} off` };
+  // One line: the agents that are on (three, then a number); how many are off is in the count beside the title.
+  let detail;
+  if (on.length > 1) detail = on.length > 3 ? `${on.slice(0, 3).join(', ')} +${on.length - 3}` : on.join(', ');
+  else if (on.length === 1) detail = off.length ? `${off.length} more on this Mac` : '';
+  else detail = 'Choose which ones may take work';
+  return { rows, title, detail, count: `${on.length} on · ${off.length} off` };
 }
 
 /** A logo stack's first STACK_LIMIT items, and the rest that a +N stands for. */
