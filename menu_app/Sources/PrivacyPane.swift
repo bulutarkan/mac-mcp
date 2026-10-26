@@ -37,7 +37,7 @@ struct PrivacyPane: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Privacy").font(.title2.weight(.semibold))
                     Text("What Mac MCP may look at, what it keeps, and where your data can go. Mac MCP enforces these rules itself; an AI app cannot turn them off.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 SettingsTabPicker(selection: $tabs.privacy, label: "Privacy section")
             }
@@ -53,33 +53,27 @@ struct PrivacyPane: View {
                     if !loaded, !message.isEmpty {
                         LoadProblem(message: message) { await load() }
                     } else if !message.isEmpty {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
+                        Text(message).font(SettingsType.note).foregroundStyle(.secondary)
                     }
                     if !loaded, message.isEmpty {
                         ProgressView().controlSize(.small)
                     }
 
+
                     switch tabs.privacy {
                     case .protection:
                         GroupBox {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Toggle(isOn: Binding(get: { paused }, set: { save(["paused": $0]) })) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Pause observation").font(.subheadline.weight(.semibold))
-                                        Text("Mac MCP stops reading the screen, web pages, the clipboard and your voice, and starts no agents, until you turn this off. File and command tools keep working.")
-                                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                                Divider()
-                                Toggle(isOn: Binding(get: { privateMode }, set: { save(["private_mode": $0]) })) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Private mode").font(.subheadline.weight(.semibold))
-                                        Text("Work continues, but Mac MCP keeps nothing about it: no activity history, usage, memories, lessons or run timelines. The security audit log still records tool names and outcomes.")
-                                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
+                            VStack(alignment: .leading, spacing: 0) {
+                                switchRow("Pause observation",
+                                          "Mac MCP stops reading the screen, web pages, the clipboard and your voice, and starts no agents, until you turn this off. File and command tools keep working.",
+                                          isOn: Binding(get: { paused }, set: { save(["paused": $0]) }),
+                                          on: "Paused: nothing is observed and no agent starts.")
+                                Divider().padding(.vertical, 10)
+                                switchRow("Private mode",
+                                          "Work continues, but Mac MCP keeps nothing about it: no activity history, usage, memories, lessons or run timelines. The security audit log still records tool names and outcomes.",
+                                          isOn: Binding(get: { privateMode }, set: { save(["private_mode": $0]) }),
+                                          on: "On: nothing about the work is kept.")
                             }
-                            .padding(6)
                         }
                         .disabled(!loaded)
 
@@ -92,17 +86,17 @@ struct PrivacyPane: View {
                             suggestions: runningApps(),
                             key: "excluded_apps"
                         )
-                        GroupBox {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Also never observe").font(.subheadline.weight(.semibold))
+                        GroupBox("Also never observe") {
+                            VStack(alignment: .leading, spacing: 0) {
                                 Text("Mac MCP recognizes these by name and address. Recognition can miss some, so add the ones that matter above too.")
-                                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                                categoryToggle("password_manager", "Password managers")
-                                categoryToggle("finance", "Banking and finance sites")
-                                categoryToggle("health", "Health portals")
+                                    .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                    .padding(.bottom, 8)
+                                categoryToggle("password_manager", "Password managers", symbol: "key.fill")
+                                Divider().padding(.vertical, 6)
+                                categoryToggle("finance", "Banking and finance sites", symbol: "building.columns.fill")
+                                Divider().padding(.vertical, 6)
+                                categoryToggle("health", "Health portals", symbol: "cross.case.fill")
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(6)
                         }
                         .disabled(!loaded)
 
@@ -118,20 +112,22 @@ struct PrivacyPane: View {
                     case .documents:
                         knowledgeBox
                     case .data:
+                        if !stores.isEmpty { storageSummary }
+
                         GroupBox("What Mac MCP keeps on this Mac") {
                             VStack(alignment: .leading, spacing: 0) {
                                 atRestRow
                                 Divider()
-                                ForEach(Array(stores.enumerated()), id: \.offset) { index, store in
+                                ForEach(Array(sortedStores.enumerated()), id: \.offset) { index, store in
                                     if index > 0 { Divider() }
-                                    storeRow(store)
+                                    storeRow(store, color: storeColor(index))
                                 }
                                 Divider()
-                                HStack(alignment: .firstTextBaseline) {
+                                HStack(alignment: .center, spacing: 16) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("Scheduled task run details").font(.callout)
+                                        Text("Scheduled task run details").font(SettingsType.body)
                                         Text("Results, output and each step’s text. How a run ended, when, and its usage stay for 90 days.")
-                                            .font(.caption).foregroundStyle(.secondary)
+                                            .font(SettingsType.note).foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                     Spacer()
@@ -142,30 +138,35 @@ struct PrivacyPane: View {
                                         ForEach(runDetailChoices, id: \.self) { days in Text("\(days) days").tag(days) }
                                     }
                                     .labelsHidden()
-                                    .frame(width: 110)
+                                    .fixedSize()
                                     .disabled(!loaded)
                                 }
-                                .padding(.vertical, 6)
+                                .padding(.vertical, 10)
+                                Divider()
+                                HStack(spacing: 16) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Move everything to the Trash").font(SettingsType.body)
+                                        Text("All of the above in one dated folder; nothing is erased until you empty the Trash.")
+                                            .font(SettingsType.note).foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer()
+                                    Button("Move all Mac MCP data to the Trash…") {
+                                        pendingDelete = ["key": "all", "name": "all Mac MCP data"]
+                                    }
+                                    .disabled(!loaded || deleting)
+                                }
+                                .padding(.top, 10)
                             }
-                            .padding(.vertical, 4)
-                        }
-
-                        HStack {
-                            Spacer()
-                            Button("Move all Mac MCP data to the Trash…") {
-                                pendingDelete = ["key": "all", "name": "all Mac MCP data"]
-                            }
-                            .disabled(!loaded || deleting)
                         }
 
                         GroupBox("Where your data can go") {
                             VStack(alignment: .leading, spacing: 0) {
-                                ForEach(Array(recipients.enumerated()), id: \.offset) { index, recipient in
+                                ForEach(Array(sortedRecipients.enumerated()), id: \.offset) { index, recipient in
                                     if index > 0 { Divider() }
                                     recipientRow(recipient)
                                 }
                             }
-                            .padding(.vertical, 4)
                         }
                     }
                 }
@@ -191,32 +192,39 @@ struct PrivacyPane: View {
 
     /// Folders Mac MCP can search (#197): the owner picks them; agents answer from them with sources.
     private var knowledgeBox: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Folders Mac MCP can search").font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Button("Add Folder…") { chooseKnowledgeFolder() }
-                        .disabled(!loaded || knowledgeBusy)
-                }
-                Text("Your AI apps can ask about what is in these folders — contracts, invoices, notes, PDFs and Word files, scans and photos of pages too — and answer with the file and page. This only adds smart search: Mac MCP still works with files anywhere else, as before. It reads these folders on this Mac and keeps a private index; nothing is uploaded.")
-                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Folders Mac MCP can search").font(SettingsType.title)
+                Spacer()
+                Button("Add Folder…") { chooseKnowledgeFolder() }
+                    .disabled(!loaded || knowledgeBusy)
+            }
+            VStack(alignment: .leading, spacing: 0) {
                 if knowledgeFolders.isEmpty {
-                    Text("No folders yet.").font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Image(systemName: "folder.badge.plus").font(.system(size: 18)).foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        Text("No folders yet. Add one, such as Documents/Contracts, and your AI apps can answer from it with the file and page.")
+                            .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
                 }
-                ForEach(Array(knowledgeFolders.enumerated()), id: \.offset) { _, folder in
+                ForEach(Array(knowledgeFolders.enumerated()), id: \.offset) { index, folder in
+                    if index > 0 { Divider() }
                     knowledgeRow(folder)
                 }
-                if knowledgePending > 0 {
-                    Label("Reading \(knowledgePending) new or changed file\(knowledgePending == 1 ? "" : "s")…", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                if !knowledgeMessage.isEmpty {
-                    Text(knowledgeMessage).font(.caption2).foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
-            .padding(6)
+            .usageListBox()
+            Text("Your AI apps can ask about what is in these folders — contracts, invoices, notes, PDFs and Word files, scans and photos of pages too — and answer with the file and page. This only adds smart search: Mac MCP still works with files anywhere else, as before. It reads these folders on this Mac and keeps a private index; nothing is uploaded.")
+                .font(SettingsType.note).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            if knowledgePending > 0 {
+                Label("Reading \(knowledgePending) new or changed file\(knowledgePending == 1 ? "" : "s")…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(SettingsType.note).foregroundStyle(.secondary)
+            }
+            if !knowledgeMessage.isEmpty {
+                Text(knowledgeMessage).font(SettingsType.note).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .disabled(!loaded)
     }
@@ -226,27 +234,32 @@ struct PrivacyPane: View {
         let files = folder["files"] as? Int ?? 0
         let indexed = folder["indexed"] as? Int ?? 0
         let noText = folder["no_text"] as? Int ?? 0
-        var detail = files == 0 ? "Not read yet" : "\(indexed) of \(files) file\(files == 1 ? "" : "s") searchable"
-        if noText > 0 { detail += " · \(noText) without text (scanned)" }
-        return HStack(spacing: 10) {
-            Image(systemName: "folder.fill").foregroundStyle(Color.accentColor).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(URL(fileURLWithPath: path).lastPathComponent).font(.callout.weight(.medium))
-                Text((path as NSString).abbreviatingWithTildeInPath + " · " + detail)
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        var detail = files == 0 ? "Not read yet" : "\(UsageFormat.exact(indexed)) of \(UsageFormat.count(files, "file")) searchable"
+        if noText > 0 { detail += ", \(UsageFormat.exact(noText)) without text (scanned)" }
+        return HStack(spacing: 12) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 28, height: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(URL(fileURLWithPath: path).lastPathComponent).font(SettingsType.body.weight(.medium))
+                Text((path as NSString).abbreviatingWithTildeInPath)
+                    .font(SettingsType.meta).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
-            Spacer()
+            .frame(minWidth: 130, maxWidth: 210, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                UsageShareMeter(share: files == 0 ? 0 : Double(indexed) / Double(files), color: Color.accentColor, height: 5)
+                Text(detail).font(SettingsType.meta).foregroundStyle(.secondary).lineLimit(1)
+            }
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-            } label: { Image(systemName: "magnifyingglass") }
+            } label: { Image(systemName: "folder") }
                 .buttonStyle(.borderless)
                 .help("Show in Finder")
                 .accessibilityLabel("Show \(URL(fileURLWithPath: path).lastPathComponent) in Finder")
             Button("Remove") { changeKnowledge(["action": "remove", "path": path]) }
-                .controlSize(.small)
                 .disabled(knowledgeBusy)
                 .accessibilityLabel("Stop searching \(URL(fileURLWithPath: path).lastPathComponent)")
         }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     private func chooseKnowledgeFolder() {
@@ -280,12 +293,35 @@ struct PrivacyPane: View {
         knowledgePending = object["pending_files"] as? Int ?? 0
     }
 
-    private func categoryToggle(_ key: String, _ title: String) -> some View {
-        Toggle(title, isOn: Binding(
-            get: { blockedCategories.contains(key) },
-            set: { on in save(["blocked_categories": on ? blockedCategories + [key] : blockedCategories.filter { $0 != key }]) }
-        ))
-        .font(.callout)
+    /// A switch with what it does; while it is on, a line says so in orange.
+    private func switchRow(_ title: String, _ detail: String, isOn: Binding<Bool>, on: String) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(SettingsType.title)
+                Text(detail).font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if isOn.wrappedValue {
+                    Label(on, systemImage: "circle.fill").font(SettingsType.note).foregroundStyle(.orange)
+                        .labelStyle(DotLabelStyle())
+                }
+            }
+            Spacer()
+            Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch)
+        }
+    }
+
+    private func categoryToggle(_ key: String, _ title: String, symbol: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 20)
+                .accessibilityHidden(true)
+            Text(title).font(SettingsType.body)
+            Spacer()
+            Toggle(title, isOn: Binding(
+                get: { blockedCategories.contains(key) },
+                set: { on in save(["blocked_categories": on ? blockedCategories + [key] : blockedCategories.filter { $0 != key }]) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+        }
     }
 
     private func delete(_ key: String) {
@@ -307,23 +343,29 @@ struct PrivacyPane: View {
         }
     }
 
+    /// Apps or sites Mac MCP must never observe: each one with its icon, then a field to add another.
     private func exclusionBox(title: String, detail: String, items: [String], text: Binding<String>,
                               placeholder: String, suggestions: [String], key: String) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        GroupBox(title) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(detail).font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 8)
                 if items.isEmpty {
-                    Text("None").font(.caption).foregroundStyle(.secondary)
+                    Text(key == "excluded_apps" ? "No apps yet." : "No sites yet.")
+                        .font(SettingsType.note).foregroundStyle(.tertiary)
+                        .padding(.bottom, 8)
                 }
                 ForEach(items, id: \.self) { item in
-                    HStack {
-                        Text(item).font(.callout)
+                    HStack(spacing: 10) {
+                        exclusionIcon(item, app: key == "excluded_apps")
+                        Text(item).font(SettingsType.body)
                         Spacer()
                         Button("Remove") { save([key: items.filter { $0 != item }]) }
                             .controlSize(.small)
                             .accessibilityLabel("Remove \(item)")
                     }
+                    .padding(.vertical, 5)
+                    Divider()
                 }
                 HStack {
                     TextField(placeholder, text: text)
@@ -340,92 +382,222 @@ struct PrivacyPane: View {
                     Button("Add") { add(text, to: items, key: key) }
                         .disabled(text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                .padding(.top, 8)
             }
-            .padding(6)
         }
         .disabled(!loaded)
+    }
+
+    /// The app's own icon when it can be found by name or bundle id; a globe for a site.
+    @ViewBuilder
+    private func exclusionIcon(_ item: String, app: Bool) -> some View {
+        if app, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: item)
+            ?? ["/Applications", "/System/Applications", "/Applications/Utilities"].lazy
+                .map({ URL(fileURLWithPath: "\($0)/\(item).app") })
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: 20, height: 20)
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: app ? "app.dashed" : "globe").font(.system(size: 14)).foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .accessibilityHidden(true)
+        }
     }
 
     /// FileVault encrypts these stores on disk; Time Machine copies may not be encrypted.
     private var atRestRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Label {
                 Text(fileVault == true ? "FileVault is on: everything below is encrypted on disk."
                      : fileVault == false ? "FileVault is off: these files are not encrypted on disk. Turn it on in System Settings › Privacy & Security."
                      : "Couldn’t check FileVault.")
-                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+                    .font(SettingsType.note).fixedSize(horizontal: false, vertical: true)
             } icon: {
                 Image(systemName: fileVault == true ? "lock.shield.fill" : "exclamationmark.shield")
                     .foregroundStyle(fileVault == true ? Color.green : Color.orange)
             }
-            Toggle(isOn: Binding(get: { excludeFromBackups }, set: { save(["exclude_from_backups": $0]) })) {
+            HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Keep Mac MCP data out of Time Machine").font(.callout.weight(.medium))
+                    Text("Keep Mac MCP data out of Time Machine").font(SettingsType.body)
                     Text("Activity, memories, lessons, agent output, jobs and file history are left out of backups, which may not be encrypted. A restored Mac then starts without them.")
-                        .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer()
+                Toggle("Keep Mac MCP data out of Time Machine",
+                       isOn: Binding(get: { excludeFromBackups }, set: { save(["exclude_from_backups": $0]) }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
             }
         }
-        .padding(.vertical, 6)
+        .padding(.bottom, 10)
         .disabled(!loaded)
     }
 
-    private func storeRow(_ store: [String: Any]) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: (store["owner_only"] as? Bool) == true ? "lock.fill" : "lock.open")
-                .foregroundStyle((store["owner_only"] as? Bool) == true ? Color.green : Color.orange)
-                .accessibilityLabel((store["owner_only"] as? Bool) == true ? "Only your account can read it" : "Not owner-only")
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store["name"] as? String ?? "").font(.callout.weight(.medium))
-                Text(store["holds"] as? String ?? "").font(.caption2).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    // MARK: Your Data at a glance
+
+    private func bytes(_ store: [String: Any]) -> Int { (store["exists"] as? Bool) == true ? store["bytes"] as? Int ?? 0 : 0 }
+
+    /// The stores, largest first; empty ones last.
+    private var sortedStores: [[String: Any]] {
+        stores.enumerated().sorted { lhs, rhs in
+            bytes(lhs.element) != bytes(rhs.element) ? bytes(lhs.element) > bytes(rhs.element) : lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
+    private static let storePalette: [Color] = [
+        UsageColors.adaptive(0x0A7CFF, 0x3D9BFF), UsageColors.adaptive(0x7B61E8, 0xA08CFF),
+        UsageColors.adaptive(0x1F9E86, 0x3CC8A8), UsageColors.adaptive(0xD9774F, 0xF0956A),
+        UsageColors.adaptive(0xB8901C, 0xE8C55A),
+    ]
+
+    /// The five largest stores have a colour of their own; the rest share grey, as "Other" in the bar.
+    private func storeColor(_ index: Int) -> Color {
+        index < Self.storePalette.count ? Self.storePalette[index] : UsageColors.adaptive(0x9A9FA8, 0x8A8F98)
+    }
+
+    /// Like macOS Storage: how much Mac MCP keeps, one bar split by store, and whether only you can read it.
+    private var storageSummary: some View {
+        let sorted = sortedStores
+        let total = max(1, sorted.reduce(0) { $0 + bytes($1) })
+        let top = Array(sorted.prefix(Self.storePalette.count)).filter { bytes($0) > 0 }
+        let other = sorted.dropFirst(Self.storePalette.count).reduce(0) { $0 + bytes($1) }
+        let open = stores.filter { ($0["owner_only"] as? Bool) != true && ($0["exists"] as? Bool) == true }.count
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(UsageFormat.bytes(total)).font(.system(size: 34, weight: .semibold)).monospacedDigit()
+                Text("kept on this Mac").font(.system(size: 15, weight: .medium)).foregroundStyle(.secondary)
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text((store["exists"] as? Bool) == true
-                     ? ByteCountFormatter.string(fromByteCount: Int64(store["bytes"] as? Int ?? 0), countStyle: .file)
-                     : "Empty").font(.caption.monospacedDigit())
-                Text("Kept: \(store["kept"] as? String ?? "")").font(.caption2).foregroundStyle(.secondary)
-                if (store["in_backups"] as? Bool) == false {
-                    Text("Not in backups").font(.caption2).foregroundStyle(.secondary)
+            Text(open == 0 ? "In \(UsageFormat.count(stores.count, "place")), each readable only by your account."
+                 : "In \(UsageFormat.count(stores.count, "place")); \(UsageFormat.count(open, "place")) can be read by other accounts on this Mac.")
+                .font(SettingsType.body).foregroundStyle(open == 0 ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+            GeometryReader { proxy in
+                HStack(spacing: 2) {
+                    ForEach(Array(top.enumerated()), id: \.offset) { index, store in
+                        RoundedRectangle(cornerRadius: 3, style: .continuous).fill(storeColor(index))
+                            .frame(width: max(4, (proxy.size.width - 12) * CGFloat(bytes(store)) / CGFloat(total)))
+                    }
+                    if other > 0 {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous).fill(storeColor(Self.storePalette.count))
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
-            if (store["deletable"] as? Bool) == true, (store["exists"] as? Bool) == true {
-                Button {
-                    pendingDelete = store
-                } label: { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-                    .help("Move to the Trash")
-                    .disabled(deleting)
-                    .accessibilityLabel("Move \(store["name"] as? String ?? "store") to the Trash")
+            .frame(height: 12)
+            .accessibilityHidden(true)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 16, alignment: .leading)], alignment: .leading, spacing: 6) {
+                ForEach(Array(top.enumerated()), id: \.offset) { index, store in
+                    legend(store["name"] as? String ?? "", bytes(store), storeColor(index))
+                }
+                if other > 0 { legend("Other", other, storeColor(Self.storePalette.count)) }
             }
-            if let path = (store["paths"] as? [String])?.first, (store["exists"] as? Bool) == true {
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                } label: { Image(systemName: "folder") }
-                    .buttonStyle(.borderless)
-                    .help("Show in Finder")
-                    .accessibilityLabel("Show \(store["name"] as? String ?? "store") in Finder")
-            }
+            .font(.system(size: 12))
         }
-        .padding(.vertical, 6)
+        .padding(.bottom, 6)
+    }
+
+    private func legend(_ name: String, _ size: Int, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
+            Text(name).foregroundStyle(.secondary).lineLimit(1)
+            Text(UsageFormat.bytes(size)).fontWeight(.medium).monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func storeRow(_ store: [String: Any], color: Color) -> some View {
+        let ownerOnly = (store["owner_only"] as? Bool) == true
+        let exists = (store["exists"] as? Bool) == true
+        return HStack(alignment: .center, spacing: 12) {
+            RoundedRectangle(cornerRadius: 3, style: .continuous).fill(exists ? color : Color.primary.opacity(0.12))
+                .frame(width: 10, height: 10)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(store["name"] as? String ?? "").font(SettingsType.body.weight(.medium))
+                    if !ownerOnly && exists {
+                        Image(systemName: "lock.open").font(.system(size: 11)).foregroundStyle(.orange)
+                            .help("Other accounts on this Mac can read it")
+                    }
+                }
+                Text(store["holds"] as? String ?? "").font(SettingsType.note).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(store["name"] as? String ?? ""), \(ownerOnly ? "only your account can read it" : "not owner-only")")
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(exists ? UsageFormat.bytes(store["bytes"] as? Int ?? 0) : "Empty")
+                    .font(SettingsType.body.weight(.medium)).monospacedDigit()
+                Text("Kept: \(store["kept"] as? String ?? "")").font(SettingsType.meta).foregroundStyle(.secondary)
+                if (store["in_backups"] as? Bool) == false {
+                    Text("Not in backups").font(SettingsType.meta).foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 8) {
+                if (store["deletable"] as? Bool) == true, exists {
+                    Button {
+                        pendingDelete = store
+                    } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .help("Move to the Trash")
+                        .disabled(deleting)
+                        .accessibilityLabel("Move \(store["name"] as? String ?? "store") to the Trash")
+                }
+                if let path = (store["paths"] as? [String])?.first, exists {
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    } label: { Image(systemName: "folder") }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .help("Show in Finder")
+                        .accessibilityLabel("Show \(store["name"] as? String ?? "store") in Finder")
+                }
+            }
+            .frame(width: 44, alignment: .trailing)
+        }
+        .padding(.vertical, 9)
+    }
+
+    /// The services data can go to, the ones in use first.
+    private var sortedRecipients: [[String: Any]] {
+        recipients.enumerated().sorted { lhs, rhs in
+            let left = (lhs.element["active"] as? Bool) == true, right = (rhs.element["active"] as? Bool) == true
+            return left != right ? left : lhs.offset < rhs.offset
+        }.map(\.element)
     }
 
     private func recipientRow(_ recipient: [String: Any]) -> some View {
         let active = (recipient["active"] as? Bool) == true
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: active ? "arrow.up.right.circle.fill" : "circle.dashed")
-                .foregroundStyle(active ? Color.accentColor : Color.secondary)
-                .accessibilityHidden(true)
+        let key = recipient["key"] as? String ?? ""
+        return HStack(alignment: .center, spacing: 12) {
+            recipientIcon(key)
             VStack(alignment: .leading, spacing: 2) {
-                Text(recipient["name"] as? String ?? "").font(.callout.weight(.medium))
-                Text(recipient["sends"] as? String ?? "").font(.caption2).foregroundStyle(.secondary)
+                Text(recipient["name"] as? String ?? "").font(SettingsType.body.weight(.medium))
+                Text(recipient["sends"] as? String ?? "").font(SettingsType.note).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Text(active ? "On" : "Off").font(.caption).foregroundStyle(active ? .primary : .secondary)
+            HStack(spacing: 6) {
+                Circle().fill(active ? Color.green : Color.primary.opacity(0.2)).frame(width: 7, height: 7)
+                Text(active ? "On" : "Off").font(SettingsType.note).foregroundStyle(active ? .primary : .secondary)
+            }
+            .accessibilityElement(children: .combine)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
+        .opacity(active ? 1 : 0.75)
+    }
+
+    /// The agent's maker for an agent; a symbol for Mac MCP's own routes out.
+    @ViewBuilder
+    private func recipientIcon(_ key: String) -> some View {
+        let symbols = ["ai_apps": "app.connected.to.app.below.fill", "public_endpoint": "globe",
+                       "voice": "waveform", "decisions": "sparkles"]
+        if let symbol = symbols[key] {
+            UsageSymbolTile(symbol: symbol)
+        } else {
+            UsageAgentLogo(agent: key)
+        }
     }
 
     private func runningApps() -> [String] {

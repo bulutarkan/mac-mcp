@@ -17,7 +17,7 @@ struct MessagesAccessSection: View {
         GroupBox("Reading Messages") {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Agents can read and search your Messages conversations when you ask them to. Reading only: nothing is sent, marked as read or deleted this way. macOS keeps Messages behind Full Disk Access, so Mac MCP reads it through Mac MCP Messages Reader, a small helper that opens only the Messages database. Give Full Disk Access to that helper, not to anything else.")
-                    .font(.caption)
+                    .font(SettingsType.note)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -41,7 +41,7 @@ struct MessagesAccessSection: View {
                         Text("2. Drag Mac MCP Messages Reader from the Finder window into the list, or click + and choose it.")
                         Text("3. Turn it on, then click Check Again.")
                     }
-                    .font(.caption)
+                    .font(SettingsType.note)
                     .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -59,7 +59,7 @@ struct MessagesAccessSection: View {
                     .disabled(readerPath == nil)
                 }
                 Text("To stop it, turn Mac MCP Messages Reader off in Full Disk Access. Excluding Messages in Settings › Privacy stops agents from reading it too.")
-                    .font(.caption)
+                    .font(SettingsType.note)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

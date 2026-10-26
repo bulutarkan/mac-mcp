@@ -102,12 +102,11 @@ enum SettingsSectionGroup: String, CaseIterable, Identifiable {
     }
 }
 
-private enum ConnectionsTab: String, CaseIterable, Identifiable {
+private enum ConnectionsTab: String, SettingsTab {
     case browser
     case mobile
     case clients
 
-    var id: String { rawValue }
     var title: String {
         switch self {
         case .browser: return "Browser"
@@ -179,6 +178,7 @@ struct SettingsView: View {
     @MacMCPState private var notice = ""
     /// This Mac's shortcuts, for the ones agents may run with commands off (#195).
     @MacMCPState private var macShortcutNames: [String]?
+    @MacMCPState private var shortcutFilter = ""
     @MacMCPState private var permissionDetailsShown = false
     /// What agents can do in each app, from the server's adapter support matrix (#262).
     @MacMCPState private var appSupport: [[String: Any]]?
@@ -191,7 +191,7 @@ struct SettingsView: View {
     @MacMCPState private var decisionsKey = ""
     @MacMCPState private var cloudflareToken = ""
     @MacMCPState private var settingsSearch = ""
-    @MacMCPState private var connectionsTab: ConnectionsTab = .browser
+    @AppStorage("settings.connections.tab") private var connectionsTab: ConnectionsTab = .browser
     @MacMCPState private var connectClient = "claude-code"
     @MacMCPState private var connectOutput = ""
     @MacMCPState private var manualSetupExpanded = false
@@ -215,6 +215,8 @@ struct SettingsView: View {
             sidebar
             Divider()
             detail
+                // Every group in every pane: the Usage tabs' title and box.
+                .groupBoxStyle(SettingsGroupStyle())
                 // A pane that replaces another rises in slightly; with Reduce Motion it only fades.
                 .animation(AppMotion.pane, value: selection)
         }
@@ -272,19 +274,28 @@ struct SettingsView: View {
                     subtitle: "Three steps from install to a first request that works. Everything stays on this Mac unless you turn on remote access."
                 )
 
-                GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(checklist.isComplete ? "All set" : "\(checklist.completed) of \(checklist.steps.count) done")
+                            .font(SettingsType.title)
+                        Spacer()
+                        if checklist.isComplete {
+                            Label("Ready for your first request", systemImage: "checkmark.seal.fill")
+                                .font(SettingsType.note).foregroundStyle(.green)
+                        }
+                    }
+                    UsageShareMeter(share: Double(checklist.completed) / Double(max(1, checklist.steps.count)),
+                                    color: .green, height: 6)
+                        .accessibilityLabel("\(checklist.completed) of \(checklist.steps.count) steps done")
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(Array(checklist.steps.enumerated()), id: \.element.id) { index, step in
                             if index > 0 { Divider() }
-                            onboardingRow(step)
+                            onboardingRow(step, number: index + 1)
                         }
                     }
-                    .padding(.vertical, 4)
-                } label: {
-                    Label(
-                        checklist.isComplete ? "All set" : "\(checklist.completed) of \(checklist.steps.count) done",
-                        systemImage: checklist.isComplete ? "checkmark.seal.fill" : "list.bullet"
-                    )
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .usageListBox()
+                    .padding(.top, 4)
                 }
 
                 GroupBox("Optional") {
@@ -294,6 +305,7 @@ struct SettingsView: View {
                             Divider()
                         }
                         onboardingOptionalRow(
+                            symbol: "safari",
                             title: "Browser companions",
                             detail: browserCompanionsSummary,
                             actionTitle: "Open Browser"
@@ -304,6 +316,7 @@ struct SettingsView: View {
                         }
                         Divider()
                         onboardingOptionalRow(
+                            symbol: "globe",
                             title: "Remote access for ChatGPT",
                             detail: (state.onboardingStatus?.publicEndpointMode ?? "none") == "none"
                                 ? "ChatGPT connects from the internet, so it needs a public HTTPS endpoint: Cloudflare Tunnel, ngrok or your own. It stays off until you set it up."
@@ -321,11 +334,7 @@ struct SettingsView: View {
                 HStack {
                     Button("Open the Tour") { state.showTour() }
                     Spacer()
-                }
-
-                if !checklist.isComplete {
-                    HStack {
-                        Spacer()
+                    if !checklist.isComplete {
                         Button(settings.onboardingDismissed ? "Show Get Started in the Menu" : "Hide Get Started") {
                             state.setOnboardingDismissed(!settings.onboardingDismissed)
                         }
@@ -337,18 +346,32 @@ struct SettingsView: View {
         .task { await state.refreshOnboarding() }
     }
 
-    private func onboardingRow(_ step: OnboardingStep) -> some View {
+    /// A step: its number until it is done (then a green check), what it is, and the button that does it.
+    private func onboardingRow(_ step: OnboardingStep, number: Int? = nil) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: step.done ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(step.done ? Color.green : Color.secondary)
-                .frame(width: 24)
-                .accessibilityLabel(step.done ? "Done" : "To do")
+            Group {
+                if step.done {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Color.green)
+                } else if let number {
+                    Text("\(number)")
+                        .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                        .frame(width: 22, height: 22)
+                        .overlay(Circle().strokeBorder(Color.secondary.opacity(0.6), lineWidth: 1.5))
+                } else {
+                    Image(systemName: "circle")
+                        .font(.system(size: 20, weight: .regular))
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+            .frame(width: 24)
+            .accessibilityLabel(step.done ? "Done" : "To do")
             VStack(alignment: .leading, spacing: 3) {
                 Text(step.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(SettingsType.title)
                 Text(step.detail)
-                    .font(.caption2)
+                    .font(SettingsType.note)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
@@ -398,14 +421,19 @@ struct SettingsView: View {
     }
 
     private func onboardingOptionalRow(
-        title: String, detail: String, actionTitle: String, action: @escaping () -> Void
+        symbol: String, title: String, detail: String, actionTitle: String, action: @escaping () -> Void
     ) -> some View {
         HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 24)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(SettingsType.title)
                 Text(detail)
-                    .font(.caption2)
+                    .font(SettingsType.note)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -424,34 +452,16 @@ struct SettingsView: View {
                     subtitle: "Status of this Mac MCP instance, remote access, and anything that needs your attention."
                 )
 
-                GroupBox("Overview") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 12) {
-                            overviewMetric(
-                                title: "Server",
-                                value: server.label,
-                                symbol: server.symbol,
-                                accent: server.tone.color
-                            )
-                            overviewMetric(
-                                title: "Version",
-                                value: state.version == "—" ? "Unknown" : "v\(state.version)",
-                                symbol: "shippingbox",
-                                accent: .secondary
-                            )
-                            overviewMetric(
-                                title: "Active Agents",
-                                value: String(state.activeAgents),
-                                symbol: "cpu",
-                                accent: state.activeAgents > 0 ? .accentColor : .secondary
-                            )
-                        }
-                        Text(server.explanation)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Overview").font(SettingsType.title)
+                    UsageFactsRow(facts: [
+                        UsageFact(value: server.label, title: "Server", note: server.explanation,
+                                  warning: server.tone == .error || server.tone == .warning),
+                        UsageFact(value: state.version == "—" ? "Unknown" : "v\(state.version)", title: "Version",
+                                  note: "The Mac MCP installed on this Mac."),
+                        UsageFact(value: String(state.activeAgents), title: "Active agents",
+                                  note: state.activeAgents == 0 ? "None working right now." : "Delegated agents working right now."),
+                    ])
                 }
 
                 GroupBox("Remote Access") {
@@ -463,9 +473,9 @@ struct SettingsView: View {
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(endpoint.label)
-                                .font(.subheadline.weight(.semibold))
+                                .font(SettingsType.title)
                             Text(endpoint.explanation)
-                                .font(.caption2)
+                                .font(SettingsType.note)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -487,9 +497,9 @@ struct SettingsView: View {
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Start Mac MCP when you log in")
-                                .font(.subheadline.weight(.semibold))
+                                .font(SettingsType.title)
                             Text("If the server was running when you restarted or logged out, it starts again with the menu bar app. A server you stopped stays stopped.")
-                                .font(.caption2)
+                                .font(SettingsType.note)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -508,12 +518,13 @@ struct SettingsView: View {
 
                 GroupBox("Issues") {
                     VStack(alignment: .leading, spacing: 10) {
-                        let issues = generalIssues
+                        // Remote access has its own row above; it is not said twice.
+                        let issues = generalIssues.filter { $0.id != "endpoint" }
                         if issues.isEmpty && state.connectionState == .connecting {
                             // #19: not checked yet is not "nothing to do".
                             HStack(spacing: 10) {
                                 ProgressView().controlSize(.small).frame(width: 22)
-                                Text("Checking…").font(.subheadline.weight(.semibold))
+                                Text("Checking…").font(SettingsType.title)
                                 Spacer()
                             }
                             .accessibilityElement(children: .combine)
@@ -526,9 +537,10 @@ struct SettingsView: View {
                                     .accessibilityHidden(true)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("All caught up")
-                                        .font(.subheadline.weight(.semibold))
-                                    Text("Nothing needs your attention.")
-                                        .font(.caption2)
+                                        .font(SettingsType.title)
+                                    Text(generalIssues.contains { $0.id == "endpoint" }
+                                         ? "Nothing else needs your attention." : "Nothing needs your attention.")
+                                        .font(SettingsType.note)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -548,7 +560,7 @@ struct SettingsView: View {
 
                 if let action = state.actionNotice {
                     Label(action.message, systemImage: action.symbolName)
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -576,9 +588,9 @@ struct SettingsView: View {
                                 .frame(width: 34)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Explain active tool work")
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(SettingsType.title)
                                 Text("Show a short, human-readable intent while an MCP tool is running.")
-                                    .font(.caption2)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -600,32 +612,30 @@ struct SettingsView: View {
 
                         Divider()
 
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Live activity")
-                                    .font(.subheadline.weight(.medium))
-                                Text(liveActivityDetail)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Live activity")
+                                .font(SettingsType.body.weight(.medium))
+                            HStack(spacing: 10) {
+                                liveActivityChoice("off", title: "Off", symbol: "nosign")
+                                liveActivityChoice("bubble", title: "Bubble", symbol: "bubble.left.and.text.bubble.right")
+                                liveActivityChoice("island", title: "Notch island", symbol: "macbook")
                             }
-                            Spacer()
-                            Picker("", selection: liveActivityStyleBinding) {
-                                Text("Off").tag("off")
-                                Text("Bubble").tag("bubble")
-                                Text("Notch island").tag("island")
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .fixedSize()
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel("Live activity")
+                            Text(liveActivityDetail)
+                                .font(SettingsType.note)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
+
+                        Divider()
 
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Agent cursor on the desktop")
-                                    .font(.subheadline.weight(.medium))
+                                    .font(SettingsType.body.weight(.medium))
                                 Text("Shows where an agent clicks or types in another app's window while it works in the background. It sits with that window, so whatever you have in front covers it, and it never appears in screenshots.")
-                                    .font(.caption2)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -635,12 +645,14 @@ struct SettingsView: View {
                                 .toggleStyle(.switch)
                         }
 
+                        Divider()
+
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Glow on the agent's browser tab")
-                                    .font(.subheadline.weight(.medium))
+                                    .font(SettingsType.body.weight(.medium))
                                 Text("When an agent works in a Safari or Chrome tab you are not looking at, that tab glows briefly in the tab bar each time it acts. Nothing shows on the tab you are on.")
-                                    .font(.caption2)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -650,12 +662,14 @@ struct SettingsView: View {
                                 .toggleStyle(.switch)
                         }
 
+                        Divider()
+
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Require Tool Descriptions")
-                                    .font(.subheadline.weight(.medium))
+                                    .font(SettingsType.body.weight(.medium))
                                 Text("Adds a short required description field to MCP tool schemas. Turn this off to remove the field entirely.")
-                                    .font(.caption2)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -670,7 +684,7 @@ struct SettingsView: View {
                                 "Reconnect MCP clients after changing this setting so they refresh their tool schemas.",
                                 systemImage: "arrow.triangle.2.circlepath"
                             )
-                            .font(.caption2)
+                            .font(SettingsType.note)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         }
@@ -687,9 +701,9 @@ struct SettingsView: View {
                                 .frame(width: 34)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Completion & attention alerts")
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(SettingsType.title)
                                 Text("Notify when standalone delegated agents or whole agent teams finish while you work elsewhere.")
-                                    .font(.caption2)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -706,21 +720,20 @@ struct SettingsView: View {
 
                         Divider()
 
-                        HStack {
-                            Text("macOS permission")
-                                .font(.caption.weight(.medium))
-                            Spacer()
-                            Text(state.agentNotificationAuthorizationState.displayName)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(
-                                    state.agentNotificationAuthorizationState == .denied
-                                        ? Color.orange
-                                        : Color.secondary
-                                )
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(state.agentNotificationAuthorizationState == .denied ? Color.orange
+                                      : state.agentNotificationAuthorizationState == .authorized ? Color.green
+                                      : Color.secondary.opacity(0.5))
+                                .frame(width: 7, height: 7)
+                            Text("macOS permission: \(state.agentNotificationAuthorizationState.displayName)")
+                                .font(SettingsType.note)
+                                .foregroundStyle(state.agentNotificationAuthorizationState == .denied ? Color.orange : Color.secondary)
                         }
+                        .accessibilityElement(children: .combine)
 
                         Text("Teams are coalesced into one terminal notification. Alerts contain only a sanitized agent/team label — never prompts, results, file paths, URLs, or secrets.")
-                            .font(.caption2)
+                            .font(SettingsType.note)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
@@ -729,7 +742,7 @@ struct SettingsView: View {
                                 "Notification permission is denied in macOS. Re-enable it in System Settings before turning this on.",
                                 systemImage: "bell.slash"
                             )
-                            .font(.caption2)
+                            .font(SettingsType.note)
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                         }
@@ -741,6 +754,32 @@ struct SettingsView: View {
             }
             .padding(22)
         }
+    }
+
+    /// One of the three ways live activity can show, as a card with its symbol; the chosen one is outlined.
+    private func liveActivityChoice(_ tag: String, title: String, symbol: String) -> some View {
+        let selected = liveActivityStyle == tag
+        return Button {
+            liveActivityStyleBinding.wrappedValue = tag
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .frame(height: 26)
+                Text(title).font(SettingsType.note.weight(selected ? .semibold : .regular))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(selected ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: selected ? 1.5 : 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var endpointDisplay: StatusDisplay {
@@ -830,9 +869,9 @@ struct SettingsView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(issue.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(SettingsType.title)
                 Text(issue.detail)
-                    .font(.caption2)
+                    .font(SettingsType.note)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -860,10 +899,10 @@ struct SettingsView: View {
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.caption2)
+                    .font(SettingsType.meta)
                     .foregroundStyle(.secondary)
                 Text(value)
-                    .font(.subheadline.weight(.semibold))
+                    .font(SettingsType.title)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -933,7 +972,7 @@ struct SettingsView: View {
             if filteredSections.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("No settings found for “\(trimmedSettingsSearch)”")
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Button("Clear Search") { settingsSearch = "" }
@@ -982,7 +1021,7 @@ struct SettingsView: View {
 
             if !notice.isEmpty {
                 Text(notice)
-                    .font(.caption2)
+                    .font(SettingsType.meta)
                     .foregroundStyle(notice.hasPrefix("Could not") ? Color.red : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
@@ -1029,7 +1068,7 @@ struct SettingsView: View {
                 Text("No settings found for “\(trimmedSettingsSearch)”")
                     .font(.headline)
                 Text("Try a shorter or different word, such as port, tunnel or notifications.")
-                    .font(.caption)
+                    .font(SettingsType.note)
                     .foregroundStyle(.secondary)
                 Button("Clear Search") { settingsSearch = "" }
             }
@@ -1089,9 +1128,7 @@ struct SettingsView: View {
                     case .general:
                         agentsStatusRows
                         defaultAgentCard
-                        concurrencyCard
-                        teamMessagesCard
-                        retentionCard
+                        agentLimitsGroup
                     case .providers:
                         agentsStatusRows
                         providersList
@@ -1121,7 +1158,7 @@ struct SettingsView: View {
     private var agentsStatusRows: some View {
         if !settings.settingsLoadIssue.isEmpty {
             Label(settings.settingsLoadIssue, systemImage: "exclamationmark.shield")
-                .font(.caption.weight(.medium))
+                .font(SettingsType.note.weight(.medium))
                 .foregroundStyle(settings.providerSettingsLocked ? Color.orange : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1135,26 +1172,39 @@ struct SettingsView: View {
     @ViewBuilder
     private var providersList: some View {
         Text("Choose which AI tools on this Mac can take work from Mac MCP. Each one has to be installed and signed in first.")
-            .font(.caption2)
+            .font(SettingsType.note)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-        providerRow(id: "opencode", title: "OpenCode", subtitle: "Uses the OpenCode command-line tool")
-        providerRow(id: "codex", title: "Codex", subtitle: "Uses the Codex command-line tool")
-        providerRow(id: "claude", title: "Claude Code", subtitle: "Uses Claude Code, with your Claude sign-in")
-        providerRow(id: "kimi", title: "Kimi Code", subtitle: "Uses Kimi Code, with your kimi login or its model providers")
-        providerRow(id: "grok", title: "Grok Build", subtitle: "Uses Grok Build, with your grok login or xAI key")
-        providerRow(id: "antigravity", title: "Antigravity", subtitle: "Uses Antigravity, with your Google sign-in")
-        providerRow(id: "pi", title: "pi", subtitle: "Uses the pi coding agent, with your pi login or API keys")
-        providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
-        providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
-        providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
-        providerRow(id: "copilot", title: "GitHub Copilot",
-                    subtitle: "Uses GitHub Copilot, with a GitHub token or your own key (model openrouter/…)")
+        VStack(spacing: 0) {
+            providerRow(id: "opencode", title: "OpenCode", subtitle: "Uses the OpenCode command-line tool")
+            Divider()
+            providerRow(id: "codex", title: "Codex", subtitle: "Uses the Codex command-line tool")
+            Divider()
+            providerRow(id: "claude", title: "Claude Code", subtitle: "Uses Claude Code, with your Claude sign-in")
+            Divider()
+            providerRow(id: "kimi", title: "Kimi Code", subtitle: "Uses Kimi Code, with your kimi login or its model providers")
+            Divider()
+            providerRow(id: "grok", title: "Grok Build", subtitle: "Uses Grok Build, with your grok login or xAI key")
+            Divider()
+            providerRow(id: "antigravity", title: "Antigravity", subtitle: "Uses Antigravity, with your Google sign-in")
+            Divider()
+            providerRow(id: "pi", title: "pi", subtitle: "Uses the pi coding agent, with your pi login or API keys")
+            Divider()
+            providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
+            Divider()
+            providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
+            Divider()
+            providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
+            Divider()
+            providerRow(id: "copilot", title: "GitHub Copilot",
+                        subtitle: "Uses GitHub Copilot, with a GitHub token or your own key (model openrouter/…)")
+        }
+        .usageListBox()
 
         Text("A tool that is off is hidden from AI apps and never started. Changes apply to new requests right away.")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(SettingsType.note)
+            .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 2)
     }
@@ -1388,7 +1438,7 @@ struct SettingsView: View {
                     case .tools:
                         if let issue = state.usageIssue {
                             Label(issue, systemImage: "exclamationmark.triangle")
-                                .font(.caption)
+                                .font(SettingsType.note)
                                 .foregroundStyle(.orange)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -1410,7 +1460,7 @@ struct SettingsView: View {
                                 HStack {
                                     ProgressView().controlSize(.small)
                                     Text("Loading Usage…")
-                                        .font(.caption)
+                                        .font(SettingsType.note)
                                         .foregroundStyle(.secondary)
                                     Spacer()
                                 }
@@ -1419,7 +1469,7 @@ struct SettingsView: View {
                         } else {
                             GroupBox {
                                 Text("Usage becomes available after the first measured MCP tool call.")
-                                    .font(.caption)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.vertical, 8)
@@ -1709,27 +1759,19 @@ struct SettingsView: View {
                     state.refreshSafariExtensionState()
                 }
 
-                GroupBox("Safari") {
-                    HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(.quaternary)
-                                .frame(width: 38, height: 38)
-                            Image(systemName: state.safariExtensionEnabled ? "safari.fill" : "safari")
-                                .foregroundStyle(state.safariExtensionEnabled ? Color.accentColor : Color.secondary)
-                        }
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(state.safariExtensionEnabled ? "Visual Companion · On" : "Safari Visual Companion")
-                                .font(.subheadline.weight(.semibold))
-                            Text(state.safariExtensionEnabled
-                                 ? "Shows when Mac MCP is actively using a Safari page."
-                                 : (state.safariExtensionRegistered
-                                    ? "Enable the bundled extension in Safari, then allow website access."
-                                    : "Unsigned build: Safari developer setup is required."))
-                                .font(.caption).foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer()
+                VStack(spacing: 0) {
+                    let chrome = state.chromeCompanion
+                    let ready = chrome.connected && !chrome.needsReload
+                    companionRow(
+                        bundleID: "com.apple.Safari", symbol: "safari", title: "Safari Visual Companion",
+                        status: state.safariExtensionEnabled ? "On" : state.safariExtensionStatus,
+                        statusColor: state.safariExtensionEnabled ? .green : .secondary,
+                        detail: state.safariExtensionEnabled
+                            ? "Shows when Mac MCP is actively using a Safari page."
+                            : (state.safariExtensionRegistered
+                               ? "Enable the bundled extension in Safari, then allow website access."
+                               : "Unsigned build: Safari developer setup is required.")
+                    ) {
                         if state.safariExtensionEnabled {
                             Button { state.refreshSafariExtensionState() } label: { Image(systemName: "arrow.clockwise") }
                                 .accessibilityLabel("Refresh Safari extension status")
@@ -1740,29 +1782,14 @@ struct SettingsView: View {
                             Button("Developer Setup…") { state.openSafariExtensionPreferences() }
                         }
                     }
-                    .padding(.top, 5)
-                }
-
-                GroupBox("Google Chrome") {
-                    let chrome = state.chromeCompanion
-                    let ready = chrome.connected && !chrome.needsReload
-                    HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(.quaternary)
-                                .frame(width: 38, height: 38)
-                            Image(systemName: ready ? "checkmark.circle.fill" : "globe")
-                                .foregroundStyle(ready ? Color.accentColor : Color.secondary)
-                        }
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(ready ? "Chrome Companion · Connected" + (chrome.version.map { " · \($0)" } ?? "")
-                                       : "Chrome Visual Companion")
-                                .font(.subheadline.weight(.semibold))
-                            Text(chromeDetail(chrome))
-                                .font(.caption).foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer()
+                    Divider().padding(.leading, 58)
+                    companionRow(
+                        bundleID: "com.google.Chrome", symbol: "globe", title: "Chrome Visual Companion",
+                        status: ready ? "Connected" + (chrome.version.map { " · \($0)" } ?? "")
+                            : (chrome.connected ? "Needs a reload" : "Not connected"),
+                        statusColor: ready ? .green : (chrome.connected ? UsageColors.warning : .secondary),
+                        detail: chromeDetail(chrome)
+                    ) {
                         if ready {
                             Button { Task { await state.refreshChromeCompanion() } } label: { Image(systemName: "arrow.clockwise") }
                                 .accessibilityLabel("Refresh Chrome companion status")
@@ -1773,14 +1800,8 @@ struct SettingsView: View {
                             Button("Chrome Setup…") { state.openChromeExtensionSetup() }
                         }
                     }
-                    .padding(.top, 5)
                 }
-
-                HStack {
-                    Text("Safari status").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Text(state.safariExtensionStatus).font(.caption.weight(.semibold))
-                }
+                .usageListBox()
 
                 Spacer(minLength: 0)
             }
@@ -1797,16 +1818,46 @@ struct SettingsView: View {
         }
     }
 
+    /// One browser companion: the browser's own icon, its state as a dot and a word, what that means, and the next step.
+    private func companionRow<Control: View>(
+        bundleID: String, symbol: String, title: String, status: String, statusColor: Color, detail: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: 12) {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
+            } else {
+                UsageSymbolTile(symbol: symbol)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(title).font(SettingsType.title)
+                    HStack(spacing: 5) {
+                        Circle().fill(statusColor).frame(width: 6, height: 6)
+                        Text(status).font(SettingsType.meta).foregroundStyle(.secondary)
+                    }
+                }
+                Text(detail).font(SettingsType.note).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            control()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .accessibilityElement(children: .contain)
+    }
+
     private func chromeDetail(_ chrome: ChromeCompanionStatus) -> String {
         if chrome.connected && chrome.needsReload {
-            return "Connected, but older than this Mac MCP: reload it once at chrome://extensions."
+            return "Older than this Mac MCP: reload it once at chrome://extensions."
         }
         if chrome.connected { return "Chrome tabs work in the background: page actions and capture without bringing Chrome forward." }
         if !chrome.checked {
             return state.serverRunning ? "Checking Chrome…" : "Start Mac MCP to see whether the Chrome companion is connected."
         }
         if !state.chromeInstalled { return "Google Chrome is not installed (Chrome Beta, Canary and Chromium work too). Safari works without it." }
-        return "Not connected. Chrome Setup loads the companion once; after that Chrome tabs work in the background."
+        return "Chrome Setup loads the companion once; after that Chrome tabs work in the background."
     }
 
     private var permissionsPane: some View {
@@ -1830,7 +1881,7 @@ struct SettingsView: View {
                                 + "Mac MCP is safely using \(profileDisplayName(semantics.activeProfile)).",
                                 systemImage: "exclamationmark.shield"
                             )
-                            .font(.caption.weight(.medium))
+                            .font(SettingsType.note.weight(.medium))
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                         }
@@ -1839,16 +1890,17 @@ struct SettingsView: View {
                                 "Invalid Server Approval configuration. High-risk calls fail closed until repaired.",
                                 systemImage: "exclamationmark.shield"
                             )
-                            .font(.caption.weight(.medium))
+                            .font(SettingsType.note.weight(.medium))
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                         }
 
                         // #246: the plain answer first; the policy terms live under Details.
                         GroupBox("What AI apps can do") {
-                            VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
                                 // The checked row is the answer; its sentence says what it allows.
                                 ForEach(semantics.profiles) { item in
+                                    if item.id != semantics.profiles.first?.id { Divider() }
                                     choiceRow(title: profileDisplayName(item.name),
                                               detail: SafetyDisplay.profileSummary(item.name) ?? item.approvalBehavior.summary,
                                               selected: item.active) {
@@ -1860,7 +1912,7 @@ struct SettingsView: View {
                                 if state.permissionProfileChanging {
                                     HStack(spacing: 6) {
                                         ProgressView().controlSize(.mini)
-                                        Text("Saving…").font(.caption).foregroundStyle(.secondary)
+                                        Text("Saving…").font(SettingsType.note).foregroundStyle(.secondary)
                                     }
                                     .accessibilityElement(children: .combine)
                                 }
@@ -1872,6 +1924,7 @@ struct SettingsView: View {
                             GroupBox("When Mac MCP asks you first") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     ForEach(serverApproval.availableProfiles) { item in
+                                        if item.id != serverApproval.availableProfiles.first?.id { Divider() }
                                         choiceRow(title: profileDisplayName(item.name),
                                                   detail: SafetyDisplay.approvalSummary(item.name) ?? item.summary,
                                                   selected: item.name == serverApproval.activeProfile) {
@@ -1880,7 +1933,7 @@ struct SettingsView: View {
                                         .disabled(state.serverApprovalProfileChanging)
                                     }
                                     Text("You answer on this Mac; someone connected from elsewhere can't answer for you. Your AI app may also ask you on its own, which is separate.")
-                                        .font(.caption2)
+                                        .font(SettingsType.note)
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
@@ -1901,19 +1954,19 @@ struct SettingsView: View {
                                         }
                                         Divider()
                                         Label("Allowed Capabilities", systemImage: "lock.shield")
-                                            .font(.caption.weight(.semibold))
+                                            .font(SettingsType.note.weight(.semibold))
                                         Text(profile.allowedCapabilities.map(capabilityDisplayName).joined(separator: " · "))
-                                            .font(.caption).foregroundStyle(.secondary)
+                                            .font(SettingsType.note).foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                         HStack {
-                                            Text("Destructive families").font(.caption).foregroundStyle(.secondary)
+                                            Text("Destructive families").font(SettingsType.note).foregroundStyle(.secondary)
                                             Spacer()
-                                            Text(destructiveFamiliesLabel(profile.destructiveFamilies)).font(.caption.weight(.medium))
+                                            Text(destructiveFamiliesLabel(profile.destructiveFamilies)).font(SettingsType.note.weight(.medium))
                                         }
                                         HStack {
-                                            Text("Agent access ceiling").font(.caption).foregroundStyle(.secondary)
+                                            Text("Agent access ceiling").font(SettingsType.note).foregroundStyle(.secondary)
                                             Spacer()
-                                            Text(capabilityDisplayName(profile.accessModeCeiling)).font(.caption.weight(.medium))
+                                            Text(capabilityDisplayName(profile.accessModeCeiling)).font(SettingsType.note.weight(.medium))
                                         }
                                     }
                                     .padding(.top, 5)
@@ -1922,16 +1975,16 @@ struct SettingsView: View {
                                 GroupBox("Approval Behavior") {
                                     VStack(alignment: .leading, spacing: 9) {
                                         HStack {
-                                            Text("Source").font(.caption).foregroundStyle(.secondary)
+                                            Text("Source").font(SettingsType.note).foregroundStyle(.secondary)
                                             Spacer()
                                             Text(approvalSourceDisplayName(profile.approvalBehavior.source))
-                                                .font(.caption.weight(.semibold))
+                                                .font(SettingsType.note.weight(.semibold))
                                         }
                                         Text(profile.approvalBehavior.summary)
-                                            .font(.caption).foregroundStyle(.secondary)
+                                            .font(SettingsType.note).foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                         Text("Capability allowed means the server permits it. Approval is separate; a confirmation prompt is not guaranteed.")
-                                            .font(.caption.weight(.medium)).foregroundStyle(.orange)
+                                            .font(SettingsType.note.weight(.medium)).foregroundStyle(.orange)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                     .padding(.top, 5)
@@ -1941,45 +1994,45 @@ struct SettingsView: View {
                                     GroupBox("Server Approval") {
                                         VStack(alignment: .leading, spacing: 10) {
                                             HStack {
-                                                Text("Risk profile").font(.caption).foregroundStyle(.secondary)
+                                                Text("Risk profile").font(SettingsType.note).foregroundStyle(.secondary)
                                                 Spacer()
                                                 Text(profileDisplayName(serverApproval.activeProfile))
-                                                    .font(.caption.weight(.semibold))
+                                                    .font(SettingsType.note.weight(.semibold))
                                             }
                                             HStack {
-                                                Text("Approval source").font(.caption).foregroundStyle(.secondary)
+                                                Text("Approval source").font(SettingsType.note).foregroundStyle(.secondary)
                                                 Spacer()
                                                 Text(approvalSourceDisplayName(serverApproval.source))
-                                                    .font(.caption.weight(.medium))
+                                                    .font(SettingsType.note.weight(.medium))
                                             }
                                             HStack {
-                                                Text("Headless behavior").font(.caption).foregroundStyle(.secondary)
+                                                Text("Headless behavior").font(SettingsType.note).foregroundStyle(.secondary)
                                                 Spacer()
                                                 Text(serverApproval.headlessBehavior.capitalized)
-                                                    .font(.caption.weight(.medium))
+                                                    .font(SettingsType.note.weight(.medium))
                                             }
                                             HStack {
-                                                Text("Timeout").font(.caption).foregroundStyle(.secondary)
+                                                Text("Timeout").font(SettingsType.note).foregroundStyle(.secondary)
                                                 Spacer()
                                                 Text("\(serverApproval.approvalTimeoutS)s · \(serverApproval.timeoutBehavior.capitalized)")
-                                                    .font(.caption.weight(.medium))
+                                                    .font(SettingsType.note.weight(.medium))
                                             }
                                             HStack {
-                                                Text("Remote sessions").font(.caption).foregroundStyle(.secondary)
+                                                Text("Remote sessions").font(SettingsType.note).foregroundStyle(.secondary)
                                                 Spacer()
                                                 Text("Approve on this Mac")
-                                                    .font(.caption.weight(.medium))
+                                                    .font(SettingsType.note.weight(.medium))
                                             }
                                             Text(serverApproval.summary ?? "Risk-based server approval status unavailable.")
-                                                .font(.caption).foregroundStyle(.secondary)
+                                                .font(SettingsType.note).foregroundStyle(.secondary)
                                                 .fixedSize(horizontal: false, vertical: true)
 
                                             Text(serverApproval.doublePromptGuidance)
-                                                .font(.caption2.weight(.medium))
+                                                .font(SettingsType.meta.weight(.medium))
                                                 .foregroundStyle(.orange)
                                                 .fixedSize(horizontal: false, vertical: true)
                                             Text("Remote callers cannot approve locally on their behalf. Allow Once is exact-action and single-use.")
-                                                .font(.caption2)
+                                                .font(SettingsType.note)
                                                 .foregroundStyle(.secondary)
                                                 .fixedSize(horizontal: false, vertical: true)
                                         }
@@ -1989,15 +2042,15 @@ struct SettingsView: View {
                             }
                             .padding(.top, 8)
                         }
-                        .font(.caption.weight(.semibold))
+                        .font(SettingsType.note.weight(.semibold))
                     } else {
                         Text("Unknown permission profile: \(semantics.activeProfile). Calls fail closed until a known profile is configured.")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(SettingsType.note).foregroundStyle(.orange)
                     }
                 } else {
                     SavedLoginsCard(state: state)
                     Text(state.serverRunning ? "Permission semantics unavailable." : "Start the server to inspect permission semantics.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(SettingsType.note).foregroundStyle(.secondary)
                 }
 
                 Spacer(minLength: 0)
@@ -2006,25 +2059,47 @@ struct SettingsView: View {
         }
     }
 
+    /// One choice of several, as System Settings lists them: its symbol, what it means, and a check on the chosen one.
     private func choiceRow(title: String, detail: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: Self.choiceSymbol(title))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(selected ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05)))
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.caption.weight(.semibold))
+                    Text(title).font(SettingsType.title)
                     Text(detail)
-                        .font(.caption2)
+                        .font(SettingsType.note)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 17))
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary.opacity(0.5))
+                    .accessibilityHidden(true)
             }
-            .padding(.vertical, 3)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// A symbol for each permission profile and approval level, by its display name.
+    private static func choiceSymbol(_ title: String) -> String {
+        switch title.lowercased() {
+        case "trusted": return "checkmark.shield"
+        case "standard": return "shield.lefthalf.filled"
+        case "read only": return "eye"
+        case "off": return "nosign"
+        case "critical": return "exclamationmark.octagon"
+        case "high risk": return "exclamationmark.triangle"
+        default: return "shield"
+        }
     }
 
     private var connectionsPane: some View {
@@ -2035,14 +2110,7 @@ struct SettingsView: View {
                     subtitle: "Browser companions, mobile access, and the public endpoint used to reach this Mac."
                 )
 
-                Picker("", selection: $connectionsTab) {
-                    ForEach(ConnectionsTab.allCases) { item in
-                        Label(item.title, systemImage: item.symbol).tag(item)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
+                SettingsTabPicker(selection: $connectionsTab, label: "Connections section")
 
                 publicEndpointCard
             }
@@ -2122,7 +2190,7 @@ struct SettingsView: View {
                         .foregroundStyle(state.cloudflareCredentialConfigured ? Color.secondary : Color.orange)
                         Spacer()
                     }
-                    .font(.caption)
+                    .font(SettingsType.note)
 
                     DisclosureGroup("Tunnel details") {
                         VStack(alignment: .leading, spacing: 8) {
@@ -2135,12 +2203,12 @@ struct SettingsView: View {
                                     .onSubmit { persistEndpointSettings() }
                             }
                             Text("The credential stays in an owner-only file and is never written into settings.json.")
-                                .font(.caption2)
+                                .font(SettingsType.meta)
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.top, 6)
                     }
-                    .font(.caption)
+                    .font(SettingsType.note)
                 }
 
                 saveFeedbackRow(.endpoint)
@@ -2149,121 +2217,171 @@ struct SettingsView: View {
         }
     }
 
+    /// One Audio row: its name on the left, the control on the right.
+    private func voiceRow<Name: View, Control: View>(
+        @ViewBuilder name: () -> Name, @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: 16) {
+            name().font(SettingsType.body)
+            Spacer(minLength: 12)
+            control()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+
     private var voicePane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 paneHeader("Voice", subtitle: "Configure the experimental Ask User Voice tool and audio devices.")
                 saveFeedbackRow(.voice)
 
-                Toggle(isOn: $settings.voiceEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Ask User Voice").font(.subheadline.weight(.semibold))
-                        Text("Off by default. Agents fall back to a text question (ask_user) when this is off or you decline a recording.")
-                            .font(.caption2).foregroundStyle(.secondary)
+                GroupBox("Voice Questions") {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Toggle(isOn: $settings.voiceEnabled) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Ask User Voice").font(SettingsType.body)
+                                Text("Off by default. Agents fall back to a text question (ask_user) when this is off or you decline a recording.")
+                                    .font(SettingsType.note).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .toggleStyle(.switch)
+                        .padding(.bottom, 10)
+                        .onChange(of: settings.voiceEnabled) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+
+                        Divider()
+
+                        Toggle(isOn: $settings.voiceAskEveryTime) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Ask before every recording").font(SettingsType.body)
+                                Text(settings.voiceAskEveryTime
+                                     ? "A dialog asks you to Record, Always Allow or decline before anything is recorded or sent."
+                                     : "Recordings are sent without asking because you chose Always Allow. Turn this on to be asked again.")
+                                    .font(SettingsType.note).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .toggleStyle(.switch)
+                        .padding(.vertical, 10)
+                        .disabled(!settings.voiceEnabled)
+                        .onChange(of: settings.voiceAskEveryTime) { _ in
+                            // Values re-read from disk are not edits and are not written back.
+                            if settings.voiceConsentEdited { persistSettings(scope: .voice, success: "Saved · applies live") }
+                        }
+
+                        Divider()
+
+                        Label {
+                            Text("Each voice question sends its text to Microsoft's online text-to-speech, and your recorded answer to Groq for transcription; Groq's own retention applies. The recording is deleted from this Mac afterwards and the transcript is not kept in Mac MCP's activity history.")
+                                .fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "network")
+                        }
+                        .font(SettingsType.note)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 10)
                     }
                 }
-                .onChange(of: settings.voiceEnabled) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
 
-                Label {
-                    Text("Each voice question sends its text to Microsoft's online text-to-speech, and your recorded answer to Groq for transcription; Groq's own retention applies. The recording is deleted from this Mac afterwards and the transcript is not kept in Mac MCP's activity history.")
-                        .fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: "network")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                Toggle(isOn: $settings.voiceAskEveryTime) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Ask before every recording").font(.subheadline.weight(.medium))
-                        Text(settings.voiceAskEveryTime
-                             ? "A dialog asks you to Record, Always Allow or decline before anything is recorded or sent."
-                             : "Recordings are sent without asking because you chose Always Allow. Turn this on to be asked again.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                GroupBox("Transcription") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 6) {
+                            Circle().fill(settings.hasGroqKey ? Color.green : UsageColors.warning).frame(width: 7, height: 7)
+                            Text(settings.hasGroqKey ? "Groq key configured" : "Groq key required")
+                                .font(SettingsType.body)
+                            Spacer()
+                            Text("Stored in your Keychain").font(SettingsType.meta).foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            SecureField(settings.hasGroqKey ? "Replace Groq API key" : "Groq API key", text: $groqKey)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Groq API key")
+                            Button("Save") { saveGroqKey() }
+                                .disabled(groqKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            if settings.hasGroqKey {
+                                Button { removeGroqKey() } label: { Image(systemName: "trash") }
+                                    .accessibilityLabel("Remove Groq API key")
+                                    .help("Remove key")
+                            }
+                        }
                     }
                 }
-                .disabled(!settings.voiceEnabled)
-                .onChange(of: settings.voiceAskEveryTime) { _ in
-                    // Values re-read from disk are not edits and are not written back.
-                    if settings.voiceConsentEdited { persistSettings(scope: .voice, success: "Saved · applies live") }
-                }
 
-                Divider()
-
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Label(
-                            settings.hasGroqKey ? "Groq key configured" : "Groq key required",
-                            systemImage: settings.hasGroqKey ? "checkmark.shield.fill" : "key"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(settings.hasGroqKey ? Color.secondary : Color.orange)
+                        Text("Audio").font(SettingsType.title)
                         Spacer()
                         Button { audio.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.borderless)
                             .accessibilityLabel("Refresh audio devices")
                             .help("Refresh audio devices")
                     }
-                    HStack {
-                        SecureField(settings.hasGroqKey ? "Replace Groq API key" : "Groq API key", text: $groqKey)
-                            .accessibilityLabel("Groq API key")
-                        Button("Save") { saveGroqKey() }
-                            .disabled(groqKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if settings.hasGroqKey {
-                            Button { removeGroqKey() } label: { Image(systemName: "trash") }
-                                .accessibilityLabel("Remove Groq API key")
-                                .help("Remove key")
-                        }
-                    }
-                }
-
-                Divider()
-
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
-                    GridRow {
+                    VStack(spacing: 0) {
                         // #21: the picker carries the name VoiceOver reads; the visible label is not read twice.
-                        Text("Input").foregroundStyle(.secondary).accessibilityHidden(true)
-                        Picker("Input device", selection: $settings.inputDevice) {
-                            Text("Auto").tag("auto")
-                            Text("Built-in Mic").tag("built-in")
-                            ForEach(audio.inputs) { device in Text(device.name).tag(device.settingValue) }
+                        voiceRow {
+                            Text("Input").foregroundStyle(.secondary).accessibilityHidden(true)
+                        } control: {
+                            Picker("Input device", selection: $settings.inputDevice) {
+                                Text("Auto").tag("auto")
+                                Text("Built-in Mic").tag("built-in")
+                                ForEach(audio.inputs) { device in Text(device.name).tag(device.settingValue) }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 260)
                         }
-                        .labelsHidden()
-                    }
-                    GridRow {
-                        Text("Output").foregroundStyle(.secondary).accessibilityHidden(true)
-                        Picker("Output device", selection: $settings.outputDevice) {
-                            Text("System").tag("system")
-                            Text("Built-in Speakers").tag("built-in")
-                            ForEach(audio.outputs) { device in Text(device.name).tag(device.settingValue) }
+                        Divider().padding(.leading, 14)
+                        voiceRow {
+                            Text("Output").foregroundStyle(.secondary).accessibilityHidden(true)
+                        } control: {
+                            Picker("Output device", selection: $settings.outputDevice) {
+                                Text("System").tag("system")
+                                Text("Built-in Speakers").tag("built-in")
+                                ForEach(audio.outputs) { device in Text(device.name).tag(device.settingValue) }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 260)
                         }
-                        .labelsHidden()
-                    }
-                    GridRow {
-                        Text("Language").foregroundStyle(.secondary).accessibilityHidden(true)
-                        HStack {
+                        Divider().padding(.leading, 14)
+                        voiceRow {
+                            Text("Language").foregroundStyle(.secondary).accessibilityHidden(true)
+                        } control: {
                             Picker("Language", selection: $settings.language) {
                                 Text("Auto").tag("auto")
                                 Text("Turkish").tag("tr")
                                 Text("English").tag("en")
                             }
                             .labelsHidden()
-                            Stepper("Timeout: \(settings.timeoutSeconds)s", value: $settings.timeoutSeconds, in: 5...180, step: 5)
-                                .frame(maxWidth: 170)
+                            .frame(maxWidth: 160)
+                        }
+                        Divider().padding(.leading, 14)
+                        voiceRow {
+                            Text("Answer time").foregroundStyle(.secondary).accessibilityHidden(true)
+                        } control: {
+                            Stepper("\(settings.timeoutSeconds) s", value: $settings.timeoutSeconds, in: 5...180, step: 5)
+                                .monospacedDigit()
+                                .fixedSize()
+                                .accessibilityLabel("Answer time in seconds")
+                        }
+                        Divider().padding(.leading, 14)
+                        voiceRow {
+                            Text("Voice").foregroundStyle(.secondary).accessibilityHidden(true)
+                        } control: {
+                            HStack {
+                                TextField("tr-TR-AhmetNeural", text: $settings.voiceName)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: 220)
+                                    .accessibilityLabel("Voice name")
+                                Text("Rate").foregroundStyle(.secondary).accessibilityHidden(true)
+                                TextField("-5%", text: $settings.ttsRate).frame(width: 58)
+                                    .textFieldStyle(.roundedBorder)
+                                    .accessibilityLabel("Speech rate")
+                            }
                         }
                     }
-                    GridRow {
-                        Text("Voice").foregroundStyle(.secondary).accessibilityHidden(true)
-                        HStack {
-                            TextField("tr-TR-AhmetNeural", text: $settings.voiceName)
-                                .accessibilityLabel("Voice name")
-                            Text("Rate").foregroundStyle(.secondary).accessibilityHidden(true)
-                            TextField("-5%", text: $settings.ttsRate).frame(width: 58)
-                                .accessibilityLabel("Speech rate")
-                        }
-                    }
+                    .usageListBox()
                 }
-                .font(.caption)
                 .onChange(of: settings.inputDevice) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
                 .onChange(of: settings.outputDevice) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
                 .onChange(of: settings.language) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
@@ -2323,7 +2441,7 @@ struct SettingsView: View {
 
                         if connectOutput.isEmpty {
                             Text(connectLoading ? "Generating…" : "Choose a client to see its setup.")
-                                .font(.caption)
+                                .font(SettingsType.note)
                                 .foregroundStyle(.secondary)
                         } else {
                             Text(connectOutput)
@@ -2345,8 +2463,8 @@ struct SettingsView: View {
                     if expanded && connectOutput.isEmpty { Task { await generateConnectConfig() } }
                 }
 
-                Text("This connects an AI app to Mac MCP. Delegated agents that Mac MCP starts (Codex, OpenCode, Claude Code) are configured in Subagents.")
-                    .font(.caption2)
+                Text("This connects an AI app to Mac MCP. Delegated agents that Mac MCP starts (Codex, OpenCode, Claude Code) are configured in Agents.")
+                    .font(SettingsType.meta)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -2384,7 +2502,7 @@ struct SettingsView: View {
                                 "Choose a public endpoint above before pairing a phone.",
                                 systemImage: "exclamationmark.triangle"
                             )
-                            .font(.caption)
+                            .font(SettingsType.note)
                             .foregroundStyle(.orange)
                         } else {
                             HStack {
@@ -2424,9 +2542,9 @@ struct SettingsView: View {
 
                                     VStack(alignment: .leading, spacing: 9) {
                                         Text("Scan with Camera")
-                                            .font(.subheadline.weight(.semibold))
+                                            .font(SettingsType.title)
                                         Text("Or pair from the Home Screen app with this one-time code:")
-                                            .font(.caption)
+                                            .font(SettingsType.note)
                                             .foregroundStyle(.secondary)
 
                                         if let code = state.mobilePairingCode {
@@ -2438,16 +2556,16 @@ struct SettingsView: View {
                                         }
 
                                         Text("The QR secret stays in the URL fragment; the manual code is short-lived and single-use.")
-                                            .font(.caption)
+                                            .font(SettingsType.note)
                                             .foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                         if let expiresAt = state.mobilePairingExpiresAt {
                                             Text("Expires " + Date(timeIntervalSince1970: expiresAt).formatted(date: .omitted, time: .shortened))
-                                                .font(.caption2)
+                                                .font(SettingsType.meta)
                                                 .foregroundStyle(.secondary)
                                         }
                                         Text("After pairing, the device receives its own read-only session. Your MCP API key and local dashboard token are never sent to the phone.")
-                                            .font(.caption2)
+                                            .font(SettingsType.meta)
                                             .foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
@@ -2467,17 +2585,17 @@ struct SettingsView: View {
                                     ProgressView().controlSize(.small)
                                     Text("Loading connected devices…")
                                 }
-                                .font(.caption)
+                                .font(SettingsType.note)
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 6)
                             case .error, .unavailable:
                                 Text("Connected devices could not be loaded. Use Retry above.")
-                                    .font(.caption)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.orange)
                                     .padding(.vertical, 6)
                             default:
                                 Text("No paired mobile devices.")
-                                    .font(.caption)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .padding(.vertical, 6)
                             }
@@ -2488,14 +2606,14 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(device.deviceName)
-                                            .font(.subheadline.weight(.medium))
+                                            .font(SettingsType.body.weight(.medium))
                                         Text("Last seen " + Date(timeIntervalSince1970: device.lastSeenAt).formatted(date: .abbreviated, time: .shortened))
-                                            .font(.caption2)
+                                            .font(SettingsType.meta)
                                             .foregroundStyle(.secondary)
                                     }
                                     Spacer()
                                     Text("Read-only")
-                                        .font(.caption2.weight(.semibold))
+                                        .font(SettingsType.meta.weight(.semibold))
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(.quaternary, in: Capsule())
@@ -2518,7 +2636,7 @@ struct SettingsView: View {
                 }
 
                 Text("The public /mobile page can be reached through the selected connector, but agent, session, and activity APIs require a paired device session.")
-                    .font(.caption2)
+                    .font(SettingsType.meta)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -2550,7 +2668,7 @@ struct SettingsView: View {
                                 }
                             Spacer()
                             Text("Restart required")
-                                .font(.caption2.weight(.medium))
+                                .font(SettingsType.meta.weight(.medium))
                                 .foregroundStyle(.secondary)
                         }
 
@@ -2579,9 +2697,9 @@ struct SettingsView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Steering session visibility")
-                                .font(.subheadline.weight(.semibold))
+                                .font(SettingsType.title)
                             Text("How long idle and ended sessions stay visible as neutral history in the control surface.")
-                                .font(.caption2)
+                                .font(SettingsType.meta)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -2603,7 +2721,7 @@ struct SettingsView: View {
                     "Changes here affect runtime behavior; public endpoint and mobile/browser connectivity now live under Connections.",
                     systemImage: "wrench.and.screwdriver"
                 )
-                .font(.caption)
+                .font(SettingsType.note)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -2619,9 +2737,9 @@ struct SettingsView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("OpenAI Decisions for ambiguous targets")
-                            .font(.subheadline.weight(.semibold))
+                            .font(SettingsType.title)
                         Text("Off by default. When off, or without a verified key, browser and Mac actions run exactly as before.")
-                            .font(.caption2)
+                            .font(SettingsType.meta)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -2637,7 +2755,7 @@ struct SettingsView: View {
 
                 HStack {
                     Label(decisionKeyStatusText, systemImage: decisionKeyStatusSymbol)
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .foregroundStyle(decisionKeyStatusColor)
                     Spacer()
                     if state.decisionVerifying {
@@ -2660,7 +2778,7 @@ struct SettingsView: View {
                 }
 
                 Text("Only used when the deterministic resolver finds several equally likely targets. The key is stored in Keychain, never in settings.json.")
-                    .font(.caption2)
+                    .font(SettingsType.meta)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -2765,10 +2883,10 @@ struct SettingsView: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(updateSummaryTitle)
-                            .font(.subheadline.weight(.semibold))
+                            .font(SettingsType.title)
                             .lineLimit(2)
                         Text("Installed \(currentUpdateVersion)")
-                            .font(.caption2)
+                            .font(SettingsType.meta)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -2794,25 +2912,28 @@ struct SettingsView: View {
                     }
                 }
 
-                Toggle(isOn: Binding(
-                    get: { settings.updateAlertsEnabled },
-                    set: { state.setUpdateAlertsEnabled($0) }
-                )) {
+                Divider()
+                HStack(spacing: 12) {
                     Text("Let me know when an update is ready")
-                        .font(.caption)
+                        .font(SettingsType.body)
+                    Spacer()
+                    Toggle("Let me know when an update is ready", isOn: Binding(
+                        get: { settings.updateAlertsEnabled },
+                        set: { state.setUpdateAlertsEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
                 }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
 
                 DisclosureGroup(isExpanded: $showUpdateDetails) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .top, spacing: 18) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Current")
-                                    .font(.caption2)
+                                    .font(SettingsType.meta)
                                     .foregroundStyle(.secondary)
                                 Text(currentUpdateVersion)
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(SettingsType.title)
                                 Text(currentUpdateCommit)
                                     .font(.system(.caption2, design: .monospaced))
                                     .foregroundStyle(.secondary)
@@ -2820,18 +2941,18 @@ struct SettingsView: View {
                             Divider().frame(height: 48)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Available")
-                                    .font(.caption2)
+                                    .font(SettingsType.meta)
                                     .foregroundStyle(.secondary)
                                 Text(availableUpdateText)
-                                    .font(.subheadline.weight(.medium))
+                                    .font(SettingsType.body.weight(.medium))
                                     .lineLimit(2)
                                 if state.updateCheckLoading {
                                     Text("Checking verified release channel…")
-                                        .font(.caption2)
+                                        .font(SettingsType.meta)
                                         .foregroundStyle(.secondary)
                                 } else if state.updateCheckInfo?.releaseVerified == true {
                                     Text("Verified release")
-                                        .font(.caption2)
+                                        .font(SettingsType.meta)
                                         .foregroundStyle(.secondary)
                                 }
                             }
@@ -2845,11 +2966,11 @@ struct SettingsView: View {
                                     Image(systemName: updateStatusSymbol(progress.statusKind))
                                         .foregroundStyle(updateStatusColor(progress.statusKind))
                                     Text(progress.statusTitle)
-                                        .font(.subheadline.weight(.semibold))
+                                        .font(SettingsType.title)
                                     Spacer()
                                     if state.updateTransactionActive {
                                         Text("Running")
-                                            .font(.caption2.weight(.semibold))
+                                            .font(SettingsType.meta.weight(.semibold))
                                             .foregroundStyle(.secondary)
                                             .padding(.horizontal, 7)
                                             .padding(.vertical, 3)
@@ -2857,7 +2978,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 Text(progress.statusDetail)
-                                    .font(.caption)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
 
@@ -2868,10 +2989,10 @@ struct SettingsView: View {
                                                 updateStepIcon(step.state)
                                                     .frame(width: 15)
                                                 Text(step.title)
-                                                    .font(.caption)
+                                                    .font(SettingsType.note)
                                                 Spacer()
                                                 Text(step.detail)
-                                                    .font(.caption2)
+                                                    .font(SettingsType.meta)
                                                     .foregroundStyle(.secondary)
                                             }
                                         }
@@ -2884,14 +3005,14 @@ struct SettingsView: View {
 
                         if state.updateTransactionActive {
                             Text("Updater transaction is active")
-                                .font(.caption2)
+                                .font(SettingsType.meta)
                                 .foregroundStyle(.secondary)
                         }
                     }
                     .padding(.top, 8)
                 } label: {
                     Text("Details")
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -2979,6 +3100,28 @@ struct SettingsView: View {
     @ViewBuilder
     private func settingsDataStateRow(_ dataState: SettingsDataState, retry: (() -> Void)? = nil) -> some View {
         let presentation = settingsDataPresentation(dataState)
+        if dataState.phase == .fresh || dataState.phase == .loading {
+            // Fresh is the normal case: a quiet line, not a banner.
+            HStack(spacing: 6) {
+                if dataState.phase == .loading {
+                    ProgressView().controlSize(.mini)
+                    Text("Loading…")
+                } else {
+                    Circle().fill(Color.green).frame(width: 6, height: 6)
+                    Text(dataState.lastUpdatedAt.map { "Up to date, " + $0.formatted(date: .omitted, time: .shortened) } ?? "Up to date")
+                }
+            }
+            .font(SettingsType.meta)
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+        } else {
+            settingsDataProblemRow(dataState, presentation: presentation, retry: retry)
+        }
+    }
+
+    private func settingsDataProblemRow(_ dataState: SettingsDataState,
+                                        presentation: (title: String, detail: String?, symbol: String, color: Color),
+                                        retry: (() -> Void)?) -> some View {
         HStack(alignment: .top, spacing: 8) {
             if dataState.phase == .loading {
                 ProgressView().controlSize(.small)
@@ -2988,11 +3131,11 @@ struct SettingsView: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(presentation.title)
-                    .font(.caption.weight(.semibold))
+                    .font(SettingsType.note.weight(.semibold))
                     .foregroundStyle(presentation.color)
                 if let detail = presentation.detail {
                     Text(detail)
-                        .font(.caption2)
+                        .font(SettingsType.meta)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -3003,9 +3146,9 @@ struct SettingsView: View {
                     .controlSize(.small)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(presentation.color.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(presentation.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func settingsDataPresentation(_ dataState: SettingsDataState) -> (title: String, detail: String?, symbol: String, color: Color) {
@@ -3035,7 +3178,7 @@ struct SettingsView: View {
             Text(message).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .font(.caption2)
+        .font(SettingsType.meta)
         .foregroundStyle(.red)
     }
 
@@ -3046,7 +3189,7 @@ struct SettingsView: View {
                 feedback.message,
                 systemImage: feedback.isError ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
             )
-            .font(.caption2.weight(.medium))
+            .font(SettingsType.meta.weight(.medium))
             .foregroundStyle(feedback.isError ? Color.red : Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -3098,7 +3241,7 @@ struct SettingsView: View {
             Text(title)
                 .font(.headline.weight(.semibold))
             Text(subtitle)
-                .font(.caption)
+                .font(SettingsType.note)
                 .foregroundStyle(.secondary)
         }
     }
@@ -3107,7 +3250,7 @@ struct SettingsView: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.title2.weight(.semibold))
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                Text(subtitle).font(SettingsType.note).foregroundStyle(.secondary)
             }
             Spacer()
             if refresh {
@@ -3137,14 +3280,14 @@ struct SettingsView: View {
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Default Agent")
-                            .font(.subheadline.weight(.semibold))
+                            .font(SettingsType.title)
                         Text("Used only when a delegated request omits provider, model, or thinking.")
-                            .font(.caption2)
+                            .font(SettingsType.meta)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Label(status.label, systemImage: status.symbol)
-                        .font(.caption2.weight(.semibold))
+                        .font(SettingsType.meta.weight(.semibold))
                         .foregroundStyle(status.color)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -3196,14 +3339,13 @@ struct SettingsView: View {
                 }
 
                 Text(status.detail)
-                    .font(.caption2)
+                    .font(SettingsType.meta)
                     .foregroundStyle(status.color == .green ? Color.secondary : status.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 4)
         } label: {
             Label("Delegation Default", systemImage: "slider.horizontal.3")
-                .font(.caption.weight(.semibold))
         }
         .disabled(settings.providerSettingsLocked)
     }
@@ -3214,7 +3356,7 @@ struct SettingsView: View {
     ) -> some View {
         HStack(spacing: 12) {
             Text(title)
-                .font(.caption)
+                .font(SettingsType.note)
                 .foregroundStyle(.secondary)
                 .frame(width: 72, alignment: .leading)
             Spacer()
@@ -3364,45 +3506,51 @@ struct SettingsView: View {
         }
     }
 
-    private var concurrencyCard: some View {
-        GroupBox {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agents at Once")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Most delegated agents that run together; more wait in line. Fewer is gentler on memory. New agents also wait while macOS reports memory pressure.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+    /// How many agents run, whether a team can talk, and how long finished agents stay: rows in one box, like Usage.
+    private var agentLimitsGroup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Running Agents").font(SettingsType.title)
+            VStack(spacing: 0) {
+                SettingsRow(
+                    title: "Agents at Once",
+                    note: "Most delegated agents that run together; more wait in line. Fewer is gentler on memory. New agents also wait while macOS reports memory pressure."
+                ) {
+                    Stepper(value: maxActiveBinding, in: 1...16) {
+                        Text("\(settings.maxActiveAgents)")
+                            .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                            .frame(minWidth: 22, alignment: .trailing)
+                    }
+                    .fixedSize()
+                    .accessibilityLabel("Agents at once")
+                    .accessibilityValue("\(settings.maxActiveAgents)")
                 }
-                Spacer(minLength: 12)
-                Stepper(value: maxActiveBinding, in: 1...16) {
-                    Text("\(settings.maxActiveAgents)")
-                        .font(.body.monospacedDigit().weight(.semibold))
-                        .frame(minWidth: 22, alignment: .trailing)
+                Divider().padding(.leading, 14)
+                SettingsRow(
+                    title: "Messages Between Agents",
+                    note: "Agents in a team, and the app that started the team, can message each other while they work. A message reaches an agent once, after its next tool call, and never interrupts it."
+                ) {
+                    Toggle("Messages Between Agents", isOn: teamMessagesBinding)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
                 }
-                .fixedSize()
-                .accessibilityLabel("Agents at once")
-                .accessibilityValue("\(settings.maxActiveAgents)")
+                Divider().padding(.leading, 14)
+                SettingsRow(
+                    title: "Agent History",
+                    note: "Prompts, provider output, results and provider state of finished agents are deleted from this Mac after this time. Running agents, agents in a running team and agents with an open worktree are kept. Each provider keeps its own copy under its own policy."
+                ) {
+                    Picker("Keep for", selection: retentionBinding) {
+                        Text("7 days").tag(7)
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                        Text("1 year").tag(365)
+                        Text("Never delete").tag(0)
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                    .accessibilityLabel("Keep finished agents for")
+                }
             }
-            .padding(4)
-        }
-    }
-
-    private var teamMessagesCard: some View {
-        GroupBox {
-            Toggle(isOn: teamMessagesBinding) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Messages Between Agents")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Agents in a team, and the app that started the team, can message each other while they work. A message reaches an agent once, after its next tool call, and never interrupts it.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .toggleStyle(.switch)
-            .padding(4)
+            .usageListBox()
         }
     }
 
@@ -3426,33 +3574,6 @@ struct SettingsView: View {
                 }
             }
         )
-    }
-
-    private var retentionCard: some View {
-        GroupBox {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agent History")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Prompts, provider output, results and provider state of finished agents are deleted from this Mac after this time. Running agents, agents in a running team and agents with an open worktree are kept. Each provider keeps its own copy under its own policy.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 12)
-                Picker("Keep for", selection: retentionBinding) {
-                    Text("7 days").tag(7)
-                    Text("30 days").tag(30)
-                    Text("90 days").tag(90)
-                    Text("1 year").tag(365)
-                    Text("Never delete").tag(0)
-                }
-                .labelsHidden()
-                .frame(width: 140)
-                .accessibilityLabel("Keep finished agents for")
-            }
-            .padding(4)
-        }
     }
 
     private var retentionBinding: Binding<Int> {
@@ -3541,49 +3662,39 @@ struct SettingsView: View {
             return detected ? .green : .secondary
         }()
 
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 10) {
-                Image(systemName: detected ? "checkmark.circle.fill" : "minus.circle")
-                    .foregroundStyle(detectionColor)
-                    .font(.system(size: 16, weight: .medium))
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 7) {
-                        Text(title).font(.subheadline.weight(.semibold))
-                        Text(detectionLabel)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(detectionColor)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
+        let versionLine = [version, path].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: "  ")
+        return HStack(alignment: .center, spacing: 12) {
+            UsageAgentLogo(agent: id, size: 30)
+                .opacity(detected ? 1 : 0.5)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(title).font(SettingsType.title)
+                    HStack(spacing: 4) {
+                        Circle().fill(detectionColor).frame(width: 6, height: 6)
+                        Text(detectionLabel).font(SettingsType.meta).foregroundStyle(detected ? .secondary : detectionColor)
                     }
-                    Text(subtitle).font(.caption2).foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
                 }
-                Spacer()
-                Toggle(title, isOn: providerBinding(id))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .disabled(settings.providerSettingsLocked)
-                    .help(
-                        settings.providerSettingsLocked
-                            ? "Repair settings.json before changing delegated providers."
-                            : (settings.providerEnabled(id) ? "Disable \(title)" : "Enable \(title)")
-                    )
-            }
-
-            if detected {
-                HStack(spacing: 6) {
-                    if let version, !version.isEmpty {
-                        Text(version).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    if let path, !path.isEmpty {
-                        if version != nil { Text("·").font(.caption2).foregroundStyle(.tertiary) }
-                        Text(path).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1)
-                    }
+                Text(subtitle).font(SettingsType.note).foregroundStyle(.secondary)
+                if detected, !versionLine.isEmpty {
+                    Text(versionLine).font(SettingsType.meta.monospaced()).foregroundStyle(.tertiary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
                 }
-                .padding(.leading, 26)
             }
+            Spacer()
+            Toggle(title, isOn: providerBinding(id))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(settings.providerSettingsLocked)
+                .help(
+                    settings.providerSettingsLocked
+                        ? "Repair settings.json before changing delegated providers."
+                        : (settings.providerEnabled(id) ? "Disable \(title)" : "Enable \(title)")
+                )
         }
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .opacity(provider == nil || detected ? 1 : 0.7)
     }
 
     private func providerBinding(_ id: String) -> Binding<Bool> {
@@ -3664,7 +3775,7 @@ struct SettingsView: View {
 
                         GroupBox("When confirmation is off") {
                             Text("Agents send without asking. Cancel, closing the panel or letting it time out never sends, so leave these on unless you trust every agent connected to this Mac.")
-                                .font(.caption)
+                                .font(SettingsType.note)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3677,20 +3788,48 @@ struct SettingsView: View {
                         GroupBox("Shortcuts agents may run") {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("A shortcut can do anything its actions do, so agents run shortcuts only when running commands is allowed. The ones you turn on here can run even when it's off; with it on, any shortcut can run.")
-                                    .font(.caption)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 if let names = macShortcutNames {
                                     if names.isEmpty {
-                                        Text("No shortcuts found on this Mac.").font(.caption).foregroundStyle(.secondary)
+                                        Text("No shortcuts found on this Mac.").font(SettingsType.note).foregroundStyle(.secondary)
                                     } else {
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            ForEach(names, id: \.self) { name in
-                                                Toggle(name, isOn: allowedShortcutBinding(name))
-                                                    .toggleStyle(.checkbox)
+                                        let allowed = names.filter { settings.allowedShortcuts.contains($0) }.count
+                                        let words = shortcutFilter.trimmingCharacters(in: .whitespaces)
+                                        let shown = words.isEmpty ? names : names.filter { $0.localizedCaseInsensitiveContains(words) }
+                                        HStack(spacing: 10) {
+                                            TextField("Filter \(names.count) shortcuts", text: $shortcutFilter)
+                                                .textFieldStyle(.roundedBorder)
+                                                .accessibilityLabel("Filter shortcuts")
+                                            Text("\(allowed) of \(names.count) allowed")
+                                                .font(SettingsType.meta).foregroundStyle(.secondary).monospacedDigit()
+                                                .fixedSize()
+                                        }
+                                        .padding(.top, 4)
+                                        LazyVStack(spacing: 0) {
+                                            ForEach(Array(shown.enumerated()), id: \.element) { index, name in
+                                                if index > 0 { Divider() }
+                                                HStack {
+                                                    Image(systemName: "square.stack.3d.up.fill")
+                                                        .font(.system(size: 12))
+                                                        .foregroundStyle(settings.allowedShortcuts.contains(name) ? Color.purple : Color.secondary)
+                                                        .frame(width: 18)
+                                                        .accessibilityHidden(true)
+                                                    Text(name).font(SettingsType.body)
+                                                    Spacer(minLength: 12)
+                                                    Toggle(name, isOn: allowedShortcutBinding(name))
+                                                        .toggleStyle(.switch)
+                                                        .controlSize(.small)
+                                                        .labelsHidden()
+                                                }
+                                                .padding(.vertical, 5)
                                             }
                                         }
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                        if shown.isEmpty {
+                                            Text("No shortcut matches.").font(SettingsType.note).foregroundStyle(.secondary)
+                                        }
                                     }
                                 } else {
                                     ProgressView().controlSize(.small)
@@ -3703,7 +3842,7 @@ struct SettingsView: View {
                         GroupBox("What agents can do in each app") {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Built in means Mac MCP works with the app directly, even while you use it. Other apps are used by looking at their window and clicking, which is slower and depends on what the window shows.")
-                                    .font(.caption)
+                                    .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 if let problem = appSupportProblem {
@@ -3711,9 +3850,13 @@ struct SettingsView: View {
                                     Button("Try again") { Task { await loadAppSupport() } }.controlSize(.small)
                                 } else if let apps = appSupport {
                                     if apps.isEmpty {
-                                        Text("Mac MCP found no apps to list.").font(.caption).foregroundStyle(.secondary)
+                                        Text("Mac MCP found no apps to list.").font(SettingsType.note).foregroundStyle(.secondary)
                                     }
-                                    ForEach(Array(apps.enumerated()), id: \.offset) { _, app in appSupportRow(app) }
+                                    appSupportSummary(apps)
+                                    ForEach(Array(apps.enumerated()), id: \.offset) { _, app in
+                                        Divider()
+                                        appSupportRow(app)
+                                    }
                                 } else {
                                     ProgressView().controlSize(.small)
                                 }
@@ -3765,11 +3908,11 @@ struct SettingsView: View {
         return DisclosureGroup {
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(lines, id: \.0) { line in
-                    Text("\(line.0): \(line.1)").font(.caption2).foregroundStyle(.secondary)
+                    Text("\(line.0): \(line.1)").font(SettingsType.meta).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(others, id: \.self) { line in
-                    Text(line).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(line).font(SettingsType.meta).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3778,14 +3921,36 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Image(nsImage: appIcon(Self.appBundleIDs[name] ?? ""))
                     .resizable()
-                    .frame(width: 18, height: 18)
+                    .frame(width: 22, height: 22)
                     .accessibilityHidden(true)
-                Text(name).font(.caption.weight(.semibold))
+                Text(name).font(SettingsType.title)
                 Spacer()
-                Text(app["support_words"] as? String ?? "").font(.caption2).foregroundStyle(.secondary)
+                supportBadge(app["support"] as? String ?? "", words: app["support_words"] as? String ?? "")
             }
+            .padding(.vertical, 1)
             .accessibilityElement(children: .combine)
         }
+    }
+
+    /// How directly Mac MCP works with an app, as a coloured capsule: green built in, blue partly, grey by window.
+    private func supportBadge(_ support: String, words: String) -> some View {
+        let color: Color = support == "first_party" ? .green : support == "partial_first_party" ? .blue : .secondary
+        return Text(words)
+            .font(SettingsType.meta.weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.14)))
+    }
+
+    /// "11 built in · 2 partly · 2 by their window": the whole list at a glance.
+    private func appSupportSummary(_ apps: [[String: Any]]) -> some View {
+        let count = { (level: String) in apps.filter { $0["support"] as? String == level }.count }
+        return UsageFactsRow(facts: [
+            UsageFact(value: "\(count("first_party"))", title: "Built in", note: "Works directly, even while you use the app."),
+            UsageFact(value: "\(count("partial_first_party"))", title: "Partly built in", note: "Some tasks directly, the rest by the window."),
+            UsageFact(value: "\(count("generic_ax"))", title: "By looking at the window", note: "Clicks and reads what the window shows."),
+        ], boxed: false)
+        .padding(.horizontal, -14)
     }
 
     private func appSendRow(bundleId: String, title: String, detail: String, isOn: Binding<Bool>) -> some View {
@@ -3794,9 +3959,9 @@ struct SettingsView: View {
                 .resizable()
                 .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.subheadline.weight(.semibold))
+                Text(title).font(SettingsType.title)
                 Text(detail)
-                    .font(.caption2)
+                    .font(SettingsType.meta)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

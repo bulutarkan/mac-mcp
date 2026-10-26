@@ -68,8 +68,8 @@ struct McpConnectorsSection: View {
             HStack(alignment: .top, spacing: 9) {
                 McpConnectorLogo(connector: connector, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(connector.title).font(.subheadline.weight(.semibold))
-                    Text(connector.summary).font(.caption).foregroundStyle(.secondary)
+                    Text(connector.title).font(SettingsType.title)
+                    Text(connector.summary).font(SettingsType.note).foregroundStyle(.secondary)
                         .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -78,9 +78,9 @@ struct McpConnectorsSection: View {
                 if let server {
                     Label(server.status == "connected" ? "Connected · \(server.tools.count) tools" : server.statusLabel,
                           systemImage: server.status == "connected" ? "checkmark.circle.fill" : "exclamationmark.circle")
-                        .font(.caption).foregroundStyle(server.status == "connected" ? Color.green : server.statusColor)
+                        .font(SettingsType.note).foregroundStyle(server.status == "connected" ? Color.green : server.statusColor)
                 } else if connector.auth == "oauth_app" {
-                    Text("Uses an app of your own").font(.caption).foregroundStyle(.secondary)
+                    Text("Uses an app of your own").font(SettingsType.note).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if server == nil {
@@ -154,7 +154,7 @@ struct McpConnectorSheet: View {
                 McpConnectorLogo(connector: connector, size: 36)
                 Text("Connect \(connector.title)").font(.title3.weight(.semibold))
             }
-            Text(connector.summary).font(.caption).foregroundStyle(.secondary)
+            Text(connector.summary).font(SettingsType.note).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             switch connector.auth {
@@ -166,7 +166,7 @@ struct McpConnectorSheet: View {
             }
 
             Text("Agents use its tools with your permission profile, like Mac MCP’s own tools. The sign-in stays in your Keychain. \(connector.manageHint)")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
             if waiting {
                 HStack(spacing: 8) {
@@ -175,7 +175,7 @@ struct McpConnectorSheet: View {
                 }
             }
             if !message.isEmpty {
-                Text(message).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                Text(message).font(SettingsType.note).foregroundStyle(.red).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
@@ -217,7 +217,7 @@ struct McpConnectorSheet: View {
             }
             if let redirect = connector.redirectURI {
                 HStack(spacing: 8) {
-                    Text(redirect).font(.caption.monospaced()).textSelection(.enabled)
+                    Text(redirect).font(SettingsType.note.monospaced()).textSelection(.enabled)
                         .lineLimit(1).truncationMode(.middle)
                     Button(copied ? "Copied" : "Copy") {
                         NSPasteboard.general.clearContents()
@@ -234,7 +234,7 @@ struct McpConnectorSheet: View {
             SecureField("Client Secret", text: $clientSecret).textFieldStyle(.roundedBorder)
             if !connector.verified {
                 Text("Mac MCP follows \(connector.title)’s published sign-in steps; this connector has not been tried with a real \(connector.title) account yet.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }

@@ -79,7 +79,7 @@ struct McpServersPane: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("MCP Servers").font(.title2.weight(.semibold))
                     Text("Connect your own MCP servers. Agents using Mac MCP get their tools too, with the same permission profile, activity history and limits as Mac MCP’s own tools.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 if !loaded, !message.isEmpty {
                     LoadProblem(message: message) { await load() }
@@ -87,10 +87,10 @@ struct McpServersPane: View {
                     // #19: before the first answer the list is neither empty nor full.
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Loading your servers…").font(.caption).foregroundStyle(.secondary)
+                        Text("Loading your servers…").font(SettingsType.note).foregroundStyle(.secondary)
                     }
                 } else if !message.isEmpty {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    Text(message).font(SettingsType.note).foregroundStyle(.secondary)
                 }
 
                 if !connectors.isEmpty {
@@ -115,12 +115,12 @@ struct McpServersPane: View {
                 }
                 ForEach(configErrors.sorted(by: { $0.key < $1.key }), id: \.key) { name, error in
                     Label("\(name == "*" ? "mcp_servers.json" : name): \(error)", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.red)
+                        .font(SettingsType.note).foregroundStyle(.red)
                 }
 
                 GroupBox("How agents use them") {
                     Text("Each tool is named server__tool, for example exa__web_search_exa. Tools with “Show in tool list” on appear directly in the AI app’s tool list; the others are found with tool_discover and run with tool_invoke. Tools a server marks read-only also work in the Read Only profile; tools it marks destructive need the Trusted profile. Services connected above keep their sign-in in your Keychain; keys of servers you add by hand stay in ~/.mac-mcp/mcp_servers.json, readable only by you.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(SettingsType.note).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, 5)
@@ -168,15 +168,15 @@ struct McpServersPane: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(server.name).font(.subheadline.weight(.semibold))
+                            Text(server.name).font(SettingsType.title)
                             Text(server.transport == "stdio" ? "Local" : "Remote")
-                                .font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
+                                .font(SettingsType.meta).padding(.horizontal, 5).padding(.vertical, 1)
                                 .background(Capsule().fill(Color.primary.opacity(0.08)))
                         }
-                        Text(server.target).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                        Text(server.target).font(SettingsType.meta.monospaced()).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle)
                         Text(server.status == "connected" ? "\(server.statusLabel) · \(server.tools.count) tools" : server.statusLabel)
-                            .font(.caption).foregroundStyle(server.status == "error" ? .red : .secondary)
+                            .font(SettingsType.note).foregroundStyle(server.status == "error" ? .red : .secondary)
                     }
                     Spacer()
                     Toggle("Use \(server.name)", isOn: Binding(
@@ -186,18 +186,18 @@ struct McpServersPane: View {
                     .labelsHidden().toggleStyle(.switch)
                 }
                 if let error = server.error, server.status == "error" {
-                    Text(error).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                    Text(error).font(SettingsType.meta.monospaced()).foregroundStyle(.secondary)
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 if let result = testResult[server.name] {
-                    Text(result).font(.caption).foregroundStyle(.secondary)
+                    Text(result).font(SettingsType.note).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 10) {
                     Toggle("Show in tool list", isOn: Binding(
                         get: { server.listed },
                         set: { on in Task { await act(on ? "list" : "unlist", server.name) } }
                     ))
-                    .toggleStyle(.checkbox).font(.caption)
+                    .toggleStyle(.checkbox).font(SettingsType.note)
                     .help("Off: agents find these tools with tool_discover instead, keeping the AI app’s tool list short.")
                     Spacer()
                     if busy == server.name { ProgressView().controlSize(.small) }
@@ -216,17 +216,17 @@ struct McpServersPane: View {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(server.tools, id: \.name) { tool in
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(tool.name).font(.caption.monospaced())
+                                    Text(tool.name).font(SettingsType.note.monospaced())
                                     if !tool.description.isEmpty {
                                         Text(tool.description.components(separatedBy: "\n").first ?? "")
-                                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                            .font(SettingsType.meta).foregroundStyle(.secondary).lineLimit(2)
                                     }
                                 }
                             }
                         }
                         .padding(.top, 4)
                     } label: {
-                        Text("Tools").font(.caption)
+                        Text("Tools").font(SettingsType.note)
                     }
                 }
             }
@@ -301,9 +301,9 @@ struct McpServerAddSheet: View {
 
             if kind == .json {
                 Text("Paste the \"mcpServers\" block from Claude Desktop, Cursor or Claude Code.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(SettingsType.note).foregroundStyle(.secondary)
                 TextEditor(text: $json)
-                    .font(.caption.monospaced())
+                    .font(SettingsType.note.monospaced())
                     .frame(minHeight: 160)
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.15)))
                     .accessibilityLabel("Server JSON")
@@ -312,20 +312,20 @@ struct McpServerAddSheet: View {
                 if kind == .remote {
                     TextField("URL (e.g. https://mcp.exa.ai/mcp)", text: $url)
                     Text("Headers, one per line (e.g. Authorization: Bearer …). Optional.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(SettingsType.note).foregroundStyle(.secondary)
                 } else {
                     TextField("Command (e.g. npx -y @modelcontextprotocol/server-github)", text: $command)
                     Text("Environment, one per line (e.g. GITHUB_TOKEN=…). Optional.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(SettingsType.note).foregroundStyle(.secondary)
                 }
                 TextEditor(text: $secrets)
-                    .font(.caption.monospaced())
+                    .font(SettingsType.note.monospaced())
                     .frame(height: 60)
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.15)))
                     .accessibilityLabel(kind == .remote ? "Headers" : "Environment")
             }
             if !result.isEmpty {
-                Text(result).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(result).font(SettingsType.note).foregroundStyle(.secondary).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {

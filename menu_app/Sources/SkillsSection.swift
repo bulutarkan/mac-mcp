@@ -27,7 +27,7 @@ struct SkillsSection: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Skills are written instructions agents read before a task. Mac MCP finds them in its own folder and in your AI tools' folders.")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(SettingsType.meta).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 Button(rescanning ? "Scanning…" : "Scan Again") { Task { await rescan() } }
@@ -35,7 +35,7 @@ struct SkillsSection: View {
                     .disabled(rescanning)
             }
             if let notice {
-                Text(notice).font(.caption).foregroundStyle(.secondary)
+                Text(notice).font(SettingsType.note).foregroundStyle(.secondary)
             }
             if !loaded {
                 if let problem {
@@ -44,7 +44,7 @@ struct SkillsSection: View {
                     ProgressView().controlSize(.small)
                 }
             } else if skills.isEmpty {
-                Text("No skills were found.").font(.callout).foregroundStyle(.secondary)
+                Text("No skills were found.").font(SettingsType.body).foregroundStyle(.secondary)
             } else {
                 if skills.count > 8 {
                     TextField("Filter \(skills.count) skills", text: $filter)
@@ -52,12 +52,29 @@ struct SkillsSection: View {
                         .accessibilityLabel("Filter skills")
                 }
                 let list = shown
-                ForEach(list.indices, id: \.self) { index in row(list[index]) }
+                ForEach(groups(list), id: \.source) { group in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(group.source).font(SettingsType.title)
+                            Spacer()
+                            Text("\(group.skills.filter { !($0["excluded"] as? Bool ?? false) }.count) of \(group.skills.count) on")
+                                .font(SettingsType.meta).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        LazyVStack(spacing: 0) {
+                            ForEach(group.skills.indices, id: \.self) { index in
+                                if index > 0 { Divider().padding(.leading, 14) }
+                                row(group.skills[index])
+                            }
+                        }
+                        .usageListBox()
+                    }
+                    .padding(.top, 6)
+                }
                 if list.isEmpty {
-                    Text("No skill matches.").font(.callout).foregroundStyle(.secondary)
+                    Text("No skill matches.").font(SettingsType.body).foregroundStyle(.secondary)
                 }
                 Text("A skill that is off is left out of Mac MCP's skill list and search. Its files and the tool that owns it are not changed.")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(SettingsType.meta).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -68,14 +85,19 @@ struct SkillsSection: View {
         let name = skill["name"] as? String ?? ""
         let location = skill["location"] as? String ?? ""
         let excluded = skill["excluded"] as? Bool ?? false
-        return HStack(alignment: .top, spacing: 10) {
+        let description = skill["description"] as? String ?? ""
+        return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.callout.weight(.medium)).foregroundStyle(excluded ? .secondary : .primary)
-                Text(skill["description"] as? String ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                Text([skill["source"] as? String, changed(skill["updated_at"] as? String)].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption2).foregroundStyle(.tertiary)
-                    .help(location)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(name).font(SettingsType.title).foregroundStyle(excluded ? .secondary : .primary)
+                    if let when = changed(skill["updated_at"] as? String) {
+                        Text(when).font(SettingsType.meta).foregroundStyle(.tertiary)
+                    }
+                }
+                Text(description).font(SettingsType.note).foregroundStyle(.secondary).lineLimit(1)
+                    .help(description)
             }
+            .help(location)
             Spacer(minLength: 8)
             Toggle("Use in Mac MCP", isOn: Binding(
                 get: { !excluded },
@@ -86,7 +108,24 @@ struct SkillsSection: View {
             .controlSize(.small)
             .accessibilityLabel("Use \(name) in Mac MCP")
         }
-        .padding(.vertical, 3)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .opacity(excluded ? 0.7 : 1)
+    }
+
+    /// Skills by where they come from, Mac MCP's own first, each group in name order as the server sends them.
+    private func groups(_ list: [[String: Any]]) -> [(source: String, skills: [[String: Any]])] {
+        var order: [String] = []
+        var bySource: [String: [[String: Any]]] = [:]
+        for skill in list {
+            let source = skill["source"] as? String ?? "Other"
+            if bySource[source] == nil { order.append(source) }
+            bySource[source, default: []].append(skill)
+        }
+        order.sort { lhs, rhs in
+            if (lhs == "Mac MCP") != (rhs == "Mac MCP") { return lhs == "Mac MCP" }
+            return bySource[lhs]!.count > bySource[rhs]!.count
+        }
+        return order.map { ($0, bySource[$0]!) }
     }
 
     private func changed(_ iso: String?) -> String? {

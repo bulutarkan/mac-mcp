@@ -42,21 +42,21 @@ struct SavedLoginsCard: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Agents can sign in to these sites with browser_sign_in. The password is typed into the page and is never shown to the agent or its AI provider. Only pages on the saved site get it, and its subdomains only when you allow them.")
-                    .font(.caption)
+                    .font(SettingsType.note)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if logins.isEmpty {
                     Text("No saved logins yet.")
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .foregroundStyle(.tertiary)
                 } else {
                     ForEach(logins) { login in
                         HStack(spacing: 8) {
                             Image(systemName: "key.fill").foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(login.site).font(.callout.weight(.medium))
-                                Text(login.username).font(.caption).foregroundStyle(.secondary)
+                                Text(login.site).font(SettingsType.body.weight(.medium))
+                                Text(login.username).font(SettingsType.note).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Toggle("Subdomains", isOn: Binding(
@@ -64,7 +64,7 @@ struct SavedLoginsCard: View {
                                 set: { on in Task { await setSubdomains(login, on) } }
                             ))
                             .toggleStyle(.checkbox)
-                            .font(.caption)
+                            .font(SettingsType.note)
                             .disabled(busy || login.subdomains_possible == false)
                             .help(login.subdomains_possible == false
                                   ? "Anyone can publish a site under \(login.site), so this login is only used on \(login.site) itself."
@@ -79,7 +79,7 @@ struct SavedLoginsCard: View {
 
                 Divider()
 
-                Text("Add a login").font(.caption.weight(.semibold))
+                Text("Add a login").font(SettingsType.body.weight(.semibold))
                 HStack(spacing: 8) {
                     TextField("Site, e.g. github.com", text: $site)
                     TextField("Username or email", text: $username)
@@ -97,7 +97,7 @@ struct SavedLoginsCard: View {
                     Spacer()
                 }
                 Text("In the Passwords app choose File > Export All Passwords, then pick that file here and select the sites agents may use.")
-                    .font(.caption2)
+                    .font(SettingsType.meta)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -107,7 +107,7 @@ struct SavedLoginsCard: View {
 
                 if let message {
                     Label(message, systemImage: failed ? "exclamationmark.triangle" : "checkmark.circle")
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .foregroundStyle(failed ? Color.orange : Color.secondary)
                 }
             }
@@ -121,10 +121,10 @@ struct SavedLoginsCard: View {
     private var importPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             if importItems.isEmpty {
-                Text("No usable logins in that file.").font(.caption).foregroundStyle(.secondary)
+                Text("No usable logins in that file.").font(SettingsType.note).foregroundStyle(.secondary)
             } else {
                 HStack {
-                    Text("\(importSelected.count) of \(importItems.count) selected").font(.caption.weight(.semibold))
+                    Text("\(importSelected.count) of \(importItems.count) selected").font(SettingsType.note.weight(.semibold))
                     Spacer()
                     Button(importSelected.count == importItems.count ? "Select none" : "Select all") {
                         importSelected = importSelected.count == importItems.count ? [] : Set(importItems.map(\.index))
@@ -140,7 +140,7 @@ struct SavedLoginsCard: View {
                                     if on { importSelected.insert(item.index) } else { importSelected.remove(item.index) }
                                 }
                             )) {
-                                Text("\(item.site)  ·  \(item.username)").font(.caption)
+                                Text("\(item.site)  ·  \(item.username)").font(SettingsType.note)
                             }
                             .toggleStyle(.checkbox)
                         }
@@ -150,7 +150,7 @@ struct SavedLoginsCard: View {
                 .frame(maxHeight: 160)
                 Toggle("Delete the export file afterwards (it holds every password in plain text)", isOn: $deleteExport)
                     .toggleStyle(.checkbox)
-                    .font(.caption)
+                    .font(SettingsType.note)
             }
             HStack {
                 Button("Import \(importSelected.count)") { Task { await runImport() } }

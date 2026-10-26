@@ -492,3 +492,39 @@ struct UsageSettingRow<Control: View>: View {
         .accessibilityElement(children: .contain)
     }
 }
+
+typealias SettingsRow<Control: View> = UsageSettingRow<Control>
+
+/// The type sizes Settings is set in, the same as Usage: a row title, a note under it, and quieter metadata.
+enum SettingsType {
+    static let title = Font.system(size: 13, weight: .semibold)
+    static let body = Font.system(size: 13)
+    static let note = Font.system(size: 11.5)
+    static let meta = Font.system(size: 11)
+}
+
+/// Every GroupBox in Settings: its title above, in the Usage tabs' type, and its content in the same quiet box.
+struct SettingsGroupStyle: GroupBoxStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            configuration.label
+                .labelStyle(.titleOnly)
+                .font(SettingsType.title)
+                .foregroundStyle(.primary)
+            configuration.content
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .usageListBox()
+        }
+    }
+}
+
+/// A small coloured dot before the text, for a status line ("Paused: …").
+struct DotLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon.font(.system(size: 6)).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+            configuration.title
+        }
+    }
+}
