@@ -68,6 +68,7 @@ struct ChatSummary: Identifiable, Hashable {
     var agentError: String
     var turnStartedAt: Double
     var commands: [ChatCommand]
+    var queue: [ChatQueued]
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
@@ -90,9 +91,27 @@ struct ChatSummary: Identifiable, Hashable {
             ChatCommand(name: $0["name"] as? String ?? "", description: $0["description"] as? String ?? "",
                         hint: $0["hint"] as? String ?? "")
         }
+        queue = (object["queue"] as? [[String: Any]] ?? []).map {
+            ChatQueued(id: $0["id"] as? String ?? "", text: $0["text"] as? String ?? "",
+                       files: ($0["attachments"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
+        }
     }
 
     var projectName: String { (project as NSString).lastPathComponent }
+}
+
+/// A message written while the agent worked: it goes out when the answer ends.
+struct ChatQueued: Hashable, Identifiable {
+    let id: String
+    let text: String
+    let files: [String]
+}
+
+/// A command's output as the agent streamed it, and how it ended.
+struct ChatTerminal: Hashable {
+    let output: String
+    let exitCode: Int?
+    let ended: Bool
 }
 
 /// A command the agent offers (Claude's /compact, Codex's /review, …), sent as "/name" in a message.
@@ -153,6 +172,7 @@ struct ChatItem: Identifiable, Hashable {
     var server: String
     var attachments: [ChatAttachment]
     var diffs: [ChatDiff]
+    var terminal: ChatTerminal?
     var at: Double
     // A turn summary: how long the agent worked, with which model, and the tokens it reported.
     var durationSeconds: Double
@@ -186,6 +206,10 @@ struct ChatItem: Identifiable, Hashable {
             ChatDiff(path: $0["path"] as? String ?? "", added: ($0["added"] as? NSNumber)?.intValue ?? 0,
                      removed: ($0["removed"] as? NSNumber)?.intValue ?? 0, created: $0["created"] as? Bool ?? false,
                      lines: $0["lines"] as? [String] ?? [], truncated: $0["truncated"] as? Bool ?? false)
+        }
+        terminal = (object["terminal"] as? [String: Any]).map {
+            ChatTerminal(output: $0["output"] as? String ?? "", exitCode: ($0["exit_code"] as? NSNumber)?.intValue,
+                         ended: $0["ended"] as? Bool ?? false)
         }
         attachments = (object["attachments"] as? [[String: Any]] ?? []).map {
             ChatAttachment(name: $0["name"] as? String ?? "", path: $0["path"] as? String ?? "", kind: $0["kind"] as? String ?? "file")
@@ -435,7 +459,9 @@ final class ChatModel: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let files = attachments
-        guard let id = selectedID, !text.isEmpty || !files.isEmpty, chat?.running != true else { return }
+        guard let id = selectedID, !text.isEmpty || !files.isEmpty else { return }
+        // While the agent works, the message waits on the server and goes out when the answer ends.
+        let wasRunning = chat?.running == true
         draft = ""
         attachments = []
         chat?.running = true
@@ -445,10 +471,21 @@ final class ChatModel: ObservableObject {
                 error = result.object["message"] as? String ?? "The message was not sent."
                 draft = text
                 attachments = files
-                chat?.running = false
+                if !wasRunning { chat?.running = false }
             }
             await poll()
             restartPolling()
+        }
+    }
+
+    /// A waiting message: "remove" takes it back, "send_now" stops the answer in progress and sends it.
+    func queued(_ entry: ChatQueued, _ action: String) {
+        guard let id = selectedID else { return }
+        chat?.queue.removeAll { $0.id == entry.id }
+        Task {
+            let result = await api("dashboard/api/chats/\(id)/queue", ["id": entry.id, "action": action])
+            if !result.ok { error = result.object["message"] as? String }
+            await poll()
         }
     }
 

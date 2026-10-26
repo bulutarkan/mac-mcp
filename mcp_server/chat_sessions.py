@@ -51,6 +51,8 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 STREAM_KEEPALIVE_S = 15.0
 STREAM_COALESCE_S = 0.06
 LIST_COALESCE_S = 0.5  # at most ~15 updates a second reach the app
+MAX_TERMINAL = 64_000  # the end of a command's live output kept on its step
+MAX_QUEUE = 20
 EMPTY_CHAT_KEEP_S = 6 * 3600  # a chat nobody wrote in is gone at the next start after this
 
 # Claude Code and Codex speak ACP through their official adapters; the others have it built in.
@@ -565,6 +567,15 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\\\)|\x1b[()][0-9A-Za-z]")
+
+
+def _terminal_text(data: Any) -> str:
+    """A command's output as it reads: colours and other escape codes out, a line redrawn with \\r kept as its last."""
+    text = _ANSI.sub("", str(data or "")).replace("\r\n", "\n")
+    return "\n".join(line.rsplit("\r", 1)[-1] for line in text.split("\n"))
+
+
 class Chat:
     """One conversation: its record, its transcript and, while in use, its agent process."""
 
@@ -586,6 +597,7 @@ class Chat:
         self.startup_calls: set[str] = set()  # the Codex adapter's MCP start reports, not steps
         self.waiters: List[asyncio.Future] = []
         self.prompt_caps: Dict[str, Any] = {}  # what the agent takes in a prompt besides text (image, …)
+        self.stop_requested = False  # Stop came while the agent was still starting: the turn task is cancelled
         self.on_change: Optional[Callable[[], None]] = None
 
     @property
@@ -848,10 +860,22 @@ class ChatHost:
             raise ChatError("Write a message first.", "empty")
         if len(text) > MAX_TEXT:
             raise ChatError("That message is too long.", "too_long")
-        if chat.turn is not None and not chat.turn.done():
-            raise ChatError("The agent is still answering. Stop it or wait.", "busy", 409)
         if chat.meta["agent"] not in AGENTS or not provider_enabled(chat.meta["agent"]):
             raise ChatError("That agent is turned off in Settings.", "agent_disabled", 409)
+        if chat.turn is not None and not chat.turn.done():
+            # Written while the agent works: it goes out when this answer ends (kept if the server restarts).
+            queue = chat.meta.setdefault("queue", [])
+            if len(queue) >= MAX_QUEUE:
+                raise ChatError(f"At most {MAX_QUEUE} messages can wait.", "queue_full", 409)
+            queue.append({"id": f"q_{secrets.token_hex(4)}", "text": text, "attachments": files})
+            chat.bump()
+            chat.save()
+            return {"ok": True, "queued": True, "chat": chat.public(), "cursor": chat.seq}
+        self._start_turn(chat, text, files)
+        return {"ok": True, "chat": chat.public(), "cursor": chat.seq}
+
+    def _start_turn(self, chat: Chat, text: str, files: List[Dict[str, Any]]) -> None:
+        chat.stop_requested = False
         if chat.idle is not None:
             chat.idle.cancel()
             chat.idle = None
@@ -862,7 +886,34 @@ class ChatHost:
         chat.meta["turn_started_at"] = _now()
         chat.save()
         chat.turn = asyncio.create_task(self._run_turn(chat, text, files))
+
+    async def queued(self, chat_id: str, queued_id: str, action: str) -> Dict[str, Any]:
+        """A waiting message: removed, or sent now (the answer in progress is stopped first)."""
+        chat = self._chat(chat_id)
+        queue = chat.meta.setdefault("queue", [])
+        entry = next((entry for entry in queue if entry.get("id") == queued_id), None)
+        if entry is None:
+            raise ChatError("That message is no longer waiting.", "not_queued", 409)
+        if action not in ("remove", "send_now"):
+            raise ChatError("Unknown action.", "bad_request")
+        queue.remove(entry)
+        chat.bump()
+        chat.save()
+        if action == "send_now":
+            if chat.meta["agent"] not in AGENTS or not provider_enabled(chat.meta["agent"]):
+                raise ChatError("That agent is turned off in Settings.", "agent_disabled", 409)
+            await self.cancel(chat_id)
+            self._start_turn(chat, entry["text"], list(entry.get("attachments") or []))
         return {"ok": True, "chat": chat.public(), "cursor": chat.seq}
+
+    def _send_next(self, chat: Chat) -> None:
+        """After an answer, the next waiting message goes out; not after Stop or a failure, so nothing runs on
+        that the owner did not see coming."""
+        queue = chat.meta.get("queue") or []
+        if not queue or chat.meta["agent"] not in AGENTS or not provider_enabled(chat.meta["agent"]):
+            return
+        entry = queue.pop(0)
+        self._start_turn(chat, entry["text"], list(entry.get("attachments") or []))
 
     async def cancel(self, chat_id: str) -> Dict[str, Any]:
         chat = self._chat(chat_id)
@@ -873,8 +924,17 @@ class ChatHost:
                 future.set_result(None)
         if chat.conn is not None and chat.session_id:
             await chat.conn.notify("session/cancel", {"sessionId": chat.session_id})
+        else:
+            chat.stop_requested = True  # nothing was asked yet: the agent is still starting
+            chat.turn.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(chat.turn), 10)
+        except asyncio.CancelledError:
+            if not chat.turn.cancelled():
+                raise
+            # Cancelled before it ran a line: the turn is closed here instead.
+            chat.add("notice", text="Stopped.", tone="neutral")
+            self._end_turn(chat, float(chat.meta.get("turn_started_at") or _now()), "cancelled", {})
         except asyncio.TimeoutError:
             await self._stop_agent(chat)  # an agent that ignores cancel is stopped; the session reopens later
         return {"ok": True, "chat": chat.public()}
@@ -933,7 +993,11 @@ class ChatHost:
             elif stop == "refusal":
                 chat.add("notice", text="The agent declined to continue.", tone="warning")
         except asyncio.CancelledError:
-            raise
+            if not chat.stop_requested:
+                raise
+            asyncio.current_task().uncancel()
+            stop = "cancelled"
+            chat.add("notice", text="Stopped.", tone="neutral")
         except AcpClosed:
             chat.add("notice", text=_cut("The agent quit unexpectedly. " + _last_log_line(chat.dir / "agent.log"), 600),
                      tone="error")
@@ -947,26 +1011,31 @@ class ChatHost:
             chat.add("notice", text=_cut(f"Could not start the agent: {exc}", 600), tone="error")
             await self._stop_agent(chat)
         finally:
-            for item in chat.tools.values():
-                if item.get("status") == "running":
-                    item["status"] = "stopped"
-                    chat.bump(item)
-            chat.tools.clear()
-            chat.open_text = None
-            # What the CLI reports for the answer: how long it worked, with which model, and its tokens.
-            model = next((option for option in chat.meta.get("config") or [] if option["category"] == "model"), None)
-            model_name = next((choice["name"] for choice in (model or {}).get("options") or []
-                               if choice["value"] == (model or {}).get("current")), (model or {}).get("current") or "")
-            ended = _now()
-            chat.add("turn", started_at=started, ended_at=ended, duration_s=round(max(0.0, ended - started), 1),
-                     stop=stop, model=model_name or chat.meta.get("model") or "",
-                     input_tokens=int(usage.get("inputTokens") or 0), output_tokens=int(usage.get("outputTokens") or 0),
-                     cached_tokens=int(usage.get("cachedReadTokens") or 0))
-            chat.meta.pop("turn_started_at", None)
-            chat.meta["status"] = "idle"
-            chat.bump()
-            chat.save()
-            self._arm_idle(chat)
+            self._end_turn(chat, started, stop, usage)
+
+    def _end_turn(self, chat: Chat, started: float, stop: str, usage: Dict[str, Any]) -> None:
+        for item in chat.tools.values():
+            if item.get("status") == "running":
+                item["status"] = "stopped"
+                chat.bump(item)
+        chat.tools.clear()
+        chat.open_text = None
+        # What the CLI reports for the answer: how long it worked, with which model, and its tokens.
+        model = next((option for option in chat.meta.get("config") or [] if option["category"] == "model"), None)
+        model_name = next((choice["name"] for choice in (model or {}).get("options") or []
+                           if choice["value"] == (model or {}).get("current")), (model or {}).get("current") or "")
+        ended = _now()
+        chat.add("turn", started_at=started, ended_at=ended, duration_s=round(max(0.0, ended - started), 1),
+                 stop=stop, model=model_name or chat.meta.get("model") or "",
+                 input_tokens=int(usage.get("inputTokens") or 0), output_tokens=int(usage.get("outputTokens") or 0),
+                 cached_tokens=int(usage.get("cachedReadTokens") or 0))
+        chat.meta.pop("turn_started_at", None)
+        chat.meta["status"] = "idle"
+        chat.bump()
+        chat.save()
+        self._arm_idle(chat)
+        if stop not in ("cancelled", "error"):
+            self._send_next(chat)
 
     async def _ensure_session(self, chat: Chat) -> None:
         async with chat.start_lock:
@@ -1000,7 +1069,9 @@ class ChatHost:
                 # The first start of an adapter downloads it (npx), so this may take a while.
                 init = await conn.request("initialize", {
                     "protocolVersion": PROTOCOL_VERSION,
-                    "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
+                    # The agent runs its commands itself; with Zed's terminal_output it streams their output to us.
+                    "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False,
+                                           "_meta": {"terminal_output": True}},
                     "clientInfo": {"name": "mac-mcp-chat", "title": "Mac MCP Chat", "version": __version__},
                 }, timeout=240)
                 caps = (init.get("agentCapabilities") or {}).get("promptCapabilities")
@@ -1255,6 +1326,19 @@ class ChatHost:
         diffs = _diffs(update.get("content"))
         if diffs:
             item["diffs"] = diffs
+        meta = update.get("_meta") if isinstance(update.get("_meta"), dict) else {}
+        info = meta.get("terminal_info") if isinstance(meta.get("terminal_info"), dict) else None
+        chunk = meta.get("terminal_output_delta") or meta.get("terminal_output")
+        ended = meta.get("terminal_exit") if isinstance(meta.get("terminal_exit"), dict) else None
+        if info or chunk or ended:
+            terminal = item.setdefault("terminal", {"output": "", "exit_code": None})
+            if info and info.get("cwd"):
+                terminal["cwd"] = str(info["cwd"])
+            if isinstance(chunk, dict) and chunk.get("data"):
+                terminal["output"] = (terminal["output"] + _terminal_text(chunk["data"]))[-MAX_TERMINAL:]
+            if ended is not None:
+                terminal["exit_code"] = ended.get("exit_code") if isinstance(ended.get("exit_code"), int) else None
+                terminal["ended"] = True
         output = _text_of(update.get("content")) if update.get("content") else ""
         if not output and isinstance(update.get("rawOutput"), dict):
             raw = update["rawOutput"]

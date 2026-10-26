@@ -537,6 +537,15 @@ struct ChatComposer: View {
                                    hover: { model.commandIndex = $0 }) { complete($0) }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+            if let queue = model.chat?.queue, !queue.isEmpty {
+                VStack(spacing: 4) {
+                    ForEach(queue) { entry in
+                        QueuedMessage(entry: entry, sendNow: { model.queued(entry, "send_now") },
+                                      remove: { model.queued(entry, "remove") })
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
             VStack(alignment: .leading, spacing: 10) {
                 if !model.attachments.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -605,6 +614,16 @@ struct ChatComposer: View {
 
     @ViewBuilder private var sendOrStop: some View {
         if running {
+            if canSend {
+                Button(action: model.send) {
+                    Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold))
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(ChatStyle.accent))
+                        .foregroundStyle(ChatStyle.onAccent)
+                }
+                .buttonStyle(.plain).help("Send when this answer ends (Return)")
+                .transition(.scale.combined(with: .opacity))
+            }
             Button(action: model.stop) {
                 Image(systemName: "stop.fill").font(.system(size: 11, weight: .bold))
                     .frame(width: 30, height: 30)
@@ -660,7 +679,7 @@ struct ChatComposer: View {
     private var running: Bool { model.chat?.running == true }
     private var waiting: Bool { model.chat?.status == "waiting" }
     private var canSend: Bool {
-        !running && (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.attachments.isEmpty)
+        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.attachments.isEmpty
     }
 
     private func chooseFiles() {
@@ -672,7 +691,47 @@ struct ChatComposer: View {
         if let project = model.chat?.project { panel.directoryURL = URL(fileURLWithPath: project) }
         if panel.runModal() == .OK { model.attach(panel.urls) }
     }
-    private var placeholder: String { waiting ? "Answer the question above first" : "Ask for anything in this project" }
+    private var placeholder: String {
+        if waiting { return "Answer the question above first" }
+        return running ? "Write the next message; it goes out when this answer ends" : "Ask for anything in this project"
+    }
+}
+
+/// A message waiting for the answer in progress to end: send it now (stops the answer) or take it back.
+struct QueuedMessage: View {
+    let entry: ChatQueued
+    let sendNow: () -> Void
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "clock").font(.system(size: 11, weight: .medium)).foregroundStyle(.tertiary)
+            Text(entry.text.isEmpty ? entry.files.joined(separator: ", ") : entry.text)
+                .font(.system(size: 12.5)).lineLimit(1).truncationMode(.tail)
+            if !entry.files.isEmpty && !entry.text.isEmpty {
+                Label("\(entry.files.count)", systemImage: "paperclip").font(.system(size: 11)).foregroundStyle(.secondary)
+                    .labelStyle(.titleAndIcon)
+            }
+            Spacer(minLength: 6)
+            Button(action: sendNow) {
+                Text("Send Now").font(.system(size: 11.5, weight: .medium))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(ChatStyle.accent.opacity(0.14)))
+                    .foregroundStyle(ChatStyle.accent)
+            }
+            .buttonStyle(.plain).help("Stop the answer in progress and send this now")
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Don't send")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ChatStyle.raised))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(VisualTokens.hairline))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Waiting to send: \(entry.text)")
+    }
 }
 
 // MARK: Attachments

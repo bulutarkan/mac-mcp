@@ -11,6 +11,9 @@
 - Delete Chat asks first. While the Chat window is open, Mac MCP is in the Dock and ⌘Tab; it goes back to the menu bar only when the window closes.
 - File edits show their change: the step reads "Edited greet.py +2 −1" and opens to the diff, with added and removed lines in colour and Copy.
 - ⌘V in the message box pastes an image (saved as a file and attached) or copied files; text pastes as before. Hover your message and click the pencil to edit it and send it again.
+- Write while the agent works: the message waits above the box and goes out when the answer ends (kept on the server, so it goes even with the window closed). "Send Now" stops the answer and sends it; × takes it back. After Stop nothing goes on its own.
+- Commands show their output as a terminal: Codex streams it live (the newest lines under the step while it runs), Claude when the command ends; the step then shows all of it with the exit code and Copy. The agents still run their commands themselves.
+- Fixed: Stop while the agent was still starting waited 10 seconds and then shut the agent down; it now stops at once.
 - Antigravity in Chat: Google's Antigravity ACP server (the `agy` CLI has no ACP mode) is downloaded at the first chat, pinned to a version and checked against its SHA-256, and signs in with your Antigravity Google account; model, thinking and mode come from Antigravity. Turn Antigravity on in Settings › Agents.
 - Goose without a provider of its own starts on your OpenRouter key (as delegated Goose does), on a free model; its model, mode and thinking pickers are Goose's own.
 - Code blocks are coloured by language (Swift, Python, JavaScript/TypeScript, Go, Rust, shell, SQL, JSON, HTML, CSS, YAML, diffs and more).

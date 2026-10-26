@@ -339,6 +339,10 @@ private struct StepRow: View {
                     if !item.diffs.isEmpty {
                         DiffCounts(added: item.diffs.reduce(0) { $0 + $1.added }, removed: item.diffs.reduce(0) { $0 + $1.removed })
                     }
+                    if let code = item.terminal?.exitCode, code != 0 {
+                        Text("exit \(code)").font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(VisualTokens.error)
+                    }
                     statusMark
                     if hasDetail {
                         Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.tertiary)
@@ -353,11 +357,16 @@ private struct StepRow: View {
             .allowsHitTesting(hasDetail)
             if open && hasDetail {
                 StepDetail(item: item).padding(.leading, 26).padding(.bottom, 4)
+            } else if item.status == "running", let terminal = item.terminal, !terminal.output.isEmpty {
+                // A command at work shows its newest lines as they come, without opening the step.
+                TerminalBlock(terminal: terminal, live: true).padding(.leading, 26).padding(.bottom, 4)
             }
         }
     }
 
-    private var hasDetail: Bool { !item.output.isEmpty || !item.input.isEmpty || !item.diffs.isEmpty }
+    private var hasDetail: Bool {
+        !item.output.isEmpty || !item.input.isEmpty || !item.diffs.isEmpty || !(item.terminal?.output.isEmpty ?? true)
+    }
 
     private var source: String {
         if item.server == "mac-mcp" { return "Mac MCP" }
@@ -424,7 +433,9 @@ private struct StepDetail: View {
                     Text(value).font(.system(size: 11.5, design: .monospaced)).textSelection(.enabled).lineLimit(4)
                 }
             }
-            if !item.output.isEmpty {
+            if let terminal = item.terminal, !terminal.output.isEmpty {
+                TerminalBlock(terminal: terminal, live: item.status == "running")
+            } else if !item.output.isEmpty {
                 ScrollView {
                     Text(item.output).font(.system(size: 11.5, design: .monospaced)).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -435,6 +446,72 @@ private struct StepDetail: View {
             }
         }
     }
+}
+
+/// A command's output the way a terminal shows it. Live: its newest lines as they stream in; afterwards all of it,
+/// with how the command ended.
+private struct TerminalBlock: View {
+    let terminal: ChatTerminal
+    let live: Bool
+
+    private static let liveLines = 12
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "terminal").font(.system(size: 10, weight: .semibold))
+                Text(live ? "Running" : "Output").font(.system(size: 10.5, weight: .semibold))
+                Spacer(minLength: 6)
+                if let code = terminal.exitCode {
+                    Text(code == 0 ? "exit 0" : "exit \(code)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(code == 0 ? VisualTokens.success : VisualTokens.error)
+                } else if live {
+                    ProgressView().controlSize(.mini)
+                }
+                if !live {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(terminal.output, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc").font(.system(size: 10))
+                    }
+                    .buttonStyle(.plain).help("Copy the output")
+                }
+            }
+            .foregroundStyle(Self.dim)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            Divider().overlay(Color.white.opacity(0.08))
+            if live {
+                Text(tail).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Self.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            } else {
+                ScrollView {
+                    Text(terminal.output.trimmingCharacters(in: .newlines))
+                        .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Self.ink).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .frame(maxHeight: 260)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Self.ground))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.white.opacity(0.06)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(live ? "Command output, running" : "Command output")
+    }
+
+    /// The last lines only: the block keeps one height while output pours in.
+    private var tail: String {
+        let lines = terminal.output.trimmingCharacters(in: .newlines).split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.suffix(Self.liveLines).joined(separator: "\n")
+    }
+
+    // A terminal is dark in both appearances.
+    private static let ground = Color(red: 0.11, green: 0.11, blue: 0.12)
+    private static let ink = Color(red: 0.88, green: 0.89, blue: 0.86)
+    private static let dim = Color(red: 0.62, green: 0.63, blue: 0.62)
 }
 
 private struct ThoughtStep: View {

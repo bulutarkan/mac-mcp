@@ -66,6 +66,11 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         return get_host().answer(request.path_params["chat_id"], str(body.get("item_id") or ""),
                                  str(body.get("option_id") or ""))
 
+    async def queued(request: Request) -> Dict[str, Any]:
+        body = await _body(request)
+        return await get_host().queued(request.path_params["chat_id"], str(body.get("id") or ""),
+                                       str(body.get("action") or ""))
+
     async def list_events(request: Request) -> Response:
         """Server-sent events of the chat list (the same object as GET /chats, without agents)."""
         denied = dashboard_guard(request)
@@ -139,6 +144,7 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         Route("/dashboard/api/chats/{chat_id}/prompt", guarded(prompt), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/cancel", guarded(cancel), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/permission", guarded(permission), methods=["POST"]),
+        Route("/dashboard/api/chats/{chat_id}/queue", guarded(queued), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/events", events, methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}/connect", guarded(connect), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/rename", guarded(rename), methods=["POST"]),

@@ -43,6 +43,20 @@ FAKE_AGENT = textwrap.dedent('''\
         sid = msg["params"]["sessionId"]
         text = msg["params"]["prompt"][0]["text"]
         cancelled.clear()
+        log.write(json.dumps({"prompt_text": text}) + "\\n"); log.flush()
+        if text == "run tests":
+            update(sid, {"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "npm test", "kind": "execute",
+                         "status": "in_progress", "rawInput": {"command": "npm test"},
+                         "_meta": {"terminal_info": {"terminal_id": "c1", "cwd": "/p"}}})
+            for chunk in ("\\x1b[32mPASS\\x1b[0m a\\r\\n", "progress 10%\\rprogress 100%\\n"):
+                update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "c1",
+                             "_meta": {"terminal_output": {"terminal_id": "c1", "data": chunk}}})
+                time.sleep(0.05)
+            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "failed",
+                         "content": [{"type": "terminal", "terminalId": "c1"}],
+                         "_meta": {"terminal_exit": {"terminal_id": "c1", "exit_code": 1, "signal": None}}})
+            update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "one failed"}})
+            return {"stopReason": "end_turn"}
         if text == "slow":
             while not cancelled.is_set():
                 update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "tick "}})
@@ -101,6 +115,7 @@ FAKE_AGENT = textwrap.dedent('''\
         method, params = msg["method"], msg.get("params") or {}
         log.write(json.dumps({"method": method, "params": params}) + "\\n"); log.flush()
         if method == "initialize":
+            log.write(json.dumps({"client_caps": params.get("clientCapabilities")}) + "\\n"); log.flush()
             result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "promptCapabilities": {"image": True}},
                       "authMethods": [{"id": "oauth-personal", "name": "Log in with Google"}]}
         elif method == "authenticate":
@@ -308,11 +323,11 @@ class ChatHostTest(unittest.TestCase):
             chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
             await host.prompt(chat_id, "slow")
             await asyncio.sleep(0.6)
-            with self.assertRaises(chat_sessions.ChatError) as busy:
-                await host.prompt(chat_id, "again")
-            self.assertEqual(busy.exception.code, "busy")
+            queued = await host.prompt(chat_id, "again")  # written while it works: waits its turn
+            self.assertTrue(queued["queued"])
             await host.cancel(chat_id)
             state = host.read(chat_id)
+            self.assertEqual([entry["text"] for entry in state["chat"]["queue"]], ["again"])  # Stop sends nothing on
             await host.prompt(chat_id, "write it")
             for _ in range(400):
                 if any(item["type"] == "permission" for item in host.read(chat_id)["items"]):
@@ -466,6 +481,70 @@ class ChatHostTest(unittest.TestCase):
             with self.assertRaises(chat_sessions.ChatError):
                 chat_sessions._ensure_download("antigravity")
         self.assertFalse((chat_sessions.chats_root() / "outside.txt").exists())
+
+    def test_messages_written_while_it_works_go_out_in_order(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "slow")
+            for _ in range(500):  # the agent is answering
+                if any(entry.get("prompt_text") == "slow" for entry in self.agent_log()):
+                    break
+                await asyncio.sleep(0.02)
+            first = (await host.prompt(chat_id, "hello one"))["chat"]["queue"][0]["id"]
+            await host.prompt(chat_id, "hello two")
+            dropped = (await host.prompt(chat_id, "hello three"))["chat"]["queue"][-1]["id"]
+            await host.queued(chat_id, dropped, "remove")
+            await host.queued(chat_id, first, "send_now")  # stops "slow", sends "hello one", then "hello two"
+            for _ in range(500):
+                state = host.read(chat_id)
+                if not state["chat"]["running"] and not state["chat"].get("queue"):
+                    break
+                await asyncio.sleep(0.02)
+            await host.shutdown()
+            return state
+
+        state = self.run_async(scenario())
+        sent = [entry["prompt_text"] for entry in self.agent_log() if "prompt_text" in entry]
+        self.assertEqual(sent, ["slow", "hello one", "hello two"])
+        self.assertEqual([item["text"] for item in state["items"] if item["type"] == "user"],
+                         ["slow", "hello one", "hello two"])
+        self.assertEqual([item["stop"] for item in state["items"] if item["type"] == "turn"],
+                         ["cancelled", "end_turn", "end_turn"])
+
+    def test_stop_while_the_agent_is_still_starting_stops_at_once(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "slow")
+            started = asyncio.get_running_loop().time()
+            await host.cancel(chat_id)
+            took = asyncio.get_running_loop().time() - started
+            state = host.read(chat_id)
+            await host.shutdown()
+            return took, state
+
+        took, state = self.run_async(scenario())
+        self.assertLess(took, 3)
+        self.assertFalse(state["chat"]["running"])
+        self.assertEqual([(item["type"], item.get("text"), item.get("stop")) for item in state["items"][1:]],
+                         [("notice", "Stopped.", None), ("turn", None, "cancelled")])
+
+    def test_command_output_streams_into_its_step_as_a_terminal(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "run tests")
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return state
+
+        state = self.run_async(scenario())
+        caps = next(entry["client_caps"] for entry in self.agent_log() if "client_caps" in entry)
+        self.assertEqual((caps["terminal"], caps["_meta"]), (False, {"terminal_output": True}))
+        step = next(item for item in state["items"] if item["type"] == "tool")
+        self.assertEqual(step["terminal"], {"output": "PASS a\nprogress 100%\n", "exit_code": 1, "cwd": "/p", "ended": True})
+        self.assertEqual(step["status"], "failed")
 
     def test_mcp_startup_reports_are_not_steps(self):
         async def scenario():
