@@ -1764,6 +1764,8 @@ def create_dashboard_routes(
         hint = body.get("hint") if isinstance(body.get("hint"), dict) else None
         try:
             result = await asyncio.to_thread(tab_frame, browser, tab_handle, hint)
+        except privacy_policy.PrivacyBlocked as exc:
+            return JSONResponse({"ok": False, "error": exc.code}, status_code=exc.status_code)
         except Exception:
             result = {"ok": False, "error": "tab_frame_failed"}
         return JSONResponse(result)

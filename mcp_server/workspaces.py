@@ -99,6 +99,7 @@ return out''')
 def _current_tabs(settings: Any) -> List[Dict[str, str]]:
     from .tools_snapshot import _read_browser_tabs
 
+    privacy_policy.check_tool("mac_snapshot")  # open tabs are what mac_snapshot shows: not read while paused
     try:
         tabs = _read_browser_tabs(settings, browser_tab_limit=MAX_ITEMS).get("tabs") or []
     except RuntimeError:
@@ -110,6 +111,7 @@ def _current_tabs(settings: Any) -> List[Dict[str, str]]:
 def _current_finder(settings: Any) -> List[str]:
     from .tools_snapshot import _read_selected_context
 
+    privacy_policy.check_tool("mac_snapshot")
     try:
         context = _read_selected_context(settings, selected_file_limit=MAX_ITEMS)
     except (RuntimeError, subprocess.SubprocessError):

@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import privacy_policy
 from .request_client import client_address
 from .security import AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, load_settings, rate_limit
 from .security_context import SecurityContextManager
@@ -277,6 +278,8 @@ def _authorize_rest_tool(request: Request, tool: str, arguments: Dict[str, Any])
             status.HTTP_403_FORBIDDEN,
             detail=scope_denied_result(tool, scope_decision, context.scope),
         )
+    # The owner's pause and private mode (Settings > Privacy) apply here as on /mcp, before any approval is asked.
+    privacy_policy.check_tool(tool)
     _rest_security_gate(request, tool, arguments, effective)
 
 

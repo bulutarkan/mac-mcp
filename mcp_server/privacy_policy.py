@@ -37,7 +37,8 @@ PAUSED_TOOLS = frozenset({
     "browser_get_html", "browser_get_snapshot", "browser_screenshot", "browser_execute_js",
     "browser_click_selector", "browser_type_selector", "browser_wait_for_selector", "browser_scroll",
     "browser_press_key", "browser_coordinate_click", "browser_open_url", "browser_upload_artifact",
-    "browser_sign_in", "computer_plan", "ask_user_voice", "voice_capture", "spawn_agent", "spawn_agents",
+    "browser_sign_in", "browser_checkpoint", "context_handoff", "computer_plan", "ask_user_voice", "voice_capture",
+    "spawn_agent", "spawn_agents",
 })
 # Tools that keep content Mac MCP would otherwise store; refused in private mode.
 PRIVATE_MODE_TOOLS = frozenset({"memory_add", "memory_update", "lesson_record", "lesson_feedback", "lesson_consolidate"})
@@ -156,7 +157,7 @@ def excluded_app(*names: Optional[str]) -> Optional[str]:
 
 
 def check_tool(tool: str) -> None:
-    """The gate every tool call passes (main._log)."""
+    """The gate every tool call passes (main._log for MCP, rest_routes._authorize_rest_tool for /api)."""
     current = policy()
     if current["paused"] and tool in PAUSED_TOOLS:
         raise PrivacyBlocked(

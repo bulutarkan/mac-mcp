@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
-from . import ax_native, browser_tabs
+from . import ax_native, browser_tabs, privacy_policy
 
 _APP_NAMES = {"Safari": "Safari", "Google Chrome": "Google Chrome"}
 # Safari's tab buttons are two levels under the window; Chrome nests its tab strip deeper. Going no
@@ -86,6 +86,8 @@ def tab_frame(browser: str, tab_handle: str, hint: Optional[Dict[str, Any]] = No
     closing resize it)."""
     from .tools_ui import _parse_observation
 
+    # Tab titles and the browser's Accessibility tree are not read while the owner paused observation.
+    privacy_policy.check_tool("browser_list_tabs")
     app = browser_tabs._browser_key(browser)
     if app not in _APP_NAMES:
         return {"ok": False, "error": "unsupported_browser"}
