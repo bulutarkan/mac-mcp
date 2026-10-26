@@ -102,6 +102,9 @@ AGENTS: Dict[str, Dict[str, Any]] = {
                     "--excluded-tools", *harness.COPILOT_EXCLUDED_TOOLS],
     },
 }
+# Goose with no provider of its own starts on the owner's OpenRouter key (as delegated Goose does) and needs a
+# model to start with: a free one, so the first message costs nothing. Its model picker then lists Goose's own.
+GOOSE_START_MODEL = "poolside/laguna-s-2.1:free"
 # The pickers the chat shows, in this order; other options go under "More".
 SHOWN_CATEGORIES = ("model", "thought_level", "mode")
 
@@ -244,6 +247,11 @@ def _agent_env(agent: str, model: str, token: str = "") -> Dict[str, str]:
         key = os.getenv("OPENROUTER_API_KEY") or _keychain_lookup("OPENROUTER_API_KEY")
         if key:
             env["OPENROUTER_API_KEY"] = key
+    if agent == "goose" and not os.getenv("GOOSE_PROVIDER") and not (harness.owner_home("goose") / "config.yaml").is_file():
+        key = os.getenv("OPENROUTER_API_KEY") or _keychain_lookup("OPENROUTER_API_KEY")
+        if key:
+            env.update({"OPENROUTER_API_KEY": key, "GOOSE_PROVIDER": "openrouter",
+                        "GOOSE_MODEL": os.getenv("GOOSE_MODEL") or GOOSE_START_MODEL})
     if agent == "copilot" and _copilot_byok(model):
         # Copilot on the owner's own provider key (Settings › Agents model openrouter/…), as for delegated runs.
         private_home = chats_root() / "copilot-home"
@@ -593,9 +601,11 @@ class ChatHost:
 
     async def list_stream(self, disconnected) -> Any:
         """The chat list as it changes (any chat starting, finishing, waiting, renamed): for the sidebar, so a
-        chat working in the background shows it. A keep-alive (None) when quiet."""
+        chat working in the background shows it. A keep-alive (None) when quiet. It starts with the list as it is, so
+        nothing that changed while the app reconnected is missed."""
         self._load_all()
         cursor = self._version
+        yield self.list(agents=False)
         while not await disconnected():
             if self._version == cursor:
                 waiter: asyncio.Future = asyncio.get_running_loop().create_future()

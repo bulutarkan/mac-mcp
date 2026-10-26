@@ -624,6 +624,22 @@ class ChatHostTest(unittest.TestCase):
         self.assertEqual(chat_sessions.AGENTS["codex"]["mcp_name"], "mac-mcp-chat")
         self.assertEqual(chat_sessions._tool_source("mcp.mac-mcp-chat.write_file"), ("mac-mcp", "write_file"))
 
+    def test_goose_without_a_provider_of_its_own_starts_on_openrouter(self):
+        goose_home = Path(self.tmp.name) / "goose-config"
+        goose_home.mkdir()
+        environ = {key: value for key, value in os.environ.items()
+                   if key not in ("GOOSE_PROVIDER", "GOOSE_MODEL", "OPENROUTER_API_KEY")}
+        with mock.patch.object(chat_sessions.harness, "owner_home", return_value=goose_home), \
+                mock.patch.object(chat_sessions, "_keychain_lookup", return_value="or-key"), \
+                mock.patch.dict(os.environ, environ, clear=True):
+            env = chat_sessions._agent_env("goose", "", "mcs_token")
+            self.assertEqual((env["GOOSE_PROVIDER"], env["GOOSE_MODEL"]), ("openrouter", chat_sessions.GOOSE_START_MODEL))
+            self.assertTrue(env["OPENROUTER_API_KEY"] == "or-key")  # never print a key in a failure
+            (goose_home / "config.yaml").write_text("GOOSE_PROVIDER: anthropic\n")  # the owner's own setup wins
+            env = chat_sessions._agent_env("goose", "", "mcs_token")
+            self.assertNotIn("GOOSE_PROVIDER", env)
+            self.assertNotIn("OPENROUTER_API_KEY", env)
+
     def test_sign_in_problems_are_recognised(self):
         from mcp_server.acp_client import AcpError
         self.assertTrue(chat_sessions._needs_sign_in(AcpError("Internal error", -32603,
