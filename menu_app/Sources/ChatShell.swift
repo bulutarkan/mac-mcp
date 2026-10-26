@@ -704,7 +704,13 @@ struct ChatComposer: View {
         panel.allowsMultipleSelection = true
         panel.prompt = "Add"
         if let project = model.chat?.project { panel.directoryURL = URL(fileURLWithPath: project) }
-        if panel.runModal() == .OK { model.attach(panel.urls) }
+        // Let SwiftUI's button/Accessibility update return before presenting AppKit UI.
+        // A nested runModal loop keeps that update open for the lifetime of the picker.
+        DispatchQueue.main.async {
+            panel.begin { response in
+                if response == .OK { model.attach(panel.urls) }
+            }
+        }
     }
     private var placeholder: String {
         if waiting { return "Answer the question above first" }

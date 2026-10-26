@@ -8,6 +8,7 @@
 - Mobile pairing keeps a bounded record of attempts (200 per minute across all addresses), and the unauthenticated development mode accepts only Mac MCP's own Chrome companion as a browser extension.
 
 ### Batch 2
+- Chat file and project pickers open without blocking the app while you choose.
 - Chat (#120): permission choices use ⌘1, ⌘2 and so on, never Return; repeated image pastes stay separate, failed sends keep newer text, lost connections say so, and images sent as file links explain why.
 - Menu (#123): connecting and stopped have their own states; Ready stays plain, waiting questions name the agent, ⌘R refreshes, disclosures announce their state, and failed calls have a separate filter. Conversation retention lives in Settings and applies live.
 - Settings (#125): search finds visible labels and opens the right tab; Decisions has Off, Browser, Mac apps and Both; voice fields save on Return or leaving the field and explain invalid values. Automation and Devices follow the Usage tabs, and Browser says “Agents in Safari and Chrome”.

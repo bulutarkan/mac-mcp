@@ -128,6 +128,20 @@ class PermissionKeysTests(unittest.TestCase):
         self.assertIn('PermissionCard(item: step, agent: "", answer: { _ in })', TRANSCRIPT)
 
 
+class FilePickerResponsivenessTests(unittest.TestCase):
+    def test_chat_pickers_do_not_hold_swiftui_accessibility_action_in_a_modal_loop(self) -> None:
+        for source, name in ((SHELL, "chooseFiles"), (WINDOW, "chooseFolder")):
+            begin = source.index(f"private func {name}()")
+            end = source.index("\n    }", begin)
+            picker = source[begin:end]
+            self.assertNotIn(".runModal()", picker,
+                             "runModal holds SwiftUI's AX press/update until the picker closes")
+            self.assertIn("DispatchQueue.main.async", picker,
+                          "present after SwiftUI's action/update has unwound")
+            self.assertIn("panel.begin {", picker)
+            self.assertIn("response == .OK", picker)
+
+
 class FailedSendTests(unittest.TestCase):
     def submit(self) -> str:
         return WINDOW[WINDOW.index("private func submit("):WINDOW.index("func resend(")]

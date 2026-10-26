@@ -1197,6 +1197,10 @@ struct NewChatSheet: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
-        if panel.runModal() == .OK { folder = panel.url }
+        DispatchQueue.main.async {
+            panel.begin { response in
+                if response == .OK { folder = panel.url }
+            }
+        }
     }
 }
