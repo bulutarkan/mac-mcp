@@ -4105,7 +4105,7 @@ def _has_locator(action: Dict[str, Any]) -> bool:
     return any(action.get(key) for key in _LOCATOR_KEYS)
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
-    "wait", "key", "keyboard", "shortcut", "extract", "scan", "read", "dialog", "hover", "drag", "post", "fill",
+    "wait", "key", "keyboard", "shortcut", "extract", "scan", "read", "dialog", "hover", "drag", "post", "fill", "autocomplete_many",
 )
 # Agents often name the action kind "action" instead of "type"; accept it.
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
@@ -4312,7 +4312,7 @@ def _action_outcome(result: Dict[str, Any]) -> str:
         return "confirmed" if result.get("posted") is True else "unconfirmed"
     if typ in {"wait"}:
         return "confirmed" if result.get("matched") else "unconfirmed"
-    if typ in {"fill", "select", "extract", "scan", "read", "scroll", "focus", "dialog"}:
+    if typ in {"fill", "select", "autocomplete_many", "extract", "scan", "read", "scroll", "focus", "dialog"}:
         return "confirmed"
     if verification in _REACTED_VERIFICATIONS or result.get("effect_observed"):
         return "page_reacted"
@@ -4328,6 +4328,74 @@ def _flag_unconfirmed(response: Dict[str, Any]) -> None:
     if pending:
         response["unconfirmed_actions"] = pending
         response["confirm_hint"] = CONFIRM_HINT
+
+
+def _autocomplete_values_problem(values: Any) -> Optional[str]:
+    if not isinstance(values, list) or not 1 <= len(values) <= 10:
+        return "values must contain 1-10 strings"
+    if any(not isinstance(v, str) or not v.strip() or len(v) > 100 for v in values):
+        return "each value must be a nonempty string of at most 100 characters"
+    if len({v.strip().casefold() for v in values}) != len(values):
+        return "duplicate values are not allowed"
+    return None
+
+
+def _autocomplete_many_js(action: Dict[str, Any]) -> str:
+    return _fill_js(_browser_js("autocomplete_many.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__SPEC__": json.dumps({k: action.get(k) for k in (
+            "selector", "values", "option_selector", "selected_selector", "timeout_ms"
+        )}, ensure_ascii=False),
+    })
+
+
+def _autocomplete_status_js(token: str, *, cancel: bool = False) -> str:
+    return f"""(function(){{
+{_browser_state_bootstrap()}
+var r=__mcpState().autocompleteRuns&&__mcpState().autocompleteRuns[{json.dumps(token)}];
+{"if(r)r.cancelled=true;" if cancel else ""}
+return btoa(unescape(encodeURIComponent(JSON.stringify(r?(r.pending?{{ok:true,pending:true}}:r.result):{{ok:false,error:'autocomplete_run_missing',outcome_unknown:true}}))));
+}})()"""
+
+
+def _autocomplete_many_action(settings: Settings, browser: str, action: Dict[str, Any],
+                              window_index: int, tab_index: Optional[int],
+                              tab_handle: Optional[str], mutation_revalidator=None) -> Dict[str, Any]:
+    target, blocked = mutation_revalidator("autocomplete_many") if mutation_revalidator else (None, None)
+    if blocked is not None:
+        return {"type": "autocomplete_many", **blocked, "_js_calls": 0}
+    out = _run_json_js(settings, browser, _autocomplete_many_js(action),
+                       window_index, tab_index, tab_handle, prevalidated_target=target)
+    token = str(out.get("run_token") or "")
+    if not token:
+        return {"type": "autocomplete_many", **out, "_js_calls": 1, "automatic_retry": False}
+    calls = 1
+    deadline = time.monotonic() + (len(action["values"]) * min(5.0, max(0.1, float(action.get("timeout_ms") or 2200)/1000))*2) + 2
+    while time.monotonic() < deadline:
+        cancellable_sleep(0.08)
+        # A delegated action cannot keep modifying a tab after the owner takes over.
+        next_target, denied = mutation_revalidator("autocomplete_many") if mutation_revalidator else (None, None)
+        if denied is not None:
+            try:
+                _run_json_js(settings, browser, _autocomplete_status_js(token, cancel=True),
+                             window_index, tab_index, tab_handle)
+            except Exception:
+                pass
+            return {"type": "autocomplete_many", **denied, "outcome_unknown": True,
+                    "automatic_retry": False, "_js_calls": calls}
+        state = _run_json_js(settings, browser, _autocomplete_status_js(token),
+                             window_index, tab_index, tab_handle, prevalidated_target=next_target)
+        calls += 1
+        if not state.get("pending"):
+            return {"type": "autocomplete_many", **state, "automatic_retry": False,
+                    "_js_calls": calls}
+    try:
+        _run_json_js(settings, browser, _autocomplete_status_js(token, cancel=True),
+                     window_index, tab_index, tab_handle)
+    except Exception:
+        pass
+    return {"type": "autocomplete_many", "ok": False, "error": "autocomplete_result_timeout",
+            "outcome_unknown": True, "automatic_retry": False, "_js_calls": calls}
 
 
 def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -4358,6 +4426,11 @@ def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             problem = _fill_values_problem(action.get("values"))
             if problem:
                 raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, f"actions[{index}] (fill) {problem}"))
+        if typ == "autocomplete_many":
+            problem = _autocomplete_values_problem(action.get("values"))
+            if problem or not str(action.get("selector") or "").strip() or not str(action.get("selected_selector") or "").strip():
+                raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST,
+                    f"actions[{index}] (autocomplete_many) requires selector and 1-10 unique values: {problem or 'selector/selected_selector missing'}"))
         if typ == "extract":
             problem = _extract_fields_problem(action.get("fields"))
             if problem:
@@ -5045,6 +5118,20 @@ def _browser_act_locked(
                 if not point_result.get("ok"):
                     break
                 mutation_dispatched = True
+                continue
+            if typ == "autocomplete_many":
+                if not flush_pending():
+                    break
+                in_flight = [typ]
+                mutation_dispatched = True
+                auto_result = _autocomplete_many_action(
+                    settings, browser, action, window_index, tab_index, tab_handle, revalidate_mutation)
+                internal_js_calls += int(auto_result.pop("_js_calls", 0))
+                results.append(auto_result)
+                current_observation_id = None
+                in_flight = []
+                if not auto_result.get("ok"):
+                    break
                 continue
             if typ == "fill":
                 if not flush_pending():
