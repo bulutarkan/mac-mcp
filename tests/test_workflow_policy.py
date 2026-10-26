@@ -61,8 +61,9 @@ def _without_pages_deploy_job(test: unittest.TestCase, text: str) -> str:
 
 
 # npm Trusted Publishing (#210) needs `id-token: write` to prove the package comes from this
-# repository; that is the only write it may ask for, inside its publish job, on tag pushes and manual
-# dry runs only (never pull requests), and without any stored secret.
+# repository; that is the only write it may ask for, inside its publish job (which only publishes the
+# package the read-only verify job built, #115), on tag pushes and manual dry runs only (never pull
+# requests), and without any stored secret.
 NPM_WORKFLOW = "npm-publish.yml"
 
 
@@ -73,11 +74,15 @@ def _without_npm_publish_identity(test: unittest.TestCase, text: str) -> str:
                      [line.strip() for line in triggers.group(1).splitlines() if re.match(r"^  \S", line)])
     test.assertIn('tags: ["v*"]', triggers.group(1))
     test.assertNotIn("secrets.", text)
-    permissions = re.search(r"(?m)^    permissions:\n((?:^      [^\n]*\n)+)", text)
+    job = re.search(r"(?ms)^  publish:\n(.*?)(?=^  \S|\Z)", text)
+    test.assertIsNotNone(job, "npm-publish.yml must keep id-token: write inside its publish job")
+    test.assertEqual(1, len(re.findall(r"(?m)^    permissions:", text)), "only the publish job widens permissions")
+    permissions = re.search(r"(?m)^    permissions:\n((?:^      [^\n]*\n)+)", job.group(1))
     test.assertIsNotNone(permissions)
     test.assertEqual(["contents: read", "id-token: write"],
                      sorted(line.strip() for line in permissions.group(1).splitlines()))
-    return text[:permissions.start(1)] + text[permissions.end(1):]
+    start, end = job.start(1) + permissions.start(1), job.start(1) + permissions.end(1)
+    return text[:start] + text[end:]
 
 
 if __name__ == "__main__":

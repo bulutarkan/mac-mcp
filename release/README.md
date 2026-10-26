@@ -120,6 +120,10 @@ signed stable checkpoint, and npm installs then update through `mac-mcp update` 
 install. Its version is the public product version (`tests/test_npm_package.py` keeps
 `packaging/npm/package.json` equal to `pyproject.toml`). Pushing a public version tag
 `v<major>.<minor>.<patch>` runs `.github/workflows/npm-publish.yml`, which publishes only when the
-newest signed stable checkpoint at that tag serves the same version, using npm Trusted Publishing
-(OIDC, with provenance; no npm token is stored). Checkpoint tags (`v<version>-r<N>`) are not
-published to npm. Running the workflow by hand is a dry run.
+tag points at a signed stable checkpoint commit itself (`verify_release_manifest.py --checkpoint-at`;
+a later commit that merely has a checkpoint in its history fails) and that checkpoint serves the same
+version. The package is packed from exactly that verified commit by a read-only job; a separate
+publish job, the only one with `id-token: write`, publishes it with a digest-checked npm
+(`scripts/npm_client.sh`) using npm Trusted Publishing (OIDC, with provenance; no npm token is
+stored). Checkpoint tags (`v<version>-r<N>`) are not published to npm. Running the workflow by hand
+is a dry run against the newest signed checkpoint of the chosen branch.

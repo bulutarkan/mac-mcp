@@ -60,22 +60,42 @@ def _latest_release(start: str, branch: str, max_commits: int = 512) -> str:
     )
 
 
+def _require_checkpoint(commit: str) -> None:
+    has_manifest, has_signature = _marker_state(commit)
+    if not (has_manifest and has_signature):
+        raise release_trust.ReleaseVerificationError(
+            f"{commit[:8]} is not a signed stable checkpoint itself "
+            "(it does not add a new signed release manifest)"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify a committed Mac MCP stable release payload.")
     parser.add_argument("--commit", default=None, help="Verify this exact commit.")
     parser.add_argument("--latest-from", default=None, help="Find and verify the newest signed release at/under this revision.")
+    parser.add_argument(
+        "--checkpoint-at",
+        default=None,
+        help="Require this revision (e.g. a tag) to BE a signed stable checkpoint and verify it; "
+        "a descendant of a checkpoint fails.",
+    )
+    parser.add_argument("--expect-version", default=None, help="Fail unless the verified release serves this version.")
     parser.add_argument("--branch", default="main")
     args = parser.parse_args()
     import subprocess
 
-    if args.commit and args.latest_from:
-        parser.error("use either --commit or --latest-from, not both")
+    if sum(bool(value) for value in (args.commit, args.latest_from, args.checkpoint_at)) > 1:
+        parser.error("use only one of --commit, --latest-from or --checkpoint-at")
     revision = args.commit or args.latest_from or "HEAD"
+    if args.checkpoint_at:
+        revision = args.checkpoint_at + "^{commit}"  # an annotated tag names its commit
     resolved = subprocess.check_output(
-        ["git", "-C", str(ROOT), "rev-parse", revision],
+        ["git", "-C", str(ROOT), "rev-parse", "--verify", revision],
         text=True,
     ).strip()
     try:
+        if args.checkpoint_at:
+            _require_checkpoint(resolved)
         target = _latest_release(resolved, args.branch) if args.latest_from else resolved
         verified = release_trust.verify_release_commit(
             ROOT,
@@ -83,12 +103,16 @@ def main() -> int:
             expected_branch=args.branch,
             signers_path=ROOT / "mcp_server" / release_trust.TRUSTED_SIGNERS_FILENAME,
         )
+        if args.expect_version is not None and verified.version != args.expect_version:
+            raise release_trust.ReleaseVerificationError(
+                f"{verified.release_id} at {target[:8]} serves {verified.version}, not {args.expect_version}"
+            )
     except release_trust.ReleaseVerificationError as exc:
         print(f"release verification failed: {exc}", file=sys.stderr)
         return 1
     print(
         f"verified {verified.release_id} v{verified.version} "
-        f"{verified.target_commit[:8]} files={verified.file_count} "
+        f"{verified.target_commit} files={verified.file_count} "
         f"payload={verified.payload_sha256[:16]} signer={verified.signer_fingerprint or 'unknown'}"
     )
     return 0

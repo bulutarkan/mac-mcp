@@ -54,7 +54,7 @@ class PublishWorkflowTests(unittest.TestCase):
         self.assertIn("id-token: write", self.workflow)
         self.assertNotIn("secrets.", self.workflow)
         self.assertNotIn("NODE_AUTH_TOKEN", self.workflow)
-        self.assertIn("scripts/verify_release_manifest.py --latest-from HEAD --branch main", self.workflow)
+        self.assertIn("scripts/verify_release_manifest.py --checkpoint-at", self.workflow)  # #115
         self.assertIn("--provenance", self.workflow)
         self.assertIn("scripts/build_npm_package.sh", self.workflow)
 

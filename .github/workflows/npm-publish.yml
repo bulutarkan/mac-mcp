@@ -3,8 +3,12 @@ name: npm Publish
 # Publishes @bulutarkan/mac-mcp (#210) when a public version tag (v<major>.<minor>.<patch>) is pushed.
 # Stable checkpoints (v<version>-r<N>) are not published: the package's installer always installs the
 # newest signed stable checkpoint, and installed copies update through `mac-mcp update`.
+# The tag must point at a signed stable checkpoint commit itself (not a later commit), and the package
+# is packed from exactly that verified commit (#115).
 # Publishing uses npm Trusted Publishing (OIDC): no npm token is stored and the package gets provenance.
-# Run by hand (workflow_dispatch) it is a dry run of the same checks on the chosen branch.
+# Only the publish job can ask for the OIDC token; it runs nothing but a digest-checked npm.
+# Run by hand (workflow_dispatch) it is a dry run of the same checks on the newest signed checkpoint
+# of the chosen branch.
 on:
   push:
     tags: ["v*"]
@@ -18,13 +22,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish the npm package
+  verify:
+    name: Verify and pack the signed checkpoint
     runs-on: macos-15
     timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      version: ${{ steps.checkpoint.outputs.version }}
+      tarball: ${{ steps.pack.outputs.name }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
       - name: Decide what this run does
         id: plan
@@ -48,9 +54,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check the version
+      - name: Check the version and the signed checkpoint
         if: steps.plan.outputs.mode != 'skip'
-        id: version
+        id: checkpoint
         env:
           MODE: ${{ steps.plan.outputs.mode }}
           REF_NAME: ${{ github.ref_name }}
@@ -65,29 +71,50 @@ jobs:
             echo "::error::packaging/npm/package.json is $package but pyproject.toml is $product."
             exit 1
           fi
-          # npm only gets a version that the signed stable channel already serves.
-          verified="$(python3 scripts/verify_release_manifest.py --latest-from HEAD --branch main)"
-          set -- $verified
-          if [[ "$3" != "v$product" ]]; then
-            echo "::error::The newest signed stable checkpoint here is $2 ($3); npm $product waits for a signed $product checkpoint."
+          # npm only gets the exact payload of a signed stable checkpoint that serves this version: the
+          # tag must point at the checkpoint commit itself, not at a later commit that merely has one in
+          # its history. A dry run checks the checkpoint such a tag would have to point at.
+          if [[ "$MODE" == publish ]]; then
+            target="$(git rev-parse --verify "refs/tags/$REF_NAME^{commit}")"
+            if [[ "$target" != "$(git rev-parse HEAD)" ]]; then
+              echo "::error::Tag $REF_NAME no longer points at the commit this run checked out."
+              exit 1
+            fi
+          else
+            newest="$(python3 scripts/verify_release_manifest.py --latest-from HEAD --branch main)"
+            set -- $newest
+            target="$4"
+          fi
+          if ! verified="$(python3 scripts/verify_release_manifest.py --checkpoint-at "$target" --expect-version "$product" --branch main)"; then
+            echo "::error::${target:0:8} is not a signed stable checkpoint for $product; npm $product is published only from a tag on that checkpoint commit."
             exit 1
           fi
-          echo "Signed stable checkpoint $2 serves $product."
+          set -- $verified
+          echo "Signed stable checkpoint $2 at $4 serves $product."
           echo "version=$product" >> "$GITHUB_OUTPUT"
+          echo "commit=$4" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.plan.outputs.mode != 'skip'
         with:
           node-version: "24"
 
-      - name: Use an npm with Trusted Publishing
+      - name: Use a digest-checked npm
         if: steps.plan.outputs.mode != 'skip'
-        run: npm install -g npm@11.21.0
+        run: |
+          bin="$(scripts/npm_client.sh "$RUNNER_TEMP/npm-client")"
+          echo "$bin" >> "$GITHUB_PATH"
 
-      - name: Test and pack
+      - name: Test and pack the verified commit
         if: steps.plan.outputs.mode != 'skip'
         id: pack
+        env:
+          COMMIT: ${{ steps.checkpoint.outputs.commit }}
         run: |
+          src="$RUNNER_TEMP/checkpoint"
+          mkdir -p "$src"
+          git archive "$COMMIT" | tar -x -C "$src"
+          cd "$src"
           python3 -m unittest discover -s tests -p test_npm_package.py -v
           tarball="$(scripts/build_npm_package.sh "$RUNNER_TEMP/npm" | tail -n 1)"
           expected="$(printf '%s\n' package/LICENSE package/README.md package/bin/mac-mcp-setup.js package/install.sh package/package.json)"
@@ -96,20 +123,66 @@ jobs:
             echo "::error::Unexpected package contents:"$'\n'"$actual"
             exit 1
           fi
-          shasum -a 256 "$tarball"
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          sha256="$(shasum -a 256 "$tarball" | awk '{print $1}')"
+          echo "$sha256  $tarball (from ${COMMIT:0:8})"
+          echo "path=$tarball" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$tarball")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.plan.outputs.mode != 'skip'
+        with:
+          name: npm-package
+          path: ${{ steps.pack.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the npm package
+    needs: verify
+    if: needs.verify.outputs.mode == 'publish' || needs.verify.outputs.mode == 'dry-run'
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/npm_client.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Use a digest-checked npm
+        run: |
+          bin="$(scripts/npm_client.sh "$RUNNER_TEMP/npm-client")"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm
 
       - name: Publish
-        if: steps.plan.outputs.mode != 'skip'
         env:
-          MODE: ${{ steps.plan.outputs.mode }}
-          VERSION: ${{ steps.version.outputs.version }}
-          TARBALL: ${{ steps.pack.outputs.tarball }}
+          MODE: ${{ needs.verify.outputs.mode }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARBALL_NAME: ${{ needs.verify.outputs.tarball }}
+          TARBALL_SHA256: ${{ needs.verify.outputs.sha256 }}
         run: |
+          tarball="$RUNNER_TEMP/npm/$TARBALL_NAME"
+          if [[ "$(shasum -a 256 "$tarball" | awk '{print $1}')" != "$TARBALL_SHA256" ]]; then
+            echo "::error::The package handed over from the verify job does not match its SHA-256."
+            exit 1
+          fi
           if [[ "$(npm view "@bulutarkan/mac-mcp@$VERSION" version 2>/dev/null)" == "$VERSION" ]]; then
             echo "@bulutarkan/mac-mcp@$VERSION is already on npm; nothing to publish."
           elif [[ "$MODE" == dry-run ]]; then
-            npm publish "$TARBALL" --access public --dry-run
+            npm publish "$tarball" --access public --dry-run
           else
-            npm publish "$TARBALL" --access public --provenance
+            npm publish "$tarball" --access public --provenance
           fi
