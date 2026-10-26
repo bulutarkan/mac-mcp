@@ -167,7 +167,8 @@ private struct TurnView: View, Equatable {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                     ForEach(turn.asks) { ask in
-                        PermissionCard(item: ask, agent: agentLabel, answer: { answer(ask, $0) })
+                        PermissionCard(item: ask, agent: agentLabel, shortcuts: live && ask.id == turn.asks.first?.id,
+                                       answer: { answer(ask, $0) })
                     }
                     if let reply = turn.answer {
                         if live {

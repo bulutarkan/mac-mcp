@@ -69,6 +69,8 @@ struct ChatSummary: Identifiable, Hashable {
     var turnStartedAt: Double
     var commands: [ChatCommand]
     var queue: [ChatQueued]
+    /// Whether the agent takes pictures in a message; nil until it has started and said.
+    var takesImages: Bool?
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
@@ -95,6 +97,7 @@ struct ChatSummary: Identifiable, Hashable {
             ChatQueued(id: $0["id"] as? String ?? "", text: $0["text"] as? String ?? "",
                        files: ($0["attachments"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
         }
+        takesImages = object["takes_images"] as? Bool
     }
 
     var projectName: String { (project as NSString).lastPathComponent }
@@ -248,6 +251,10 @@ final class ChatModel: ObservableObject {
     @Published var attachments: [URL] = []
     @Published var error: String?
     @Published var loaded = false
+    /// The open chat's live updates: live, reconnecting or offline (see ChatLink).
+    @Published private(set) var link = ChatLink()
+    /// Messages whose send failed and that could not go back into an empty message box.
+    @Published var failedSends: [ChatFailedSend] = []
 
     private let api: ChatAPI
     /// The request for a chat's event stream (server-sent events); without one the transcript is polled.
@@ -360,6 +367,7 @@ final class ChatModel: ObservableObject {
         cursor = 0
         chat = allChats.first { $0.id == id }
         poller?.cancel()
+        link = ChatLink()
         guard let id else { return }
         poller = Task { [weak self] in
             // Opening a chat starts its agent, so the models and modes it offers show before the first message.
@@ -397,10 +405,10 @@ final class ChatModel: ObservableObject {
         return true
     }
 
+    /// Ask Again: sends the same words straight away, leaving what is in the message box alone.
     func retry(_ text: String) {
-        guard chat?.running != true else { return }
-        draft = text
-        send()
+        guard let id = selectedID, chat?.running != true else { return }
+        submit(text, [], to: id)
     }
 
     func attach(_ urls: [URL]) {
@@ -439,11 +447,12 @@ final class ChatModel: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         let stamp = formatter.string(from: Date())
-        let file = folder.appendingPathComponent("Pasted image \(stamp).png")
+        let file: URL
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
-            try png.write(to: file, options: .atomic)
+            // Two pastes in the same second get two files ("… 2.png"), never one written over the other.
+            file = try ChatPaste.save(png, in: folder, stamp: stamp)
         } catch {
             self.error = "Could not keep the pasted image: \(error.localizedDescription)"
             return true
@@ -460,22 +469,46 @@ final class ChatModel: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let files = attachments
         guard let id = selectedID, !text.isEmpty || !files.isEmpty else { return }
-        // While the agent works, the message waits on the server and goes out when the answer ends.
-        let wasRunning = chat?.running == true
         draft = ""
         attachments = []
+        submit(text, files, to: id)
+    }
+
+    /// Sends a message to a chat. If that fails, the words go back into its message box only while the owner is
+    /// still in that chat and the box is empty; otherwise they wait above it as "Not sent", to send again or copy.
+    private func submit(_ text: String, _ files: [URL], to id: String) {
+        // While the agent works, the message waits on the server and goes out when the answer ends.
+        let wasRunning = chat?.running == true
         chat?.running = true
         Task {
             let result = await api("dashboard/api/chats/\(id)/prompt", ["text": text, "attachments": files.map(\.path)])
             if !result.ok {
-                error = result.object["message"] as? String ?? "The message was not sent."
-                draft = text
-                attachments = files
-                if !wasRunning { chat?.running = false }
+                let message = result.object["message"] as? String ?? "The message was not sent."
+                if id == selectedID {
+                    error = message
+                    if !wasRunning { chat?.running = false }
+                }
+                if ChatDraftRestore.fits(failedChat: id, openChat: selectedID, draft: draft, attachments: attachments.count) {
+                    draft = text
+                    attachments = files
+                } else {
+                    failedSends.append(ChatFailedSend(chatID: id, text: text, files: files, reason: message))
+                }
             }
             await poll()
             restartPolling()
         }
+    }
+
+    /// A message that was not sent, tried again in its own chat.
+    func resend(_ failed: ChatFailedSend) {
+        guard failed.chatID == selectedID else { return }
+        failedSends.removeAll { $0.id == failed.id }
+        submit(failed.text, failed.files.filter { FileManager.default.fileExists(atPath: $0.path) }, to: failed.chatID)
+    }
+
+    func discard(_ failed: ChatFailedSend) {
+        failedSends.removeAll { $0.id == failed.id }
     }
 
     /// A waiting message: "remove" takes it back, "send_now" stops the answer in progress and sends it.
@@ -555,7 +588,7 @@ final class ChatModel: ObservableObject {
 
     func delete(_ chatID: String) {
         Task {
-            _ = await api("dashboard/api/chats/\(chatID)/delete", [:])
+            if await api("dashboard/api/chats/\(chatID)/delete", [:]).ok { failedSends.removeAll { $0.chatID == chatID } }
             if selectedID == chatID { select(nil); chat = nil }
             await refreshList()
         }
@@ -567,17 +600,32 @@ final class ChatModel: ObservableObject {
         poller = Task { [weak self] in await self?.follow(id) }
     }
 
-    /// Keep the open chat current: its event stream when there is one, else polling.
+    /// Moves `link`, publishing only a real change: polls come every 350 ms without a stream.
+    private func moveLink(_ change: (inout ChatLink) -> Void) {
+        var next = link
+        change(&next)
+        if next != link { link = next }
+    }
+
+    /// The owner pressed Retry on "Offline": follow the open chat again now, instead of after the wait.
+    func retryConnection() {
+        guard let id = selectedID else { return }
+        moveLink { $0.retrying() }
+        poller?.cancel()
+        poller = Task { [weak self] in await self?.follow(id) }
+    }
+
+    /// Keep the open chat current: its event stream when there is one, else polling. Each real outcome (the
+    /// stream opened or dropped, a poll answered or not) moves `link`, which the composer shows.
     private func follow(_ id: String) async {
         guard eventsRequest != nil else { return await pollLoop() }
         await poll()  // everything up to now, then only changes
-        var failures = 0
         while !Task.isCancelled && id == selectedID {
             if let request = eventsRequest?("dashboard/api/chats/\(id)/events?after=\(cursor)") {
                 do {
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                    failures = 0
+                    if !Task.isCancelled && id == selectedID { moveLink { $0.opened() } }
                     for try await line in bytes.lines {
                         guard !Task.isCancelled, id == selectedID else { return }
                         guard line.hasPrefix("data: "), let data = line.dropFirst(6).data(using: .utf8),
@@ -589,8 +637,10 @@ final class ChatModel: ObservableObject {
                 }
             }
             // The stream ended (server restart, sleep): catch up once, then reconnect, slower each time.
-            failures += 1
-            try? await Task.sleep(nanoseconds: UInt64(min(failures, 5)) * 1_000_000_000)
+            guard !Task.isCancelled, id == selectedID else { return }
+            moveLink { $0.dropped() }
+            try? await Task.sleep(nanoseconds: UInt64(min(link.failures, 5)) * 1_000_000_000)
+            guard !Task.isCancelled else { return }
             await poll()
         }
     }
@@ -607,6 +657,11 @@ final class ChatModel: ObservableObject {
     func poll() async {
         guard let id = selectedID else { return }
         let result = await api("dashboard/api/chats/\(id)?after=\(cursor)", nil)
+        // An error the server sent (it names one) still means Mac MCP answered; only no answer at all counts.
+        if id == selectedID {
+            let answered = result.ok || result.object["error"] != nil
+            moveLink { $0.polled(ok: answered, streaming: eventsRequest != nil) }
+        }
         guard result.ok else { return }
         await apply(result.object, for: id)
     }
@@ -714,6 +769,9 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
 struct PermissionCard: View {
     let item: ChatItem
     let agent: String
+    /// ⌘1, ⌘2 … pick its choices in order (only on the question answered first, so two never share a key).
+    /// No choice is the default button: a stray Return, with the message box closed, answers nothing.
+    var shortcuts = false
     let answer: (ChatPermissionOption) -> Void
 
     var body: some View {
@@ -735,13 +793,8 @@ struct PermissionCard: View {
                     .background(RoundedRectangle(cornerRadius: VisualTokens.Radius.tile).fill(VisualTokens.quietFill))
             }
             HStack(spacing: 8) {
-                ForEach(item.options, id: \.id) { option in
-                    if option.kind == "allow_once" {
-                        Button(option.label) { answer(option) }.buttonStyle(.borderedProminent)
-                            .keyboardShortcut(.defaultAction)
-                    } else {
-                        Button(option.label) { answer(option) }.buttonStyle(.bordered)
-                    }
+                ForEach(Array(item.options.enumerated()), id: \.element.id) { index, option in
+                    choice(option, number: index + 1)
                 }
             }
         }
@@ -751,6 +804,25 @@ struct PermissionCard: View {
             .fill(VisualTokens.warning.opacity(0.12)))
         .overlay(RoundedRectangle(cornerRadius: VisualTokens.Radius.card, style: .continuous)
             .strokeBorder(VisualTokens.warning.opacity(0.45)))
+    }
+
+    /// One choice, with its ⌘ number shown when it has one.
+    @ViewBuilder private func choice(_ option: ChatPermissionOption, number: Int) -> some View {
+        let key: KeyboardShortcut? = shortcuts && number <= 9
+            ? KeyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: .command) : nil
+        let label = HStack(spacing: 6) {
+            Text(option.label)
+            if key != nil { Text("⌘\(number)").foregroundStyle(.secondary) }
+        }
+        Group {
+            if option.kind == "allow_once" {
+                Button { answer(option) } label: { label }.buttonStyle(.borderedProminent)
+            } else {
+                Button { answer(option) } label: { label }.buttonStyle(.bordered)
+            }
+        }
+        .keyboardShortcut(key)
+        .help(key == nil ? option.label : "\(option.label) (⌘\(number))")
     }
 
     /// Once answered, the question shrinks to one quiet line under the step it was about.

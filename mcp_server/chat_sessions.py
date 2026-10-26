@@ -596,7 +596,8 @@ class Chat:
         self.warming: Optional[asyncio.Task] = None
         self.startup_calls: set[str] = set()  # the Codex adapter's MCP start reports, not steps
         self.waiters: List[asyncio.Future] = []
-        self.prompt_caps: Dict[str, Any] = {}  # what the agent takes in a prompt besides text (image, …)
+        # What the agent takes in a prompt besides text (image, …); None until it said, at its start.
+        self.prompt_caps: Optional[Dict[str, Any]] = None
         self.stop_requested = False  # Stop came while the agent was still starting: the turn task is cancelled
         self.on_change: Optional[Callable[[], None]] = None
 
@@ -654,6 +655,8 @@ class Chat:
         meta["agent_alive"] = self.conn is not None and self.conn.running
         meta["connecting"] = self.warming is not None and not self.warming.done()
         meta.setdefault("config", [])
+        # Whether a picture goes to the agent as one (else as a file link): the app notes it on the attachment.
+        meta["takes_images"] = None if self.prompt_caps is None else bool(self.prompt_caps.get("image"))
         return meta
 
 
@@ -980,7 +983,7 @@ class ChatHost:
         try:
             await self._ensure_session(chat)
             result = await chat.conn.request("session/prompt", {
-                "sessionId": chat.session_id, "prompt": _prompt_blocks(text, files or [], chat.prompt_caps)})
+                "sessionId": chat.session_id, "prompt": _prompt_blocks(text, files or [], chat.prompt_caps or {})})
             stop = str(result.get("stopReason") or "end_turn")
             usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
 

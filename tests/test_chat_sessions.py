@@ -663,6 +663,25 @@ class ChatHostTest(unittest.TestCase):
         blocks = chat_sessions._prompt_blocks("see", chat_sessions._attachments([str(picture)]), {})
         self.assertEqual([block["type"] for block in blocks], ["text", "resource_link"])
 
+    def test_chat_says_whether_its_agent_takes_pictures_once_it_knows(self):
+        # The app notes "Goes as a file link" on an image only from what the agent itself said at its start.
+        async def scenario():
+            host = chat_sessions.get_host()
+            created = host.create(str(self.project), "copilot")["chat"]
+            await host.prompt(created["id"], "hello there")
+            state = await self.wait_idle(host, created["id"])
+            chat = host._chat(created["id"])
+            chat.prompt_caps = {"audio": True}
+            without = chat.public()["takes_images"]
+            await host.shutdown()
+            return created, state, without
+
+        created, state, without = self.run_async(scenario())
+        self.assertIsNone(created["takes_images"])  # not started yet: nothing claimed
+        self.assertIs(state["chat"]["takes_images"], True)  # the fake agent says promptCapabilities.image
+        self.assertIs(without, False)
+        self.assertNotIn("takes_images", json.loads((chat_sessions.chats_root() / created["id"] / "chat.json").read_text()))
+
     def test_rename_keeps_the_owner_title_and_commands_are_listed(self):
         async def scenario():
             host = chat_sessions.get_host()

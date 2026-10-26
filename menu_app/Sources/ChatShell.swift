@@ -529,8 +529,14 @@ struct ChatComposer: View {
 
     var body: some View {
         VStack(spacing: 6) {
+            if model.link.state != .live {
+                ConnectionNotice(state: model.link.state, retry: model.retryConnection)
+            }
             if let error = model.error {
                 Text(error).font(.caption).foregroundStyle(VisualTokens.error).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            ForEach(model.failedSends.filter { $0.chatID == model.selectedID }) { failed in
+                FailedMessage(failed: failed, tryAgain: { model.resend(failed) }, remove: { model.discard(failed) })
             }
             if !suggestions.isEmpty {
                 CommandSuggestions(commands: suggestions, selected: model.commandIndex,
@@ -551,7 +557,7 @@ struct ChatComposer: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(model.attachments, id: \.self) { url in
-                                PendingAttachment(url: url) { model.detach(url) }
+                                PendingAttachment(url: url, note: imageNote(url)) { model.detach(url) }
                             }
                         }
                     }
@@ -682,6 +688,15 @@ struct ChatComposer: View {
         !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.attachments.isEmpty
     }
 
+    /// Said on an image that goes to the agent as a file link instead of a picture (its type, its size, or an
+    /// agent that takes no pictures).
+    private func imageNote(_ url: URL) -> String? {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let agent = model.agents.first { $0.id == model.chat?.agent }?.label ?? "This agent"
+        return ChatImageNote.note(fileExtension: url.pathExtension, size: size, takesImages: model.chat?.takesImages,
+                                  agent: agent)
+    }
+
     private func chooseFiles() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -734,6 +749,76 @@ struct QueuedMessage: View {
     }
 }
 
+/// A message that did not go out and could not go back into the message box (the owner had typed since, or was
+/// in another chat): send it again, copy it, or let it go.
+struct FailedMessage: View {
+    let failed: ChatFailedSend
+    let tryAgain: () -> Void
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.circle").font(.system(size: 11, weight: .medium))
+                .foregroundStyle(VisualTokens.error)
+            Text("Not sent:").font(.system(size: 12.5, weight: .medium))
+            Text(failed.text.isEmpty ? failed.files.map(\.lastPathComponent).joined(separator: ", ") : failed.text)
+                .font(.system(size: 12.5)).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 6)
+            Button(action: tryAgain) {
+                Text("Try Again").font(.system(size: 11.5, weight: .medium))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(ChatStyle.accent.opacity(0.14)))
+                    .foregroundStyle(ChatStyle.accent)
+            }
+            .buttonStyle(.plain).help("Send this message again")
+            if !failed.text.isEmpty {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(failed.text, forType: .string)
+                } label: {
+                    Text("Copy").font(.system(size: 11.5, weight: .medium)).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain).help("Copy the message")
+            }
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Discard")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ChatStyle.raised))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(VisualTokens.error.opacity(0.45)))
+        .help(failed.reason)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Not sent: \(failed.text)")
+    }
+}
+
+/// The open chat stopped getting updates: "Reconnecting…" while the app tries again on its own, "Offline" with
+/// Retry once several tries in a row found Mac MCP not answering. A still icon, no endless animation.
+struct ConnectionNotice: View {
+    let state: ChatConnection
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if state == .offline {
+                Image(systemName: "wifi.slash").foregroundStyle(VisualTokens.warning)
+                Text("Offline").fontWeight(.medium)
+                Text("Mac MCP isn't answering.").foregroundStyle(.secondary)
+                Button("Retry", action: retry).buttonStyle(.link)
+            } else {
+                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.secondary)
+                Text("Reconnecting…").foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 // MARK: Attachments
 
 enum AttachmentThumbnails {
@@ -764,15 +849,23 @@ enum AttachmentThumbnails {
     }
 }
 
-/// A file waiting to be sent: its picture or icon, its name, and a button to take it out.
+/// A file waiting to be sent: its picture or icon, its name, and a button to take it out. An image that will go
+/// as a file link says so under its name.
 private struct PendingAttachment: View {
     let url: URL
+    let note: String?
     let remove: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
             preview.frame(width: 28, height: 28).clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            Text(AttachmentThumbnails.shortName(url.lastPathComponent)).font(.system(size: 12)).lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(AttachmentThumbnails.shortName(url.lastPathComponent)).font(.system(size: 12)).lineLimit(1)
+                if let note {
+                    Text(note).font(.system(size: 10.5)).foregroundStyle(VisualTokens.warning).lineLimit(1)
+                }
+            }
+            .help(note ?? url.path)
             Button(action: remove) {
                 Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
                     .frame(width: 16, height: 16).background(Circle().fill(VisualTokens.quietFill))
