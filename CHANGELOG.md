@@ -7,6 +7,7 @@
 - npm publishes only from a tag that is the signed stable checkpoint itself, packed from that exact commit, with a digest-checked npm in a job of its own that alone can request the publishing token.
 - Mobile pairing keeps a bounded record of attempts (200 per minute across all addresses), and the unauthenticated development mode accepts only Mac MCP's own Chrome companion as a browser extension.
 - Dependencies with known vulnerabilities are updated: `mcp` 1.30.0 (sessions are bounded: at most 10 000, a request body up to 4 MiB, and a session with an open event stream is no longer forgotten), Pillow 13.0.0 with `fastembed` 0.9.1 (embeddings unchanged), `certifi`, `filelock` and `setuptools`. On Python 3.10 Pillow and `filelock` stay at their last 3.10 releases, which have no fix.
+- The skill and recipe catalog only moves forward (#116): each signed catalog has a generation, and a Mac refuses an older signed catalog or a pack version lower than one it already saw; an installed pack is never "updated" to an older version. The trusted-signer overrides work only in test runs, never from the runtime `.env`, and the key rotation runbook now covers the catalog signer set.
 
 ### Batch 2
 - Chat file and project pickers open without blocking the app while you choose.

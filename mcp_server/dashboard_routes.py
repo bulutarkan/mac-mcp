@@ -1503,7 +1503,8 @@ def create_dashboard_routes(
     def _catalog_error(exc: Exception) -> Response:
         from . import catalog as catalog_store
         if isinstance(exc, catalog_store.CatalogError):
-            blocked = exc.code in {"CATALOG_SIGNATURE_INVALID", "PACK_DIGEST_MISMATCH", "PACK_BLOCKED", "CATALOG_INVALID"}
+            blocked = exc.code in {"CATALOG_SIGNATURE_INVALID", "PACK_DIGEST_MISMATCH", "PACK_BLOCKED", "CATALOG_INVALID",
+                                   "CATALOG_ROLLBACK"}
             return JSONResponse(exc.to_dict(), status_code=409 if exc.code == "CONFIRM_REQUIRED" else 422 if blocked else 400)
         raise exc
 

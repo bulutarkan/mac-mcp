@@ -90,11 +90,29 @@ def _git_text(repo: Path, *args: str, check: bool = True, timeout: int = 120) ->
     return _git_bytes(repo, *args, check=check, timeout=timeout).decode("utf-8", errors="strict").strip()
 
 
+# Test runs point the signer sets at throwaway keys. Production never does: the overrides are
+# honoured only when MAC_MCP_TEST_MODE=1, and the .env loader (security.load_env_file) drops all
+# three names, so a runtime .env can neither enable test mode nor swap a trust root.
+TEST_MODE_ENV = "MAC_MCP_TEST_MODE"
+RELEASE_SIGNERS_OVERRIDE_ENV = "MAC_MCP_RELEASE_TRUSTED_SIGNERS"
+CATALOG_SIGNERS_OVERRIDE_ENV = "MAC_MCP_CATALOG_TRUSTED_SIGNERS"
+TEST_ONLY_ENV_KEYS = frozenset({TEST_MODE_ENV, RELEASE_SIGNERS_OVERRIDE_ENV, CATALOG_SIGNERS_OVERRIDE_ENV})
+
+
+def in_test_mode() -> bool:
+    return os.environ.get(TEST_MODE_ENV, "").strip() == "1"
+
+
+def signers_override(name: str) -> Path | None:
+    """A trusted-signer file named by environment variable `name`, honoured only in test mode."""
+    raw = os.getenv(name, "").strip()
+    if not raw or not in_test_mode():
+        return None
+    return Path(raw).expanduser().resolve()
+
+
 def trusted_signers_path() -> Path:
-    override = os.getenv("MAC_MCP_RELEASE_TRUSTED_SIGNERS", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-    return Path(__file__).resolve().with_name(TRUSTED_SIGNERS_FILENAME)
+    return signers_override(RELEASE_SIGNERS_OVERRIDE_ENV) or Path(__file__).resolve().with_name(TRUSTED_SIGNERS_FILENAME)
 
 
 def _validate_trusted_signers_file(path: Path, *, identity: str = SIGNER_IDENTITY) -> None:

@@ -284,6 +284,7 @@ class UpdateHelperTests(unittest.TestCase):
             {
                 "MAC_MCP_UPDATE_DIR": str(self.update_dir),
                 "MAC_MCP_RELEASE_TRUSTED_SIGNERS": str(self.trusted_signers),
+                "MAC_MCP_TEST_MODE": "1",
             },
         )
         self.env_patcher.start()

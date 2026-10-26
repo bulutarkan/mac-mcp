@@ -13,6 +13,12 @@ install. A signature or digest that does not match blocks the install.
 Recipes from a pack land as drafts, so they run only after recipe activation.
 Scripts in a skill pack are held back: they are installed one at a time with
 enable_script after their own review, never with the pack.
+
+Every signed catalog carries a generation that only goes up (#116). This Mac remembers the
+newest catalog it accepted (accepted.json): an older generation, a different catalog with the
+same generation, or a pack version lower than one already accepted is refused, so an older
+signed snapshot cannot be replayed to walk a pack back. A catalog signed before generations
+existed counts as generation 0: the first one seen is accepted once and pinned by digest.
 """
 from __future__ import annotations
 
@@ -66,8 +72,8 @@ def catalog_dir() -> Path:
 
 
 def trusted_signers_path() -> Path:
-    raw = os.getenv("MAC_MCP_CATALOG_TRUSTED_SIGNERS", "").strip()
-    return Path(raw).expanduser() if raw else Path(__file__).resolve().with_name(TRUSTED_SIGNERS_FILENAME)
+    override = release_trust.signers_override(release_trust.CATALOG_SIGNERS_OVERRIDE_ENV)
+    return override or Path(__file__).resolve().with_name(TRUSTED_SIGNERS_FILENAME)
 
 
 def _state_root() -> Path:
@@ -87,6 +93,13 @@ def _skills_root() -> Path:
 
 def _version_tuple(value: str) -> Tuple[int, ...]:
     return tuple(int(part) for part in str(value).split("."))
+
+
+def _is_newer(candidate: str, current: Any) -> bool:
+    try:
+        return _version_tuple(candidate) > _version_tuple(str(current))
+    except ValueError:
+        return False
 
 
 def _sha256(data: bytes) -> str:
@@ -145,10 +158,35 @@ def _validate_pack(pack: Any) -> Dict[str, Any]:
     return pack
 
 
-def build_catalog(root: Path) -> Dict[str, Any]:
+def _generation(catalog: Mapping[str, Any]) -> int:
+    """The catalog's generation; 0 for a catalog signed before generations existed."""
+    if "generation" not in catalog:
+        return 0
+    value = catalog["generation"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise CatalogError("CATALOG_INVALID", "catalog.json generation must be a positive integer.")
+    return value
+
+
+def previous_catalog(root: Path) -> Dict[str, Any]:
+    """The catalog.json currently in root, unverified, or {} when there is none. Only for numbering
+    the next generation and for checking, when signing, that no pack version goes down."""
+    try:
+        data = json.loads((root / CATALOG_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def build_catalog(root: Path, generation: Optional[int] = None) -> Dict[str, Any]:
     """The unsigned catalog for root/packs/<id>/<version>/: pack.json holds the metadata and every
     other file in the version directory is listed with its size and SHA-256. Only the newest
-    version of each pack is offered."""
+    version of each pack is offered. The generation defaults to one above the catalog.json
+    already in root."""
+    if generation is None:
+        generation = _generation(previous_catalog(root)) + 1
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise CatalogError("CATALOG_INVALID", "The catalog generation must be a positive integer.")
     packs = []
     for pack_dir in sorted(path for path in (root / "packs").iterdir() if path.is_dir()):
         versions = [path for path in pack_dir.iterdir() if path.is_dir() and _VERSION_RE.fullmatch(path.name)]
@@ -163,11 +201,56 @@ def build_catalog(root: Path) -> Dict[str, Any]:
             data = path.read_bytes()
             files.append({"path": path.relative_to(version_dir).as_posix(), "size": len(data), "sha256": _sha256(data)})
         packs.append(_validate_pack({**meta, "files": files}))
-    return {"schema_version": SCHEMA_VERSION, "catalog": "mac-mcp-curated", "packs": packs}
+    return {"schema_version": SCHEMA_VERSION, "catalog": "mac-mcp-curated", "generation": generation, "packs": packs}
 
 
-def load_catalog(source: Optional[Path] = None) -> Dict[str, Any]:
-    """Read catalog.json after its signature verifies against the pinned catalog signers."""
+def _accepted_path() -> Path:
+    return _state_root() / "accepted.json"
+
+
+def _check_freshness(name: str, generation: int, digest: str, packs: List[Dict[str, Any]]) -> None:
+    """Refuse a catalog older than the newest one this Mac accepted; remember a newer one."""
+    path = _accepted_path()
+    try:
+        accepted = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        accepted = None
+    previous = accepted.get(name) if isinstance(accepted, dict) else None
+    if not isinstance(accepted, dict) or not isinstance(previous, (dict, type(None))):
+        raise CatalogError("CATALOG_STATE_UNREADABLE", f"{path} is not readable; fix or remove it.")
+    floor: Dict[str, str] = {}
+    if previous is not None:
+        known, floor = previous.get("generation"), previous.get("pack_versions")
+        if (isinstance(known, bool) or not isinstance(known, int) or not isinstance(floor, dict)
+                or not all(isinstance(value, str) and _VERSION_RE.fullmatch(value) for value in floor.values())):
+            raise CatalogError("CATALOG_STATE_UNREADABLE", f"{path} is not readable; fix or remove it.")
+        if generation < known:
+            raise CatalogError("CATALOG_ROLLBACK", f"This catalog (generation {generation}) is older than the one "
+                               f"already accepted (generation {known}); it was not loaded.")
+        if generation == known and digest != previous.get("digest"):
+            raise CatalogError("CATALOG_ROLLBACK", "This catalog differs from the accepted catalog of the same "
+                               f"generation ({known}); it was not loaded.")
+        for pack in packs:
+            before = floor.get(pack["id"])
+            if before and _version_tuple(pack["version"]) < _version_tuple(before):
+                raise CatalogError("CATALOG_ROLLBACK", f"{pack['id']} {pack['version']} is lower than the {before} "
+                                   "already accepted; the catalog was not loaded.")
+        if generation == known:
+            return
+    for pack in packs:
+        before = floor.get(pack["id"])
+        if not before or _version_tuple(pack["version"]) > _version_tuple(before):
+            floor[pack["id"]] = pack["version"]
+    accepted[name] = {"generation": generation, "digest": digest, "pack_versions": floor, "accepted_at": time.time()}
+    _write_json(path, accepted)
+
+
+def load_catalog(source: Optional[Path] = None, *, track: bool = True) -> Dict[str, Any]:
+    """Read catalog.json after its signature verifies against the pinned catalog signers.
+
+    With track (the default) it must also be at least as new as the newest catalog this Mac
+    accepted, and a newer one becomes the new floor. scripts/sign_catalog.py checks its own
+    output with track=False, so signing never moves the maintainer's floor."""
     root = Path(source) if source else catalog_dir()
     manifest_path, signature_path = root / CATALOG_FILE, root / SIGNATURE_FILE
     if not manifest_path.is_file() or not signature_path.is_file():
@@ -192,7 +275,11 @@ def load_catalog(source: Optional[Path] = None) -> Dict[str, Any]:
     ids = [_validate_pack(pack)["id"] for pack in packs]
     if len(ids) != len(set(ids)):
         raise CatalogError("CATALOG_INVALID", "A pack id appears twice in the catalog.")
-    return {"root": root, "signer": signer, "catalog": catalog, "digest": _sha256(manifest_bytes),
+    generation = _generation(catalog)
+    digest = _sha256(manifest_bytes)
+    if track:
+        _check_freshness(str(catalog.get("catalog") or ""), generation, digest, packs)
+    return {"root": root, "signer": signer, "catalog": catalog, "digest": digest, "generation": generation,
             "packs": {pack["id"]: pack for pack in packs}}
 
 
@@ -292,7 +379,7 @@ def list_packs(source: Optional[Path] = None) -> Dict[str, Any]:
     for pack_id, pack in sorted(loaded["packs"].items()):
         current = pinned.get(pack_id) or {}
         packs.append({**_summary(pack), "installed_version": current.get("version"),
-                      "update_available": bool(current) and current.get("version") != pack["version"]})
+                      "update_available": bool(current) and _is_newer(pack["version"], current.get("version"))})
     return {"ok": True, "signer": loaded["signer"], "catalog_digest": loaded["digest"], "packs": packs}
 
 
@@ -310,7 +397,12 @@ def review(pack_id: str, source: Optional[Path] = None) -> Dict[str, Any]:
     current = installed().get(pack_id)
     previous = set((current or {}).get("capabilities") or [])
     compatible = _version_tuple(__version__) >= _version_tuple(pack["min_mac_mcp_version"])
-    action = "install" if not current else ("up_to_date" if current.get("version") == pack["version"] else "update")
+    if not current:
+        action = "install"
+    elif current.get("version") == pack["version"]:
+        action = "up_to_date"
+    else:
+        action = "update" if _is_newer(pack["version"], current.get("version")) else "downgrade"
     out: Dict[str, Any] = {
         "ok": True, "pack": _summary(pack), "signer": loaded["signer"], "catalog_digest": loaded["digest"],
         "action": action, "installed_version": (current or {}).get("version"),
@@ -325,6 +417,8 @@ def review(pack_id: str, source: Optional[Path] = None) -> Dict[str, Any]:
         problems.append(f"the content needs capabilities it does not declare: {', '.join(undeclared)}")
     if not compatible:
         problems.append(f"it needs Mac MCP {pack['min_mac_mcp_version']} or newer")
+    if action == "downgrade":
+        problems.append(f"the catalog offers {pack['version']}, older than the installed {current.get('version')}")
     if problems:
         out["blocked"] = "; ".join(problems)
     if pack["kind"] == "recipe":

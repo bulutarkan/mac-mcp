@@ -40,6 +40,10 @@ The signing script hashes the Git index rather than arbitrary working-tree bytes
 
 Optional external distribution artifacts can be bound into the signed manifest with repeated `--artifact NAME=PATH` arguments. Their SHA-256 and size are then part of the signed provenance record.
 
+## Signing the skill and recipe catalog
+
+`scripts/sign_catalog.py --key <release key>` rebuilds `catalog/catalog.json` from `catalog/packs`, signs it in the `mac-mcp-catalog` namespace, and writes the next **generation** (one above the current `catalog.json`; `--generation N` sets it, and must still be higher). It refuses a catalog that would lower a pack's version. Each Mac records the newest catalog it accepted in `~/.mac-mcp/catalog/accepted.json` and refuses an older generation, a different catalog with the same generation, or a pack version lower than one it already accepted, so a replayed older signed catalog cannot walk a pack back. A catalog signed before generations existed counts as generation 0: a Mac accepts the first one it sees and pins it by digest, and the next signing makes it generation 1. Signing checks its output without moving the maintainer's own floor.
+
 ## Trust roots and key rotation
 
 There are two release trust roots and one pinned bootstrap verifier:
@@ -48,19 +52,21 @@ There are two release trust roots and one pinned bootstrap verifier:
 - `mcp_server/release_trusted_signers.txt` is the runtime/updater signer set. The release signing helper also refuses to sign with a key that is absent from this file.
 - Both trust stores are deliberately bounded to at most two unique release keys: the old and new signer during an overlap. Wildcard identities, duplicate keys, other key algorithms, or a third signer fail closed.
 - `install.sh:RELEASE_BOOTSTRAP_VERIFIER_SHA256` pins `scripts/installer_release_verify.py`. The installer verifies that small verifier before allowing it to validate a release manifest.
+- `mcp_server/catalog_trusted_signers.txt` is the signer set for the skill and recipe catalog (`catalog/catalog.json.sig`). The catalog is signed with the **same release key**, but under its own identity and SSH namespace (`mac-mcp-catalog`), so a catalog signature never verifies as a release signature or the other way round. It has the same two-key bound. A separate catalog key would only help if it were kept apart from the release key (different machine or holder); until the owner decides that, one key means one rotation, and `tests.test_catalog` fails if the two signer files stop holding the same keys. Every rotation step below therefore covers this file as well.
+- `MAC_MCP_RELEASE_TRUSTED_SIGNERS` and `MAC_MCP_CATALOG_TRUSTED_SIGNERS` point the runtime and catalog signer sets at another file **only in test mode** (`MAC_MCP_TEST_MODE=1`, set by the tests that need throwaway keys). The runtime `.env` can set none of the three (`security.load_env_file` drops them with a warning), so production servers, the updater it starts and `mac-mcp` CLI commands always use the pinned files. The installer never reads them.
 
 Normal signing-key rotation uses a bounded overlap. A release must never introduce a key and rely on that same release being trusted by the new key.
 
 ### Normal rotation runbook
 
 1. Generate the new Ed25519 private key outside the repository, keep it owner-only, and record its public fingerprint through an independent trusted channel.
-2. Prepare an **overlap release** that adds the new public key to both `install.sh:RELEASE_TRUSTED_SIGNERS` and `mcp_server/release_trusted_signers.txt` while retaining the old key in both places.
+2. Prepare an **overlap release** that adds the new public key to `install.sh:RELEASE_TRUSTED_SIGNERS`, `mcp_server/release_trusted_signers.txt` and `mcp_server/catalog_trusted_signers.txt` (as `mac-mcp-catalog ssh-ed25519 …`) while retaining the old key in all three places. The committed catalog stays signed with the old key.
 3. Do **not** change `scripts/installer_release_verify.py` in this overlap release. An older installer pins the old verifier hash and must be able to verify the overlap release before it can obtain a newer installer. If the verifier itself needs rotation, first publish a separate old-key-signed bridge release that keeps the old verifier bytes but updates the installer for the later verifier transition.
 4. Sign and publish the overlap release with the **old** key. Verify that an old-only installer accepts this release and that the installed runtime contains both trusted signers.
 5. Allow a migration window for installed clients to receive the overlap release. Do not publish a new-key-only stable release before this window: lagging clients correctly fail closed on an unknown newest signer rather than falling back to an older stable release.
-6. Publish the cutover release with the **new** key while both signer sets still contain old + new. Updated runtimes and the overlap installer must both accept it.
-7. After the migration window, publish a release signed by the **new** key that removes the old public key from both `install.sh:RELEASE_TRUSTED_SIGNERS` and `mcp_server/release_trusted_signers.txt`.
-8. Confirm that a release signed with the retired old key is rejected. Keep retired private keys offline and never reintroduce them to CI, runtime config, or release artifacts.
+6. Publish the cutover release with the **new** key while all signer sets still contain old + new. In the same release, re-sign the catalog with the new key (`scripts/sign_catalog.py --key <new key>`; it takes the next catalog generation) and commit `catalog/catalog.json` and `catalog/catalog.json.sig` before signing the release manifest. Updated runtimes and the overlap installer must both accept it.
+7. After the migration window, publish a release signed by the **new** key that removes the old public key from `install.sh:RELEASE_TRUSTED_SIGNERS`, `mcp_server/release_trusted_signers.txt` and `mcp_server/catalog_trusted_signers.txt`. Never remove the old key from the catalog signer set while the committed catalog is still signed with it: the shipped catalog would stop verifying.
+8. Confirm that a release and a catalog signed with the retired old key are both rejected. Keep retired private keys offline and never reintroduce them to CI, runtime config, or release artifacts.
 
 An installer copy from before the overlap intentionally cannot install a new-key-only release after cutover. It must first consume the old-key-signed overlap release or be replaced through an independently authenticated bootstrap path. This is fail-closed behavior, not a reason to fall back to an older release or weaken signature verification.
 
@@ -68,7 +74,7 @@ An installer copy from before the overlap intentionally cannot install a new-key
 
 If the old key is suspected compromised **before** a trustworthy overlap release has propagated, stop the stable channel. Repository history alone cannot safely bootstrap a replacement key because the compromised key could authorize the transition. Recover with an independently authenticated installer/public-key distribution path and publish the new fingerprint out of band. Never disable manifest verification, silently replace the embedded signer, or add an unbounded fallback signer.
 
-If compromise is discovered **after** the overlap release has propagated and the new key is already trusted, publish an emergency release signed by the new key that removes the compromised key from both bootstrap and runtime signer sets. Clients that missed the overlap still require the independently authenticated bootstrap path.
+If compromise is discovered **after** the overlap release has propagated and the new key is already trusted, publish an emergency release signed by the new key that removes the compromised key from the bootstrap, runtime and catalog signer sets, with the catalog re-signed by the new key. A compromised key could also have signed a catalog with a very high generation; give the re-signed catalog a generation above any such one (`--generation`), or a Mac that accepted it refuses the honest catalog until its `~/.mac-mcp/catalog/accepted.json` is removed. Clients that missed the overlap still require the independently authenticated bootstrap path.
 
 ### Rotation release checks
 
@@ -77,12 +83,12 @@ For every overlap, cutover, or retirement release:
 ```bash
 git status --short --branch
 /bin/bash -n install.sh
-python3 -m unittest tests.test_installer_release_channel tests.test_release_trust -v
+python3 -m unittest tests.test_installer_release_channel tests.test_release_trust tests.test_catalog -v
 git diff --check
 python3 scripts/verify_release_manifest.py --commit HEAD --branch main
 ```
 
-Before signing, confirm the installer signer set and `mcp_server/release_trusted_signers.txt` contain exactly the intended bounded overlap. After retirement, confirm the old key is absent from both. Keep the private keys outside the repository throughout the procedure.
+Before signing, confirm the installer signer set, `mcp_server/release_trusted_signers.txt` and `mcp_server/catalog_trusted_signers.txt` contain exactly the intended bounded overlap, and that `catalog/catalog.json.sig` verifies against the catalog set. After retirement, confirm the old key is absent from all three. Keep the private keys outside the repository throughout the procedure.
 
 ## Installer and updater behavior
 

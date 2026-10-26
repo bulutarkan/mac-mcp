@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from dotenv import dotenv_values, load_dotenv
 from fastapi import HTTPException, Request, status
 
-from . import paths
+from . import paths, release_trust
 
 BASE_DIR = Path(__file__).resolve().parent
 HOME_DIR = Path(os.getenv("MAC_MCP_HOME", str(Path.home()))).expanduser().resolve()
@@ -141,10 +141,17 @@ def load_env_file(path: Path) -> None:
     The key in .env is the one Mac MCP hands to its clients (`mac-mcp stdio`, connect, the
     dashboard), so an older key still exported in a shell or the login environment must not
     win over it: the server would then reject every client that uses the .env key.
+
+    Test-only names (release_trust.TEST_ONLY_ENV_KEYS: test mode and the trusted-signer
+    overrides) are never taken from .env, so editing it cannot swap a trust root.
     """
     global _KEY_SOURCE_WARNED
     inherited = os.environ.get("MCP_API_KEY")
+    preset = {name for name in release_trust.TEST_ONLY_ENV_KEYS if name in os.environ}
     load_dotenv(path)
+    for name in release_trust.TEST_ONLY_ENV_KEYS - preset:
+        if os.environ.pop(name, None) is not None:
+            logging.getLogger("mac_mcp.security").warning("Ignoring test-only setting %s in %s.", name, path)
     try:
         from_file = str(dotenv_values(path).get("MCP_API_KEY") or "").strip()
     except OSError:
