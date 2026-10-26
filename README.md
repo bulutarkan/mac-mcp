@@ -24,26 +24,21 @@ or with Node.js: `npx @bulutarkan/mac-mcp install` (the same installer, [details
 
 **You stay in charge.** Permission profiles decide what may run and optional Server Approval asks before risky actions; you can pause observation, turn on private mode, or keep apps and sites out of reach. Mac MCP is not a sandbox: it acts with your macOS user's permissions, localhost is machine-local transport, not same-user isolation, and what your AI app reads is sent to that app's provider. See [Product and security terminology](docs/safety.md#product-and-security-terminology).
 
-## What's new in 2.3.0
+## What's new in 2.3.1
 
-2.3.0 brings everything since 2.2.1: your other Macs and your iPhone within reach, changes in your apps you can take back, and browser work that reports what really happened.
+2.3.1 brings Mac MCP Chat, a calmer native app and steadier agent teams.
 
-**Your devices**
-- **Your other Macs:** pair them once in Settings › Devices (a one-time code and a 6-digit check on both Macs) and an agent on one can work on the others with the `fleet` tool, under each Mac's own permissions. Full access, read only or status only, and a Busy switch.
-- **Your iPhone:** agents use it through iPhone Mirroring, with no app on the phone: see and read the screen, and with full access open apps, tap, type and scroll, a whole job in one call. Read only by default; the agent cursor shows where it touches.
+**Mac MCP Chat**
+- **Your own agents in a project folder:** Claude, Codex, OpenCode, GitHub Copilot, Antigravity, Kilo Code, Kimi Code, Goose and Cline, each signed in as you through its own CLI, with Mac MCP added for the Mac. Models, thinking and modes come from the agent itself.
+- **Work alongside it:** answers stream in, each step opens to show what it did, file edits show their diff and commands their output as a live terminal. Add files and images, write while the agent works (the message waits its turn), and get a notification when a chat in the background finishes.
 
-**Safer changes**
-- **Undo in your apps:** what an agent changes in Notes, Reminders, Calendar and Mail can be undone like file changes, and never over an edit you made since.
-- **Uploads:** Safari uploads ask you first, naming the file and the site; every upload is checked for keys and passwords inside the file, not only by its name.
+**A calmer app**
+- **Settings in one look:** every pane speaks the same quiet language, with logos and status dots instead of long cards; Usage has tabs for Tools, Delegated Agents, Chat and Data & Storage.
+- **The menu** shows one card at a time, the most important first, and says just "Ready" when idle.
 
-**Browser and agents**
-- **Downloads, windows and frames:** a click can wait for the file it downloads; Chrome opens tabs in the window you ask for; saved logins work inside sign-in frames (such as Apple's on icloud.com).
-- **Agent teams** survive a server restart mid-start, stop a crashed agent's CLI before freeing its place, and finished agents give back their cache space.
-- **The Live Island and activity bubble** say where each piece of work comes from, drop questions once answered, and warn once before the iPhone borrows your pointer.
-
-**Claude Desktop and everyday use**
-- Claude Desktop keeps its connection after idle time and always uses the key in Mac MCP's `.env`; `mac-mcp connect --client claude-desktop` sets it up in one step.
-- Fewer false "done" reports (old repeating calendar events, Mail's sent check, iPhone app opening, CLI exit codes), and the Safari Visual Companion shows again.
+**Agents**
+- **Teams** check every setting before they start, can read the full report of a task they depend on, and never lose a message to an agent that already finished.
+- **Delegated agents** look up your memories and skills before they search, and **GitHub Copilot** joins as an agent provider.
 
 Earlier releases are in the [CHANGELOG](CHANGELOG.md).
 

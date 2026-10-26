@@ -1,4 +1,6 @@
-## Unreleased
+## [2.3.1] - 2026-10-26
+
+**In short:** Mac MCP Chat arrives: talk to your own Claude, Codex, OpenCode, Copilot, Antigravity and other agents in a project folder, each signed in as you, with files, images, live command output and messages that wait their turn. Settings get one calm look throughout, with Usage in tabs (Tools, Delegated Agents, Chat, Data & Storage). The menu bar app is plainer and shows one card at a time; agent teams check their settings before starting, share full reports and never lose a message; delegated agents use your memories and skills; GitHub Copilot joins as an agent. Install with npm, `install.sh` or the package; existing installs get it with `mac-mcp update`.
 
 ### Mac MCP Chat: your own agents in a project folder
 - A new Chat window (menu › Chat…, ⇧⌘N): pick a project folder and talk to Claude, Codex, OpenCode or GitHub Copilot, each signed in as you through its own CLI, with Mac MCP added for the Mac. Chats are grouped by project and continue where they stopped, also after a restart.
