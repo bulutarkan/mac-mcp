@@ -1,6 +1,7 @@
 """A browser_act wait with only a time is a plain pause, not a 10 s wait for a missing selector."""
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -24,17 +25,29 @@ class WaitPauseTests(unittest.TestCase):
         self.assertGreaterEqual(took, 0.28)
         self.assertLess(took, 1.5)
 
+    def pauses(self, action: dict) -> tuple[dict, list[float]]:
+        """The pause this wait made. time.sleep is the process's own, so other tests' background threads
+        sleeping at the same moment are left out of the count."""
+        caller = threading.current_thread()
+        slept: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            if threading.current_thread() is caller:
+                slept.append(seconds)
+
+        with patch.object(agent.time, "sleep", side_effect=sleep):
+            result, _ = self.run_wait(action)
+        return result, slept
+
     def test_seconds_is_accepted_and_the_pause_is_capped(self) -> None:
-        with patch.object(agent.time, "sleep") as sleep:
-            result, _ = self.run_wait({"type": "wait", "seconds": 600})
+        result, slept = self.pauses({"type": "wait", "seconds": 600})
         self.assertEqual("time", result["for"])
-        sleep.assert_called_once_with(agent._MAX_PAUSE_S)
+        self.assertEqual([agent._MAX_PAUSE_S], slept)
 
     def test_a_wait_with_nothing_named_is_a_short_pause(self) -> None:
-        with patch.object(agent.time, "sleep") as sleep:
-            result, _ = self.run_wait({"type": "wait"})
+        result, slept = self.pauses({"type": "wait"})
         self.assertEqual("time", result["for"])
-        sleep.assert_called_once_with(1.0)
+        self.assertEqual([1.0], slept)
 
     def test_a_wait_for_something_still_waits_for_it(self) -> None:
         with patch.object(agent, "_run_json_js", return_value={"ok": True, "matched": True}) as run:
