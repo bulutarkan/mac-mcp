@@ -36,16 +36,25 @@ class ProviderUsageSectionTests(unittest.TestCase):
         # Every agent reports tokens now (Kimi from its session journal), so none is singled out.
         self.assertNotIn("providersWithoutUsageReports", section)
 
-    def test_usage_page_leads_with_an_overview_and_folds_rare_settings(self) -> None:
+    def test_usage_page_splits_tools_agents_chat_and_data_into_tabs(self) -> None:
         settings = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
         pane = settings[settings.index("    private var usagePane: some View {"):settings.index("    private func usageOverviewCard(")]
-        order = ["usageOverviewCard(usage)", "usageActivityCard(usage)", "UsageTopToolsList(", "ProviderUsageSection(", "usageStorageCard"]
+        self.assertIn('SettingsTabPicker(selection: $tabs.usage, label: "Usage section")', pane)
+        self.assertIn(".id(tabs.usage)", pane)
+        # Tool traffic leads its tab; agents, chat and the rare data settings each get their own.
+        order = ["case .tools:", "usageOverviewCard(usage)", "usageActivityCard(usage)", "UsageTopToolsList(",
+                 "case .agents:", "ProviderUsageSection(", "case .chat:", "ChatUsageSection(",
+                 "case .data:", "usageStorageTab"]
         self.assertEqual(sorted(order, key=pane.index), order)
-        # Measurement details live in a tooltip, not their own box; data and memory settings start folded.
+        # Measurement details live in a tooltip, not their own box; the data tab shows its settings open.
         self.assertNotIn('Label("Measurement", systemImage: "ruler")', settings)
         self.assertIn(".help(usageMeasurementHelp(usage))", settings)
+        self.assertNotIn("UsageCollapsibleCard", settings)
+        tabs = (SOURCES / "SettingsTabs.swift").read_text(encoding="utf-8")
+        for text in ('"Tools"', '"Delegated Agents"', '"Chat"', '"Data & Storage"',
+                     'usage = Self.kept(for: "usage") ?? .tools', '"chat-usage": .usage'):
+            self.assertIn(text, tabs)
         overview = (SOURCES / "UsageOverview.swift").read_text(encoding="utf-8")
-        self.assertIn("@MacMCPState private var expanded = false", overview)
         self.assertIn("private static let failureMark = 0.05", overview)
         build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
         self.assertIn('"${SCRIPT_DIR}/Sources/UsageOverview.swift"', build)

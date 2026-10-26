@@ -146,61 +146,6 @@ struct UsageTopToolsList: View {
     }
 }
 
-/// A card that shows one summary line and opens to its settings, folded by default.
-struct UsageCollapsibleCard<Content: View>: View {
-    let title: String
-    let symbol: String
-    let summary: String
-    @ViewBuilder let content: () -> Content
-
-    @MacMCPState private var expanded = false
-
-    init(title: String, symbol: String, summary: String, @ViewBuilder content: @escaping () -> Content) {
-        self.title = title
-        self.symbol = symbol
-        self.summary = summary
-        self.content = content
-    }
-
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 0) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
-                } label: {
-                    HStack(spacing: 10) {
-                        Text(summary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(expanded ? 90 : 0))
-                    }
-                    .padding(.vertical, 3)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(title): \(summary)")
-                .accessibilityHint(expanded ? "Hide settings" : "Show settings")
-
-                if expanded {
-                    VStack(alignment: .leading, spacing: 14) {
-                        content()
-                    }
-                    .padding(.top, 12)
-                    .transition(.opacity)
-                }
-            }
-        } label: {
-            Label(title, systemImage: symbol)
-        }
-    }
-}
-
-
 /// How often AI apps and agents looked up and saved memories and used skills (#110). Counts only.
 struct MemorySkillUsageView: View {
     let usage: MemorySkillUsage

@@ -1152,12 +1152,11 @@ struct SettingsView: View {
         state.usagePrivacy?.enabled ?? state.usageSummary?.meteringEnabled ?? true
     }
 
-    /// Recording, retention and memory, folded under one line: settings people change rarely.
-    private var usageStorageCard: some View {
-        UsageCollapsibleCard(title: "Data & Storage", symbol: "externaldrive", summary: usageStorageSummary) {
-            usageDataSettings
-            Divider()
-            memorySettings
+    /// Recording, retention and memory: settings people change rarely, on their own tab.
+    private var usageStorageTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            GroupBox { usageDataSettings.padding(.vertical, 2) }
+            GroupBox { memorySettings.padding(.vertical, 2) }
         }
         .task { await state.refreshMemory() }
         .confirmationDialog("Delete all stored usage data?", isPresented: $confirmClearUsage) {
@@ -1177,14 +1176,6 @@ struct SettingsView: View {
         } message: {
             Text("Every memory from \(memoryClearPreview?.oldest ?? "?") to \(memoryClearPreview?.newest ?? "?") will be removed from this Mac. Export them first if you may need them. This cannot be undone.")
         }
-    }
-
-    private var usageStorageSummary: String {
-        var parts = [usageMeteringEnabled ? "Recording usage for \(usageRetentionDays) days" : "Usage recording is off"]
-        if let memory = state.memoryOverview {
-            parts.append(memory.count == 1 ? "1 memory" : "\(memory.count) memories")
-        }
-        return parts.joined(separator: " · ")
     }
 
     private var usageDataSettings: some View {
@@ -1292,8 +1283,8 @@ struct SettingsView: View {
     }
 
     private var usagePane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 13) {
                 HStack(alignment: .top) {
                     paneHeader(
                         "Usage",
@@ -1315,73 +1306,87 @@ struct SettingsView: View {
                         .accessibilityLabel("Refresh usage")
                     }
                 }
-
-                if let issue = state.usageIssue {
-                    Label(issue, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let usage = state.usageSummary {
-                    usageOverviewCard(usage)
-                    usageActivityCard(usage)
-                    if !usage.topTools.isEmpty {
-                        GroupBox {
-                            UsageTopToolsList(tools: usage.topTools, format: compactNumber)
-                                .padding(.vertical, 2)
-                        } label: {
-                            Label("Top Tools", systemImage: "list.number")
-                        }
-                    }
-                    if let memorySkills = usage.memorySkills, !memorySkills.isEmpty {
-                        GroupBox {
-                            MemorySkillUsageView(usage: memorySkills, format: compactNumber)
-                                .padding(.vertical, 2)
-                        } label: {
-                            Label("Memory and Skills", systemImage: "brain")
-                        }
-                    }
-                } else if state.usageLoading {
-                    GroupBox {
-                        HStack {
-                            ProgressView().controlSize(.small)
-                            Text("Loading Usage…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        .padding(.vertical, 8)
-                    }
-                } else {
-                    GroupBox {
-                        Text("Usage becomes available after the first measured MCP tool call.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 8)
-                    }
-                }
-
-                ProviderUsageSection(
-                    summary: state.providerUsageSummary,
-                    loading: state.providerUsageLoading,
-                    issue: state.providerUsageIssue,
-                    period: $providerUsagePeriod
-                )
-                .onChange(of: providerUsagePeriod) { period in
-                    Task {
-                        await state.refreshProviderUsage(days: period.days)
-                    }
-                }
-
-                ChatUsageSection(state: state)
-
-                usageStorageCard
-
-                Spacer(minLength: 0)
+                SettingsTabPicker(selection: $tabs.usage, label: "Usage section")
             }
-            .padding(22)
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch tabs.usage {
+                    case .tools:
+                        if let issue = state.usageIssue {
+                            Label(issue, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if let usage = state.usageSummary {
+                            usageOverviewCard(usage)
+                            usageActivityCard(usage)
+                            if !usage.topTools.isEmpty {
+                                GroupBox {
+                                    UsageTopToolsList(tools: usage.topTools, format: compactNumber)
+                                        .padding(.vertical, 2)
+                                } label: {
+                                    Label("Top Tools", systemImage: "list.number")
+                                }
+                            }
+                            if let memorySkills = usage.memorySkills, !memorySkills.isEmpty {
+                                GroupBox {
+                                    MemorySkillUsageView(usage: memorySkills, format: compactNumber)
+                                        .padding(.vertical, 2)
+                                } label: {
+                                    Label("Memory and Skills", systemImage: "brain")
+                                }
+                            }
+                        } else if state.usageLoading {
+                            GroupBox {
+                                HStack {
+                                    ProgressView().controlSize(.small)
+                                    Text("Loading Usage…")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                }
+                                .padding(.vertical, 8)
+                            }
+                        } else {
+                            GroupBox {
+                                Text("Usage becomes available after the first measured MCP tool call.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 8)
+                            }
+                        }
+                    case .agents:
+                        ProviderUsageSection(
+                            summary: state.providerUsageSummary,
+                            loading: state.providerUsageLoading,
+                            issue: state.providerUsageIssue,
+                            period: $providerUsagePeriod
+                        )
+                        .onChange(of: providerUsagePeriod) { period in
+                            Task {
+                                await state.refreshProviderUsage(days: period.days)
+                            }
+                        }
+                    case .chat:
+                        ChatUsageSection(state: state)
+                    case .data:
+                        usageStorageTab
+                    }
+                }
+                .padding(22)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id(tabs.usage)  // each tab opens at its top
         }
     }
 
