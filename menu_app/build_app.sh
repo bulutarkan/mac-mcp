@@ -73,6 +73,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/AppModels+ScheduledTasks.swift"
   "${SCRIPT_DIR}/Sources/AppModels+Live.swift"
   "${SCRIPT_DIR}/Sources/StatusDisplay.swift"
+  "${SCRIPT_DIR}/Sources/MenuLiveStatus.swift"
   "${SCRIPT_DIR}/Sources/OnboardingChecklist.swift"
   "${SCRIPT_DIR}/Sources/OnboardingBridge.swift"
   "${SCRIPT_DIR}/Sources/OnboardingWindowController.swift"

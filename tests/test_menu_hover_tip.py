@@ -95,8 +95,9 @@ class MenuHoverTipTests(unittest.TestCase):
         chips = MENU[MENU.index("private var chipsRow"):MENU.index("private var successTint")]
         self.assertIn("MenuHoverCopy.toolCalls(count: state.totalCalls)", chips)
         self.assertIn("MenuHoverCopy.success(calls: state.totalCalls, rate: state.successRate)", chips)
-        self.assertIn("MenuHoverCopy.agents(running: state.activeAgents)", chips)
-        self.assertIn("MenuHoverCopy.conversations(", chips)
+        # #123: agents and conversations are counted in their own rows, not repeated in chips.
+        self.assertNotIn("MenuHoverCopy.agents(running:", chips)
+        self.assertNotIn("MenuHoverCopy.conversations(", chips)
         chip = MENU[MENU.index("private struct MenuChip"):MENU.index("private struct QuotaBadges")]
         self.assertIn(".menuHoverTip(caption)", chip)
         self.assertNotIn(".help(", chip)

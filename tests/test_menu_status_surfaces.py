@@ -80,11 +80,12 @@ class MenuPopoverStructureTests(unittest.TestCase):
         self.assertNotIn("attentionBanner", self.body)
         self.assertNotIn("securityCard", self.body)
 
-    def test_scroll_regions_are_the_popover_and_the_agent_list_only(self) -> None:
-        # The owner asked for the agent list to scroll inside itself, about five rows tall (#201).
-        self.assertEqual(2, len(re.findall(r"\bScrollView\s*[({]", self.menu)))
+    def test_one_scroll_region_for_the_whole_popover(self) -> None:
+        # #123: one scroll region; the agent list expands inline instead of scrolling inside the
+        # popover's own scroll view (it scrolled inside itself since #201).
+        self.assertEqual(1, len(re.findall(r"\bScrollView\s*[({]", self.menu)))
         card = self.menu[self.menu.index("private var agentCard"):self.menu.index("private func compactAgentRow")]
-        self.assertEqual(1, len(re.findall(r"\bScrollView\s*[({]", card)))
+        self.assertEqual(0, len(re.findall(r"\bScrollView\s*[({]", card)))
         self.assertNotIn("LazyVStack", self.menu)
 
     def test_header_uses_shared_connection_status_without_session_history_override(self) -> None:
@@ -122,7 +123,7 @@ class MenuPopoverStructureTests(unittest.TestCase):
         self.assertNotIn("Show fewer", card)
         self.assertIn("displayAgents.prefix(Self.agentListLimit)", card)
         self.assertIn("private static let agentListLimit = 20", self.menu)
-        self.assertIn(".frame(height: min(agentListHeight, Self.agentListVisibleHeight))", card)
+        self.assertIn("agentRow(agent)", card)
 
     def test_recent_activity_is_collapsed_with_a_route_to_the_full_list(self) -> None:
         self.assertIn("@MacMCPState private var showActivity = false", self.menu)
@@ -139,15 +140,19 @@ class MenuPopoverStructureTests(unittest.TestCase):
         self.assertIn('.accessibilityLabel("Restart Server")', header)
         self.assertNotIn(".frame(maxWidth: .infinity)", header)
         chips = self.menu[self.menu.index("private var chipsRow"):self.menu.index("private var successTint")]
-        for symbol in ('"bolt.fill"', '"checkmark.seal.fill"', '"cpu"', '"rectangle.stack"'):
+        for symbol in ('"bolt.fill"', '"checkmark.seal.fill"'):
             self.assertIn(symbol, chips)
+        # #123: running agents and conversations are counted in their rows, not again in a chip.
+        for symbol in ('"cpu"', '"rectangle.stack"'):
+            self.assertNotIn(symbol, chips)
         for label in ('Label("Recent activity", systemImage: "waveform.path.ecg")', 'Label("Conversations", systemImage: "rectangle.stack")'):
             self.assertIn(label, self.menu)
-        self.assertEqual(2, self.menu.count(".disclosureGroupStyle(MenuDisclosureStyle())"))
+        self.assertEqual(2, self.menu.count(".disclosureGroupStyle(MenuDisclosureStyle("))
 
     def test_a_stopped_server_gets_a_prominent_start(self) -> None:
         card = self.menu[self.menu.index("private var connectionCard"):self.menu.index("private var setupCard")]
-        self.assertIn("let stopped = !state.serverRunning && !state.startingAfterLogin", card)
+        # #123: only a server a finished check found stopped; connecting and starting are not stopped.
+        self.assertIn("let stopped = liveStatus.server == .stopped", card)
         self.assertIn('"Your AI apps can\'t use this Mac"', card)
         start = card[card.index("if stopped {"):card.index("} else if")]
         self.assertIn("state.startServer()", start)
@@ -165,8 +170,14 @@ class MenuPopoverStructureTests(unittest.TestCase):
 
     def test_menu_bar_icon_is_reserved_for_activity(self) -> None:
         app = (SOURCES / "MacMCPMenuApp.swift").read_text(encoding="utf-8")
-        self.assertIn("return .working(hollow: state.pulse)", app)
-        self.assertIn("state.activeAgents > 0", app)
+        live = (SOURCES / "MenuLiveStatus.swift").read_text(encoding="utf-8")
+        state = (SOURCES / "AppState.swift").read_text(encoding="utf-8")
+        self.assertIn("case .working: return .working(hollow: state.pulse)", app)
+        # The icon and the popup header read one live state (#123): agents and active conversations.
+        self.assertIn("switch live.iconLook", app)
+        self.assertIn("var isWorking: Bool { agentsWorking > 0 || conversationsActive > 0 }", live)
+        self.assertIn("agentsWorking: activeAgents", state)
+        self.assertIn("conversationsActive: hasReliableSessionSignal ? sessionActiveCount : 0", state)
         self.assertNotIn("sessionNeedsAttentionCount", app)
         self.assertNotIn("exclamationmark.triangle.fill", app)
 

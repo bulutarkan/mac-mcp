@@ -159,6 +159,7 @@ private enum SettingsFeedbackScope: String, Equatable {
     case decisions
     case endpoint
     case runtime
+    case sessions
     case voice
 }
 
@@ -2757,25 +2758,28 @@ struct SettingsView: View {
                 }
 
                 GroupBox("Session Lifecycle") {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Steering session visibility")
-                                .font(SettingsType.title)
-                            Text("How long idle and ended sessions stay visible as neutral history in the control surface.")
-                                .font(SettingsType.meta)
-                                .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Steering session visibility")
+                                    .font(SettingsType.title)
+                                Text("How long idle and ended sessions stay visible as neutral history in the control surface.")
+                                    .font(SettingsType.meta)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Stepper(
+                                "\(settings.steeringSessionMinutes) min",
+                                value: $settings.steeringSessionMinutes,
+                                in: 1...120,
+                                step: 1
+                            )
+                            .frame(width: 150)
+                            .onChange(of: settings.steeringSessionMinutes) { minutes in applySessionRetention(minutes) }
                         }
-                        Spacer()
-                        Stepper(
-                            "\(settings.steeringSessionMinutes) min",
-                            value: $settings.steeringSessionMinutes,
-                            in: 1...120,
-                            step: 1
-                        )
-                        .frame(width: 150)
-                        .onChange(of: settings.steeringSessionMinutes) { _ in persistSettings(scope: .runtime, success: "Saved · applies live") }
+                        .padding(.top, 5)
+                        saveFeedbackRow(.sessions)
                     }
-                    .padding(.top, 5)
                 }
 
                 decisionAccelerationBox
@@ -4203,6 +4207,27 @@ struct SettingsView: View {
         guard value != settings.ttsRate else { return }
         settings.ttsRate = value
         persistSettings(scope: .voice, success: "Saved · applies live")
+    }
+
+    /// How long idle conversations stay listed: saved, then handed to the running server, which
+    /// otherwise reads it only when it starts. The menu no longer has its own copy of this (#123).
+    private func applySessionRetention(_ minutes: Int) {
+        do {
+            try settings.save()
+        } catch {
+            let message = "Could not save settings: \(error.localizedDescription)"
+            notice = message
+            saveFeedback = SettingsSaveFeedback(scope: .sessions, message: message, isError: true)
+            return
+        }
+        Task {
+            let live = await state.updateSteeringRetention(minutes: minutes)
+            // A later step is already on its way; let it report.
+            guard settings.steeringSessionMinutes == minutes else { return }
+            let message = live ? "Saved · applies live" : "Saved · applies when Mac MCP next starts"
+            notice = message
+            saveFeedback = SettingsSaveFeedback(scope: .sessions, message: message, isError: false)
+        }
     }
 
     private func saveGroqKey() {

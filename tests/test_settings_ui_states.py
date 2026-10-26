@@ -57,7 +57,7 @@ class LoadingEmptyErrorTests(unittest.TestCase):
 
 class FailedFilterTests(unittest.TestCase):
     def test_the_failed_count_filters_the_list(self) -> None:
-        card = block(MENU, "private var activityCard: some View {", ".disclosureGroupStyle(MenuDisclosureStyle())")
+        card = block(MENU, "private var activityCard: some View {", ".disclosureGroupStyle(MenuDisclosureStyle(accessory: failedFilter))")
         self.assertIn("showFailedOnly.toggle()", card)
         self.assertIn("let shown = showFailedOnly ? failed : events", card)
         self.assertIn('Button("Show all") { showFailedOnly = false }', card)

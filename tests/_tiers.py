@@ -16,6 +16,7 @@ SWIFT_ONLY = (
     "test_menu_agent_failure_aging",
     "test_menu_chatgpt_resilience",
     "test_menu_hover_tip",
+    "test_menu_popup_states",
     "test_menu_relaunch_steering_recovery",
     "test_menu_session_groups",
     "test_menu_state_performance",

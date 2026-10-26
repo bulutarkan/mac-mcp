@@ -8,6 +8,8 @@ struct MenuBarView: View {
     private static let markDark = BrandArt.image("BrandMark")
     private static let markLight = BrandArt.image("BrandMarkLight")
     @ObservedObject var settings: SettingsStore
+    /// The question window's queue. Read through onReceive, not observed: its countdown ticks every second.
+    let prompts: OwnerPromptModel
     @StateObject private var audio = AudioDeviceStore()
     @MacMCPState private var groqKey = ""
     @MacMCPState private var settingsMessage = ""
@@ -16,7 +18,6 @@ struct MenuBarView: View {
     @MacMCPState private var sessionDetailID: String?
     @MacMCPState private var showSessions = false
     @MacMCPState private var showSecurity = false
-    @MacMCPState private var sessionMinutesText = ""
     @MacMCPState private var showAllAgents = false
     @MacMCPState private var showActivity = false
     /// #20: the "n failed" count opens the list showing only the failed calls.
@@ -25,16 +26,19 @@ struct MenuBarView: View {
     @MacMCPState private var contentHeight: CGFloat = 0
     /// The popover window: MenuBarExtra sizes it once when it opens, so later changes are applied here.
     @MacMCPState private var host = HostWindow()
-    @MacMCPState private var agentListHeight: CGFloat = 0
+    /// Questions waiting in Mac MCP's window, for the header line (#123).
+    @MacMCPState private var questionsWaiting = 0
+    @MacMCPState private var questionAskedBy: String?
     // Follow the user's text size: glyph sizes scale with it.
     @ScaledMetric(relativeTo: .caption2) private var glyphScale: CGFloat = 1
 
     private static let sessionsAnchor = "sessions"
     private static let agentsAnchor = "agents"
     private static let recentActivityLimit = 8
-    /// The agent list shows at most this many agents, about five rows tall, scrolling inside.
+    /// The agent list shows at most this many agents, inline in the menu's one scroll region (#123).
     private static let agentListLimit = 20
-    private static let agentListVisibleHeight: CGFloat = 380
+    /// Active teams shown as rows; more are counted in a "+N" row.
+    private static let teamRowLimit = 2
 
     var body: some View {
         // One scroll region: lists below expand inline instead of scrolling inside the popover.
@@ -70,6 +74,12 @@ struct MenuBarView: View {
             }
         }
         .frame(width: 400, height: menuHeight, alignment: .top)
+        // ⌘R refreshes while the menu is open, like Refresh Status in More.
+        .background(Button("", action: refreshStatus).keyboardShortcut("r", modifiers: .command).hidden())
+        .onReceive(prompts.$queue) { queue in
+            if questionsWaiting != queue.count { questionsWaiting = queue.count }
+            if questionAskedBy != queue.first?.sender { questionAskedBy = queue.first?.sender }
+        }
         // Hover captions are drawn over the whole panel, outside the scroll view and the measured stack.
         .overlayPreferenceValue(MenuHoverTipKey.self) { target in MenuHoverTipLayer(target: target) }
         .background(HostWindowReader { window in
@@ -94,9 +104,6 @@ struct MenuBarView: View {
             audio.refresh()
             // Background polls are rarer while idle; opening the menu shows current state.
             Task { await state.refresh() }
-            if settings.steeringSessionMinutes != 10 {
-                sessionMinutesText = String(settings.steeringSessionMinutes)
-            }
         }
     }
 
@@ -191,9 +198,10 @@ struct MenuBarView: View {
         }
     }
 
-    /// Stopped, starting, or not answering. A stopped server gets one plain sentence and Start.
+    /// Connecting, starting, stopped or not fully answering. Only a server a finished check found
+    /// stopped gets Start (#123); while the first check runs the card says it is connecting.
     private var connectionCard: some View {
-        let stopped = !state.serverRunning && !state.startingAfterLogin
+        let stopped = liveStatus.server == .stopped
         let tint = stopped ? VisualTokens.error : connectionDisplay.tone.color
         return MenuCard(tint: tint) {
             HStack(spacing: 10) {
@@ -213,7 +221,7 @@ struct MenuBarView: View {
                         .controlSize(.small)
                         .accessibilityLabel("Start Server")
                 } else if !state.startingAfterLogin && (state.connectionState == .degraded || state.connectionState == .disconnected) {
-                    Button("Retry") { Task { await state.retryConnection() } }
+                    Button("Retry", action: refreshStatus)
                         .controlSize(.small)
                 }
             }
@@ -294,15 +302,16 @@ struct MenuBarView: View {
         return "New improvements for Mac MCP."
     }
 
-    /// What Mac MCP is doing, in one line under its name.
-    private var headerSubtitle: String {
-        if state.activeAgents > 0 {
-            return "\(state.activeAgents) agent\(state.activeAgents == 1 ? "" : "s") working"
-        }
-        // Idle says only that; the line is for news (work, a stopped server), not filler.
-        guard state.serverRunning else { return "Not running" }
-        return "Ready"
+    /// The same live state the menu bar icon shows: server, a waiting question, work under way.
+    private var liveStatus: MenuLiveStatus {
+        state.liveStatus(questionsWaiting: questionsWaiting, askedBy: questionAskedBy)
     }
+
+    /// What Mac MCP is doing, in one line under its name. Idle says only "Ready"; the line is
+    /// for news (work, a waiting question, a server not up), not filler.
+    private var headerSubtitle: String { liveStatus.subtitle }
+
+    private func refreshStatus() { Task { await state.retryConnection() } }
 
     /// The agent list shows while agents work, or when asked for from the Agents row.
     private var showsAgentSection: Bool {
@@ -366,7 +375,7 @@ struct MenuBarView: View {
         }
     }
 
-    /// Small facts at a glance; each row below says more.
+    /// Small facts at a glance that no row repeats: calls and success in the last hour.
     private var chipsRow: some View {
         HStack(spacing: 6) {
             MenuChip(symbol: "bolt.fill", text: "\(state.totalCalls)", tint: nil,
@@ -375,13 +384,7 @@ struct MenuBarView: View {
                      text: state.totalCalls > 0 ? String(format: "%.0f%%", state.successRate) : "—",
                      tint: successTint,
                      caption: MenuHoverCopy.success(calls: state.totalCalls, rate: state.successRate))
-            MenuChip(symbol: "cpu", text: "\(state.activeAgents) running",
-                     tint: state.activeAgents > 0 ? .accentColor : nil,
-                     caption: MenuHoverCopy.agents(running: state.activeAgents))
-            MenuChip(symbol: "rectangle.stack", text: sessionsChipText, tint: nil,
-                     caption: MenuHoverCopy.conversations(
-                        active: state.sessionActiveCount, idle: state.sessionIdleCount,
-                        ended: state.sessionEndedCount, reliable: state.hasReliableSessionSignal))
+            // Running agents and conversations are counted once, in their own rows below (#123).
             Spacer(minLength: 0)
         }
     }
@@ -445,6 +448,7 @@ struct MenuBarView: View {
                 Button("Stop Server") { state.stopServer() }
             }
             Button("Refresh Status") { Task { await state.retryConnection() } }
+                .keyboardShortcut("r", modifiers: .command)
             Divider()
             if let flags = state.privacyFlags {
                 Button(flags.paused ? "Resume Observation" : "Pause Observation") { state.setPrivacy(paused: !flags.paused) }
@@ -535,32 +539,8 @@ struct MenuBarView: View {
 
     private var steeringCard: some View {
         DisclosureGroup(isExpanded: $showSessions) {
+            // How long idle conversations stay listed is set in Settings › Advanced (#123).
             VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 6) {
-                    Image(systemName: "timer").font(.caption2).foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                    Text("Keep idle").font(.caption2).foregroundStyle(.secondary)
-                    Spacer()
-                    TextField("10", text: $sessionMinutesText)
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 48)
-                        .accessibilityLabel("Keep idle conversations, minutes")
-                        .onChange(of: sessionMinutesText) { value in
-                            let digits = value.filter(\.isNumber)
-                            if digits != value { sessionMinutesText = digits; return }
-                            if !digits.isEmpty, Int(digits) == 0 { sessionMinutesText = "" }
-                        }
-                        .onSubmit { applySessionRetention() }
-                    Text("min").font(.caption2).foregroundStyle(.secondary)
-                    Button { applySessionRetention() } label: {
-                        Image(systemName: "checkmark").font(.caption2.weight(.semibold))
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Keep idle conversations this many minutes")
-                    .accessibilityLabel("Apply how long idle conversations are kept")
-                }
-
                 if state.steeringSnapshotStale && state.hasSteeringSnapshot {
                     HStack(spacing: 7) {
                         Image(systemName: "clock.arrow.circlepath")
@@ -590,7 +570,12 @@ struct MenuBarView: View {
                    let context = state.resolvedBrowserContext(for: browserEvent) {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
+                            if state.activityStale {
+                                Image(systemName: "clock.arrow.circlepath").foregroundStyle(.orange)
+                                    .accessibilityHidden(true)
+                            } else {
+                                ProgressView().controlSize(.small)
+                            }
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(state.activeBrowserEvents.count == 1 ? "Browser automation active" : "\(state.activeBrowserEvents.count) browser tasks active")
                                     .font(.caption.weight(.semibold))
@@ -604,7 +589,9 @@ struct MenuBarView: View {
                                     .help("Bring this real browser tab to the front")
                             }
                         }
-                        Text("Visible, non-focus-stealing browser automation · not headless.")
+                        Text(state.activityStale
+                             ? "Last known · not current. Mac MCP couldn't read its activity."
+                             : "Visible, non-focus-stealing browser automation · not headless.")
                             .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(8)
@@ -716,26 +703,21 @@ struct MenuBarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(showAllAgents ? "Expanded" : "Collapsed")
             .accessibilityHint(showAllAgents ? "Collapses the agent list" : "Lists the recent agents with details")
             VStack(spacing: 6) {
-                ForEach(activeTeams.prefix(2)) { team in
+                ForEach(activeTeams.prefix(Self.teamRowLimit)) { team in
                     teamRow(team)
                 }
+                if activeTeams.count > Self.teamRowLimit {
+                    moreTeamsRow(activeTeams.count - Self.teamRowLimit)
+                }
                 if showAllAgents {
-                    // At most 20 agents, about five rows tall; the rest scroll inside the list.
-                    ScrollView {
-                        VStack(spacing: 6) {
-                            ForEach(Array(displayAgents.prefix(Self.agentListLimit).enumerated()), id: \.element.id) { index, agent in
-                                if index > 0 { Divider() }
-                                agentRow(agent)
-                            }
-                        }
-                        .background(GeometryReader { box in
-                            Color.clear.preference(key: AgentListHeight.self, value: box.size.height)
-                        })
+                    // At most 20 agents, inline: the menu's one scroll region scrolls them (#123).
+                    ForEach(Array(displayAgents.prefix(Self.agentListLimit).enumerated()), id: \.element.id) { index, agent in
+                        if index > 0 { Divider() }
+                        agentRow(agent)
                     }
-                    .frame(height: min(agentListHeight, Self.agentListVisibleHeight))
-                    .onPreferenceChange(AgentListHeight.self) { agentListHeight = $0 }
                 } else {
                     ForEach(Array(activeAgents.prefix(2).enumerated()), id: \.element.id) { index, agent in
                         if index > 0 { Divider() }
@@ -794,6 +776,25 @@ struct MenuBarView: View {
         .buttonStyle(.plain)
         .help("Show this team's tasks in the dashboard")
         .accessibilityLabel("Team \(team.title ?? ""), \(team.progressText)")
+    }
+
+    /// Active teams beyond the rows shown: counted, and the dashboard lists them all.
+    private func moreTeamsRow(_ extra: Int) -> some View {
+        let text = extra == 1 ? "1 more active team" : "\(extra) more active teams"
+        return Button { state.openDashboard() } label: {
+            HStack(spacing: 7) {
+                Text("+\(extra)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    .frame(width: 18)
+                Text(text).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 6)
+                Image(systemName: "chevron.right").font(.system(size: 8 * glyphScale, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show all active teams in the dashboard")
+        .accessibilityLabel(text)
+        .accessibilityHint("Opens the dashboard")
     }
 
     private func teamLine(_ team: AgentTeamInfo, quota: [ProviderQuota]) -> some View {
@@ -925,8 +926,37 @@ struct MenuBarView: View {
         let errorCount = failed.count
         let liveCount = events.filter { $0.status.lowercased() == "running" }.count
         let shown = showFailedOnly ? failed : events
+        // The failed count filters the list. It sits beside the section's toggle, not inside it (#123).
+        let failedFilter = Group {
+            if errorCount > 0 {
+                Button {
+                    showFailedOnly.toggle()
+                    if showFailedOnly { showActivity = true }
+                } label: {
+                    Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showFailedOnly ? "Show all recent activity" : "Show the \(errorCount) failed calls")
+                .help(showFailedOnly ? "Show all recent activity" : "Show only the failed calls")
+            }
+        }
         return DisclosureGroup(isExpanded: $showActivity) {
             VStack(alignment: .leading, spacing: 5) {
+                // A failed read keeps the last good list (#123); say it is not current.
+                if state.activityStale && !events.isEmpty {
+                    HStack(spacing: 7) {
+                        Image(systemName: "clock.arrow.circlepath").foregroundStyle(.orange)
+                            .accessibilityHidden(true)
+                        Text("Showing the last known activity · not current")
+                            .font(.caption2.weight(.medium))
+                        Spacer()
+                        Button("Retry", action: refreshStatus)
+                            .controlSize(.mini)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
                 if showFailedOnly {
                     HStack(spacing: 6) {
                         Text(errorCount == 0 ? "No failed calls now." : "Showing \(errorCount) failed")
@@ -941,6 +971,13 @@ struct MenuBarView: View {
                         if index > 0 { Divider() }
                         activityRow(event)
                     }
+                } else if events.isEmpty && !state.activityLoaded && !state.activityStale {
+                    // The first read has not come back yet: not "no tool calls".
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading activity…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
                 } else if state.connectionState == .disconnected && events.isEmpty {
                     activityEmptyText("Disconnected · tool activity unavailable.")
                 } else if state.connectionState == .degraded && events.isEmpty {
@@ -979,23 +1016,14 @@ struct MenuBarView: View {
                 Label("Recent activity", systemImage: "waveform.path.ecg")
                     .labelStyle(MenuTileLabelStyle(tint: MenuPalette.neutral))
                 Spacer()
-                if errorCount > 0 {
-                    Button {
-                        showFailedOnly.toggle()
-                        if showFailedOnly { showActivity = true }
-                    } label: {
-                        Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
-                            .font(.caption2.weight(.semibold)).foregroundStyle(.red)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(showFailedOnly ? "Show all recent activity" : "Show the \(errorCount) failed calls")
-                    .help(showFailedOnly ? "Show all recent activity" : "Show only the failed calls")
-                } else if liveCount > 0 {
+                if state.activityStale && !events.isEmpty {
+                    Text("Not current").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                } else if errorCount == 0 && liveCount > 0 {
                     Text("\(liveCount) live").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
                 }
             }
         }
-        .disclosureGroupStyle(MenuDisclosureStyle())
+        .disclosureGroupStyle(MenuDisclosureStyle(accessory: failedFilter))
     }
 
     private func activityEmptyText(_ text: String) -> some View {
@@ -1655,18 +1683,6 @@ struct MenuBarView: View {
         return "\(minutes / 60)h \(minutes % 60)m"
     }
 
-    private func applySessionRetention() {
-        let trimmed = sessionMinutesText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let minutes = trimmed.isEmpty ? 10 : (Int(trimmed) ?? 10)
-        guard minutes > 0 else { sessionMinutesText = ""; return }
-        if minutes == 10 && trimmed.isEmpty {
-            sessionMinutesText = ""
-        } else {
-            sessionMinutesText = String(minutes)
-        }
-        state.updateSteeringRetention(minutes: minutes)
-    }
-
     private func persistSettings() { do { try settings.save(); settingsMessage = "Saved" } catch { settingsMessage = error.localizedDescription } }
     private func saveGroqKey() { do { try settings.saveGroqKey(groqKey); groqKey = ""; settingsMessage = "Groq key saved securely in Keychain" } catch { settingsMessage = error.localizedDescription } }
     private func removeGroqKey() { do { try settings.removeGroqKey(); settingsMessage = "Groq key removed" } catch { settingsMessage = error.localizedDescription } }
@@ -1817,29 +1833,43 @@ private struct MenuTileLabelStyle: LabelStyle {
 }
 
 /// A disclosure row with its chevron on the right. The content fades in and the chevron turns;
-/// the menu window itself follows the content without a motion of its own (#200).
-private struct MenuDisclosureStyle: DisclosureGroupStyle {
+/// the menu window itself follows the content without a motion of its own (#200). An accessory
+/// (a filter) sits between the title and the chevron as its own control, never inside the
+/// toggle (#123); VoiceOver reads the toggle as expanded or collapsed.
+private struct MenuDisclosureStyle<Accessory: View>: DisclosureGroupStyle {
+    let accessory: Accessory
+
     func makeBody(configuration: Configuration) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { withAnimation(AppMotion.content) { configuration.isExpanded.toggle() } } label: {
-                HStack(spacing: 6) {
+        let toggle = { withAnimation(AppMotion.content) { configuration.isExpanded.toggle() } }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Button(action: toggle) {
                     configuration.label
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(configuration.isExpanded ? 180 : 0))
-                        .accessibilityHidden(true)
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
                 }
-                .padding(.vertical, 5)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+                .accessibilityHint(configuration.isExpanded ? "Collapses this section" : "Expands this section")
+                accessory
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(configuration.isExpanded ? 180 : 0))
+                    .frame(width: 14, height: 24)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: toggle)
+                    .accessibilityHidden(true)
             }
-            .buttonStyle(.plain)
-            .accessibilityHint(configuration.isExpanded ? "Collapses this section" : "Expands this section")
             if configuration.isExpanded {
                 configuration.content.transition(.opacity)
             }
         }
     }
+}
+
+extension MenuDisclosureStyle where Accessory == EmptyView {
+    init() { accessory = EmptyView() }
 }
 
 /// A compact fact in a capsule: symbol and value; tinted when it needs a glance.
@@ -2010,10 +2040,4 @@ private struct MenuCardSymbol: View {
             .background(tint.opacity(0.18), in: Circle())
             .accessibilityHidden(true)
     }
-}
-
-/// The agent list's own height, so a short list takes only its rows.
-private struct AgentListHeight: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

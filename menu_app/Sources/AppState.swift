@@ -192,6 +192,11 @@ final class AppState: ObservableObject {
     @Published private(set) var decisionIssue: String?
     @Published var recentEvents: [ToolEvent] = []
     @Published var activeEvents: [ToolEvent] = []
+    /// The activity lists hold the last good answer while a read fails (#123): the menu says it is
+    /// not current instead of showing ongoing work as idle.
+    @Published private(set) var activityStale = false
+    /// True once the activity has been read; until then the menu says it is loading.
+    @Published private(set) var activityLoaded = false
     /// Tab pulse bookkeeping (#79): the events already pulsed and when each tab was last looked up.
     private var tabPulseEvents: Set<String> = []
     private var tabPulseAskedAt: [String: Date] = [:]
@@ -411,6 +416,17 @@ final class AppState: ObservableObject {
     }
 
     private static let loginStartGraceSeconds: TimeInterval = 180
+
+    /// What the menu bar icon and the popup header say Mac MCP is doing (#123). The questions
+    /// come from the owner-prompt queue, which lives outside AppState.
+    func liveStatus(questionsWaiting: Int, askedBy: String?) -> MenuLiveStatus {
+        MenuLiveStatus(serverAnswered: serverRunning, checking: connectionState == .connecting,
+                       startingAfterLogin: startingAfterLogin,
+                       questionsWaiting: questionsWaiting, askedBy: askedBy,
+                       agentsWorking: activeAgents,
+                       conversationsActive: hasReliableSessionSignal ? sessionActiveCount : 0,
+                       paused: privacyFlags?.paused == true)
+    }
 
     private static func serverIntentIsRunning() -> Bool {
         let url = stateDirectoryURL().appendingPathComponent("server-intent.json")
@@ -1343,10 +1359,13 @@ final class AppState: ObservableObject {
                 if let eventsEnvelope = try await eventsFetch {
                     setIfChanged(\.recentEvents, eventsEnvelope.events)
                     setIfChanged(\.activeEvents, eventsEnvelope.active)
+                    setIfChanged(\.activityLoaded, true)
                     if streamWasConnected && toolActivityStreamConnected { streamActivitySeeded = true }
                 }
+                setIfChanged(\.activityStale, false)
             } catch {
-                setIfChanged(\.activeEvents, [])
+                // Keep the last good activity: a failed read is not the end of the work it showed.
+                setIfChanged(\.activityStale, true)
                 secondaryIssue = secondaryIssue ?? "Activity: \(Self.issueText(for: error))"
             }
             do {
@@ -1397,9 +1416,12 @@ final class AppState: ObservableObject {
                 recordConnected()
             }
         } catch {
-            setIfChanged(\.activeEvents, [])
-            setIfChanged(\.steeringSnapshotStale, true)
             let state = Self.failureState(for: error)
+            // Mac MCP answered with an error: keep the last good activity, marked not current.
+            // Not answering at all: nothing runs through it, so nothing is shown as live.
+            if state == .disconnected { setIfChanged(\.activeEvents, []) }
+            setIfChanged(\.activityStale, true)
+            setIfChanged(\.steeringSnapshotStale, true)
             setIfChanged(\.serverRunning, state == .degraded)
             if state == .disconnected { setIfChanged(\.activeAgents, 0) }
             let permissionMessage = "Could not refresh permission semantics: \(Self.issueText(for: error))"
@@ -2312,29 +2334,20 @@ final class AppState: ObservableObject {
     }
 
 
-    func updateSteeringRetention(minutes: Int) {
-        let normalized = max(1, minutes)
-        settings.steeringSessionMinutes = normalized
+    /// Hands how long idle conversations stay listed to the running server, which reads the
+    /// saved setting only when it starts. False when the server could not take it now.
+    func updateSteeringRetention(minutes: Int) async -> Bool {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return false }
         do {
-            try settings.save()
+            let response: SteeringSettingsEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/steering/settings"),
+                body: ["session_ttl_minutes": max(1, minutes)]
+            )
+            guard response.ok else { return false }
+            await refresh()
+            return true
         } catch {
-            steeringStatus = "Could not save how long idle conversations are kept."
-            return
-        }
-        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
-        Task {
-            do {
-                let response: SteeringSettingsEnvelope = try await post(
-                    base.appendingPathComponent("dashboard/api/steering/settings"),
-                    body: ["session_ttl_minutes": normalized]
-                )
-                guard response.ok else { throw URLError(.badServerResponse) }
-                settings.steeringSessionMinutes = max(1, response.sessionTTLMinutes)
-                steeringStatus = "Sessions stay visible for \(response.sessionTTLMinutes) min after activity."
-                await refresh()
-            } catch {
-                steeringStatus = "Duration saved; it will apply when the server next starts."
-            }
+            return false
         }
     }
 

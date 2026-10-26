@@ -19,7 +19,10 @@ class MenuBarMarkTests(unittest.TestCase):
         self.assertNotIn('"cpu"', self.app)
 
     def test_states_use_alpha_and_a_dot_never_colour(self) -> None:
-        self.assertIn("if !state.serverRunning { return .stopped }", self.app)
+        # #123: the look comes from the shared live state; anything but a running server is dimmed.
+        live = (SOURCES / "MenuLiveStatus.swift").read_text(encoding="utf-8")
+        self.assertIn("guard server == .running else { return .stopped }", live)
+        self.assertIn("case .stopped: return .stopped", self.app)
         self.assertIn("fraction: look == .stopped ? 0.4 : 1", self.app)
         self.assertIn("return .working(hollow: state.pulse)", self.app)
 
@@ -35,8 +38,14 @@ class MenuBarMarkTests(unittest.TestCase):
         look = self.app[self.app.index("private var menuBarLook: MenuBarMark.Look"):][:700]
         order = [look.index(s) for s in ("return .stopped", "return .needsYou", "return .paused", "return .working")]
         self.assertEqual(sorted(order), order)
-        self.assertIn("if !prompts.queue.isEmpty { return .needsYou }", look)
-        self.assertIn("if state.privacyFlags?.paused == true { return .paused }", look)
+        # #123: the order lives in the shared live state the popup header also reads.
+        live = (SOURCES / "MenuLiveStatus.swift").read_text(encoding="utf-8")
+        icon = live[live.index("var iconLook: IconLook"):][:400]
+        shared = [icon.index(s) for s in ("return .stopped", "return .needsYou", "return .paused", "return .working")]
+        self.assertEqual(sorted(shared), shared)
+        self.assertIn("if questionsWaiting > 0 { return .needsYou }", icon)
+        self.assertIn("if paused { return .paused }", icon)
+        self.assertIn("state.liveStatus(questionsWaiting: prompts.queue.count", self.app)
         self.assertIn("MenuBarLabel(state: state, prompts: OwnerPromptController.shared.model)", self.app)
         self.assertIn("case stopped, idle, needsYou, paused", self.app)
 

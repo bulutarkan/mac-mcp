@@ -19,6 +19,7 @@ FEATURES = {
         "AppModels+Updates.swift",
         "AppModels+ScheduledTasks.swift",
         "AppModels+Live.swift",
+        "MenuLiveStatus.swift",
         "OnboardingChecklist.swift",
         "DesktopCursorOverlay.swift",
         "BrowserTabPulse.swift",

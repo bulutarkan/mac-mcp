@@ -50,7 +50,7 @@ struct MacMCPMenuApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(state: state, settings: state.settings)
+            MenuBarView(state: state, settings: state.settings, prompts: OwnerPromptController.shared.model)
         } label: {
             MenuBarLabel(state: state, prompts: OwnerPromptController.shared.model)
         }
@@ -81,26 +81,33 @@ private struct MenuBarLabel: View {
             .accessibilityLabel(menuBarAccessibilityLabel)
     }
 
+    /// The same live state the popup header says (MenuLiveStatus, #123).
+    private var live: MenuLiveStatus {
+        state.liveStatus(questionsWaiting: prompts.queue.count, askedBy: prompts.queue.first?.sender)
+    }
+
     /// One look at a time, most important first: stopped, a question waiting, paused, working, idle.
+    /// Not running yet (connecting, starting) keeps the dimmed mark: nothing can use it yet.
     private var menuBarLook: MenuBarMark.Look {
-        if !state.serverRunning { return .stopped }
-        if !prompts.queue.isEmpty { return .needsYou }
-        if state.privacyFlags?.paused == true { return .paused }
-        if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
-            // The dot stays filled without the pulse (Reduce Motion), so work still reads at a glance.
-            return .working(hollow: state.pulse)
+        switch live.iconLook {
+        case .stopped: return .stopped
+        case .needsYou: return .needsYou
+        case .paused: return .paused
+        // The dot stays filled without the pulse (Reduce Motion), so work still reads at a glance.
+        case .working: return .working(hollow: state.pulse)
+        case .idle: return .idle
         }
-        return .idle
     }
 
     private var menuBarAccessibilityLabel: String {
         // Same words as the popover header and Settings (shared StatusDisplay mapping).
-        if state.startingAfterLogin { return "Mac MCP, starting" }
-        if !state.serverRunning { return "Mac MCP, \(state.connectionState.display.label.lowercased())" }
+        let live = live
+        if live.server == .starting { return "Mac MCP, starting" }
+        if live.server != .running { return "Mac MCP, \(state.connectionState.display.label.lowercased())" }
         var parts = ["Mac MCP"]
-        if !prompts.queue.isEmpty { parts.append("needs you") }
-        if state.privacyFlags?.paused == true { parts.append("observation paused") }
-        if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
+        if live.questionsWaiting > 0 { parts.append("needs you") }
+        if live.paused { parts.append("observation paused") }
+        if live.isWorking {
             parts.append("active work")
         }
         if state.privacyFlags?.privateMode == true { parts.append("private mode") }
