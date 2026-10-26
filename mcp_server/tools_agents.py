@@ -30,6 +30,7 @@ from .policy_scope import (
     ResourceScope, access_mode_allows, child_scope, normalize_access_mode, scope_contains,
 )
 from .scoped_auth import get_scoped_credential_store
+from .data_guard import LogLineRedactor, redact_sensitive_text, redact_sensitive_value
 from .security import BASE_DIR, Settings, truncate
 from .private_storage import make_private
 from .runtime_settings import load_runtime_settings, load_runtime_settings_state, provider_enabled, provider_setting
@@ -5539,7 +5540,9 @@ def _spawn_internal(
             ) == "required",
         )
     )
-    (path / "prompt.txt").write_text(user_prompt, encoding="utf-8")
+    # Kept for retry with known secrets as [REDACTED] (#114). The worker needs the effective prompt as
+    # written; it masks that file as soon as it has read it (_take_effective_prompt).
+    (path / "prompt.txt").write_text(redact_sensitive_text(user_prompt), encoding="utf-8")
     (path / "effective_prompt.txt").write_text(effective_prompt, encoding="utf-8")
     if isinstance(integration_manifest, dict):
         (path / "conflict_manifest.json").write_text(
@@ -5556,7 +5559,7 @@ def _spawn_internal(
         "agent_id": agent_id,
         "team_id": team_id,
         "team_task_id": team_task_id,
-        "title": (title or user_prompt.splitlines()[0][:100]).strip(),
+        "title": redact_sensitive_text((title or user_prompt.splitlines()[0][:100]).strip()),
         "role": clean_role,
         "provider": provider,
         "binary": binary,
@@ -5716,6 +5719,7 @@ def _spawn_internal(
         proc = _spawn_worker_process(agent_id, worker_log, str(meta.get("launch_nonce") or "") or None)
     except OSError as exc:
         worker_log.close()
+        _mask_prompt_file(path / "effective_prompt.txt")  # no worker will read it
         spawn_error = str(exc)
         def mark_spawn_failed(current: Dict[str, Any]) -> Optional[bool]:
             if not _claim_terminal_transition(current, "failed"):
@@ -6736,10 +6740,10 @@ def get_agent(
                 "valid": envelope.get("contract_status") not in {"invalid"},
             }
     if include_logs:
+        # Logs written before #114 kept output as printed: masked here too.
         result["logs"] = {
-            "stdout": _tail_text(_agent_dir(agent_id) / "stdout.log", tail_lines),
-            "stderr": _tail_text(_agent_dir(agent_id) / "stderr.log", tail_lines),
-            "worker": _tail_text(_agent_dir(agent_id) / "worker.log", tail_lines),
+            name: redact_sensitive_text(_tail_text(_agent_dir(agent_id) / f"{name}.log", tail_lines))
+            for name in ("stdout", "stderr", "worker")
         }
     return result
 
@@ -6953,7 +6957,7 @@ def _agent_action_single(
                 status.HTTP_409_CONFLICT,
                 "retry_replay_unsafe: this task crossed a durable side-effect/resume boundary; use action=resume so the existing provider session and receipts are preserved.",
             )
-        return _spawn_internal(
+        retried = _spawn_internal(
             settings=settings,
             provider=meta["provider"],
             prompt=original_prompt,
@@ -6976,6 +6980,12 @@ def _agent_action_single(
             git_isolation=str(meta.get("git_isolation") or "auto"),
             git_base_commit=(meta.get("worktree") or {}).get("base_commit") if isinstance(meta.get("worktree"), dict) else None,
         )
+        if "REDACTED]" in original_prompt and isinstance(retried, dict):
+            # The prompt was saved with known secrets masked (#114); the retry gets it as saved.
+            retried["prompt_masked"] = True
+            retried["prompt_note"] = ("The original prompt held secrets, saved as [REDACTED]; the retry sends it that way. "
+                                      "Spawn a new agent with the full prompt if it needs them.")
+        return retried
 
     if action == "resume":
         if meta.get("status") not in {"failed", "timeout", "stalled", "cancelled"}:
@@ -8384,11 +8394,15 @@ def _capture_provider_stream(agent_id: str, stream, path: Path, parse_events: bo
     read = getattr(raw, "read1", None) or raw.read
     pending = bytearray()
     dropped = 0
+    redact = LogLineRedactor()  # known secrets reach the log, and get_agent, as [REDACTED] (#114)
     with path.open("a", encoding="utf-8", errors="replace") as handle:
         def emit() -> None:
             text = bytes(pending).decode("utf-8", errors="replace")
             if dropped:
                 text = text.rstrip("\n") + f"\n[mac-mcp: line cut, {dropped} more bytes not kept]\n"
+            text = redact(text)
+            if not text:
+                return
             handle.write(text)
             handle.flush()
             if parse_events:
@@ -8613,10 +8627,28 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
                 pass
 
 
+def _take_effective_prompt(path: Path) -> str:
+    """The prompt the provider gets, read once; the file then keeps it with known secrets masked (#114)."""
+    prompt_path = path / "effective_prompt.txt"
+    prompt = prompt_path.read_text(encoding="utf-8", errors="replace")
+    _mask_prompt_file(prompt_path, prompt)
+    return prompt
+
+
+def _mask_prompt_file(prompt_path: Path, text: Optional[str] = None) -> None:
+    try:
+        text = prompt_path.read_text(encoding="utf-8", errors="replace") if text is None else text
+        masked = redact_sensitive_text(text)
+        if masked != text:
+            prompt_path.write_text(masked, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _worker(agent_id: str) -> int:
     meta = _read_meta(agent_id)
     path = _agent_dir(agent_id)
-    prompt = (path / "effective_prompt.txt").read_text(encoding="utf-8", errors="replace")
+    prompt = _take_effective_prompt(path)
     stdout_path = path / "stdout.log"
     stderr_path = path / "stderr.log"
     result_path = path / "result.txt"
@@ -8920,6 +8952,9 @@ def _worker(agent_id: str) -> int:
     apply_evidence_policy(envelope, evidence_policy_for(
         meta.get("access_mode"), integration_required=bool(worktree_state.get("integration_required")),
     ))
+    # The report and its envelope are stored, and read back by get_agent, with known secrets masked (#114).
+    result = redact_sensitive_text(result)
+    envelope = redact_sensitive_value(envelope)
     original_result_chars = len(result)
     full_result, full_result_truncated = truncate(result, FULL_RESULT_LIMIT)
     _write_full_result(agent_id, full_result)

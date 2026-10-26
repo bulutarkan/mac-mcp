@@ -236,6 +236,75 @@ def redact_sensitive_text(text: str) -> str:
     return value
 
 
+def redact_sensitive_value(value: Any) -> Any:
+    """redact_sensitive_text applied to every string inside a JSON-like value; keys and shape stay."""
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, Mapping):
+        return {key: redact_sensitive_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_sensitive_value(item) for item in value]
+    return value
+
+
+def redact_log_line(line: str) -> str:
+    """One line of a stored log with known secrets shown as [REDACTED] (#114).
+
+    A JSON event line (agent providers stream them) is masked value by value, so it still parses;
+    any other line is masked as text.
+    """
+    text = str(line or "")
+    body = text.rstrip("\r\n")
+    if body.lstrip()[:1] in {"{", "["}:
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            pass
+        else:
+            masked = redact_sensitive_value(parsed)
+            if masked == parsed:
+                return text
+            return json.dumps(masked, ensure_ascii=False, separators=(",", ":")) + text[len(body):]
+    return redact_sensitive_text(text)
+
+
+_PRIVATE_KEY_BEGIN_RE = re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----", re.IGNORECASE)
+_PRIVATE_KEY_END_RE = re.compile(r"-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----", re.IGNORECASE)
+_PRIVATE_KEY_MAX_LINES = 200  # a key's body is far shorter; past this the stream is read normally again
+
+
+class LogLineRedactor:
+    """redact_log_line for output read line by line (job output, agent logs).
+
+    A private key printed over several lines is replaced by one [PRIVATE KEY REDACTED] line; one
+    line can not show it whole, so its lines are dropped until the END line.
+    """
+
+    def __init__(self) -> None:
+        self._key_lines = 0
+
+    def __call__(self, line: str) -> str:
+        text = str(line or "")
+        newline = text[len(text.rstrip("\r\n")):]
+        if self._key_lines:
+            end = _PRIVATE_KEY_END_RE.search(text)
+            self._key_lines = 0 if end else self._key_lines + 1
+            if end:
+                rest = text[end.end():]
+                return redact_log_line(rest) if rest.strip() else ""
+            if self._key_lines > _PRIVATE_KEY_MAX_LINES:
+                self._key_lines = 0
+            return ""
+        masked = redact_log_line(text)
+        if text.lstrip()[:1] in {"{", "["}:
+            return masked  # a JSON event is whole on its line
+        begin = _PRIVATE_KEY_BEGIN_RE.search(masked)
+        if begin and not _PRIVATE_KEY_END_RE.search(masked, begin.end()):
+            self._key_lines = 1
+            return masked[:begin.start()] + "[PRIVATE KEY REDACTED]" + newline
+        return masked
+
+
 def mask_command_credentials(command: str) -> str:
     """A shell command as job records keep and list it: credentials masked, the rest readable."""
     value = redact_sensitive_text(command)

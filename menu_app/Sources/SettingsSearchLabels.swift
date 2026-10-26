@@ -157,6 +157,7 @@ extension SettingsSearchIndex {
             "Where your data can go",
             "Keep Mac MCP data out of Time Machine",
             "Keep run details",
+            "Keep chats",
             "Never observe these apps",
             "Never observe these sites",
             "Folders Mac MCP can search",

@@ -14,7 +14,7 @@ from fastapi import HTTPException, status
 
 from .security import BASE_DIR, Settings, child_process_env, require_shell_enabled, truncate
 from . import result_pages
-from .data_guard import mask_command_credentials
+from .data_guard import LogLineRedactor, mask_command_credentials, redact_sensitive_text
 from .workspace_sandbox import shell_execution_plan
 from .file_transactions import abort_capture_transaction
 from .shell_transactions import begin_shell_capture, finalize_shell_capture, shell_capture_http_error
@@ -273,12 +273,15 @@ def _drain_stream(job_id: str, stream, path: Path, filename: str) -> None:
     capped = False
     cap_recorded = False
     last_meta_at = 0.0
+    redact = LogLineRedactor()
     with path.open("a", encoding="utf-8", errors="replace") as log_file:
         for chunk in iter(stream.readline, ""):
             if not chunk:
                 break
+            # Known secrets are stored as [REDACTED]; the output on disk is what get_job_output returns (#114).
+            chunk = redact(chunk)
             # Keep draining after the cap so the process never blocks on a full pipe.
-            if not capped:
+            if chunk and not capped:
                 size = len(chunk.encode("utf-8", errors="replace"))
                 if written + size <= limit:
                     log_file.write(chunk)
@@ -783,7 +786,8 @@ def get_job_output(
                 handle.seek(start)
                 data = handle.read(length)
         end = start + len(data)
-        text = data.decode("utf-8", errors="replace")
+        # Output stored before #114 was kept as printed: its known secrets are masked here too.
+        text = redact_sensitive_text(data.decode("utf-8", errors="replace"))
         if tail_lines is not None:
             text = "\n".join(text.splitlines()[-max(0, int(tail_lines)):])
         text, truncated = truncate(text, settings.max_output_chars)

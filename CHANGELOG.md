@@ -9,6 +9,12 @@
 - Dependencies with known vulnerabilities are updated: `mcp` 1.30.0 (sessions are bounded: at most 10 000, a request body up to 4 MiB, and a session with an open event stream is no longer forgotten), Pillow 13.0.0 with `fastembed` 0.9.1 (embeddings unchanged), `certifi`, `filelock` and `setuptools`. On Python 3.10 Pillow and `filelock` stay at their last 3.10 releases, which have no fix.
 - The skill and recipe catalog only moves forward (#116): each signed catalog has a generation, and a Mac refuses an older signed catalog or a pack version lower than one it already saw; an installed pack is never "updated" to an older version. The trusted-signer overrides work only in test runs, never from the runtime `.env`, and the key rotation runbook now covers the catalog signer set.
 
+### Data kept on this Mac (roadmap #114)
+- Mac MCP Chat history is kept for 90 days since a chat was last used, changeable under Settings › Privacy › Your Data › Keep chats (7 days to a year); older chats are removed when Mac MCP starts and every hour, never one that is working. Chats are listed under What Mac MCP keeps and go with Move all Mac MCP data to the Trash.
+- With private mode on, a new chat is kept in memory only: nothing of it is written, and its header says Not saved.
+- Delegated agents' prompts, provider logs and reports, and background jobs' output are stored with known secrets shown as [REDACTED] (get_agent and get_job_output show them that way, also for older records); the provider still gets the task as written.
+- The privacy list says how long background jobs are really kept (7 days after they finish, the latest 200 at most) instead of "until deleted".
+
 ### Batch 2
 - Chat file and project pickers open without blocking the app while you choose.
 - Chat (#120): permission choices use ⌘1, ⌘2 and so on, never Return; repeated image pastes stay separate, failed sends keep newer text, lost connections say so, and images sent as file links explain why.

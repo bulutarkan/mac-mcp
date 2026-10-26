@@ -5,7 +5,8 @@ Protocol subprocess, signed in as the owner, with Mac MCP added as an MCP server
 agent says which models, thinking levels and modes it offers (ACP configOptions); the owner picks them in
 the chat. The agent's permission prompts come to the owner in the chat window. Chats live in
 <state>/chats/<chat_id>/ (chat.json + transcript.json); the agent keeps its own session, so a chat reopened
-later continues where it stopped (session/load).
+later continues where it stopped (session/load). A chat unused for Settings › Privacy's chat retention
+(privacy.chat_retention_days, 90 days by default) is removed; one started in private mode is never written.
 
 The transcript is a list of items (user, assistant, thought, tool, permission, plan, notice). Every change
 gives the item a new `rev`; the app asks for items with rev > its cursor, so a streaming answer is read
@@ -29,11 +30,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from . import extra_harness_providers as harness
-from . import paths
+from . import paths, privacy_policy
 from .acp_client import PROTOCOL_VERSION, AcpClosed, AcpConnection, AcpError
 from .agent_timeline import _TOOL_WORDS, _cut, _humanize, _inputs, _readable_output
 from .policy_scope import ResourceScope
-from .runtime_settings import provider_enabled, provider_setting
+from .runtime_settings import chat_retention_days, provider_enabled, provider_setting
 from .scoped_auth import get_scoped_credential_store
 from .version import __version__
 
@@ -55,6 +56,7 @@ LIST_COALESCE_S = 0.5  # at most ~15 updates a second reach the app
 MAX_TERMINAL = 64_000  # the end of a command's live output kept on its step
 MAX_QUEUE = 20
 EMPTY_CHAT_KEEP_S = 6 * 3600  # a chat nobody wrote in is gone at the next start after this
+RETENTION_SWEEP_S = 3600.0  # unused chats past the retention go at start, then hourly (#114)
 
 # Claude Code and Codex speak ACP through their official adapters; the others have it built in.
 AGENTS: Dict[str, Dict[str, Any]] = {
@@ -126,6 +128,13 @@ GOOSE_START_MODEL = "poolside/laguna-s-2.1:free"
 SHOWN_CATEGORIES = ("model", "thought_level", "mode")
 
 _TOOL_STATUS = {"pending": "running", "in_progress": "running", "completed": "done", "failed": "failed"}
+
+
+def _last_used(meta: Dict[str, Any]) -> float:
+    try:
+        return float(meta.get("updated_at") or meta.get("created_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class ChatError(Exception):
@@ -645,8 +654,15 @@ class Chat:
             self.open_text = None
         return item
 
+    @property
+    def private(self) -> bool:
+        """Started in private mode: kept in memory only, gone when the server stops (#114)."""
+        return bool(self.meta.get("private"))
+
     def save(self) -> None:
         self.save_pending = False
+        if self.private:
+            return
         _write_json(self.dir / "transcript.json", self.items)
         _write_json(self.dir / "chat.json", self.meta)
 
@@ -707,6 +723,7 @@ class ChatHost:
         root = chats_root()
         if not root.is_dir():
             return
+        keep_s = chat_retention_days() * 86400
         for folder in root.iterdir():
             if not CHAT_ID.match(folder.name):
                 continue
@@ -716,6 +733,9 @@ class ChatHost:
             items = _read_json(folder / "transcript.json", [])
             if not items and time.time() - float(meta.get("updated_at") or 0) > EMPTY_CHAT_KEEP_S:
                 shutil.rmtree(folder, ignore_errors=True)  # opened and left without a word
+                continue
+            if _last_used(meta) and time.time() - _last_used(meta) > keep_s:
+                shutil.rmtree(folder, ignore_errors=True)  # unused past Settings › Privacy's chat retention
                 continue
             if meta.get("status") in ("running", "waiting"):
                 meta["status"] = "idle"  # the server stopped mid-turn
@@ -776,12 +796,15 @@ class ChatHost:
             "created_at": now, "updated_at": now, "status": "idle", "rev": 0,
             "usage": {"input_tokens": 0, "output_tokens": 0}, "context": None,
         }
+        if privacy_policy.policy(fresh=True)["private_mode"]:
+            meta["private"] = True  # nothing of it reaches the disk, also after private mode is turned off
         chat = Chat(meta, [])
         chat.on_change = self._changed
-        chat.dir.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(OSError):
-            chat.dir.chmod(0o700)
-        chat.save()
+        if not chat.private:
+            chat.dir.mkdir(parents=True, exist_ok=True)
+            with contextlib.suppress(OSError):
+                chat.dir.chmod(0o700)
+            chat.save()
         self._chats[chat_id] = chat
         return {"ok": True, "chat": chat.public()}
 
@@ -967,6 +990,33 @@ class ChatHost:
         self._changed()
         return {"ok": True}
 
+    async def expire(self, now: Optional[float] = None) -> List[str]:
+        """Remove chats unused for longer than the chat retention; a working chat is kept (#114)."""
+        self._load_all()
+        cutoff = (time.time() if now is None else now) - chat_retention_days() * 86400
+        removed: List[str] = []
+        for chat in list(self._chats.values()):
+            busy = ((chat.turn is not None and not chat.turn.done()) or chat.meta.get("status") in ("running", "waiting")
+                    or (chat.warming is not None and not chat.warming.done()))
+            if busy or not _last_used(chat.meta) or _last_used(chat.meta) >= cutoff:
+                continue  # a record without a time is kept: nothing says it is old
+            await self._stop_agent(chat)
+            self._chats.pop(chat.meta["id"], None)
+            shutil.rmtree(chat.dir, ignore_errors=True)
+            removed.append(chat.meta["id"])
+        if removed:
+            self._changed()
+        return removed
+
+    async def retention_loop(self) -> None:
+        """Expired chats go when the server starts, then once an hour."""
+        while True:
+            try:
+                await self.expire()
+            except Exception:  # retention must never stop the server; the next pass tries again
+                pass
+            await asyncio.sleep(RETENTION_SWEEP_S)
+
     async def shutdown(self) -> None:
         for chat in list(self._chats.values()):
             for task in (chat.turn, chat.warming):
@@ -1068,7 +1118,7 @@ class ChatHost:
             if spec.get("download"):
                 await asyncio.to_thread(_ensure_download, agent)
             await conn.start(command, cwd=project, env=_agent_env(agent, chat.meta.get("model") or "", token),
-                             stderr_path=chat.dir / "agent.log")
+                             stderr_path=None if chat.private else chat.dir / "agent.log")
             chat.conn = conn
             try:
                 # The first start of an adapter downloads it (npx), so this may take a while.

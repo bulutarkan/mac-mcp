@@ -191,6 +191,21 @@ def run_detail_privacy() -> dict[str, Any]:
     return {"retention_days": days}
 
 
+# Mac MCP Chat (#114): a chat nobody has used for this long is removed (a working chat never is).
+CHAT_RETENTION_CHOICES = (7, 30, 90, 180, 365)
+DEFAULT_CHAT_RETENTION_DAYS = 90
+
+
+def chat_retention_days() -> int:
+    try:
+        days = int(privacy_setting("chat_retention_days", DEFAULT_CHAT_RETENTION_DAYS))
+    except (TypeError, ValueError):
+        days = DEFAULT_CHAT_RETENTION_DAYS
+    if days not in CHAT_RETENTION_CHOICES:
+        days = min(CHAT_RETENTION_CHOICES, key=lambda choice: abs(choice - days))
+    return days
+
+
 def security_setting(name: str, default: Any = None) -> Any:
     security = load_runtime_settings().get("security", {})
     if not isinstance(security, dict):

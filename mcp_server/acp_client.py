@@ -58,14 +58,21 @@ class AcpConnection:
     def running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None and not self.closed.is_set()
 
-    async def start(self, cmd: List[str], *, cwd: str, env: Dict[str, str], stderr_path: Path) -> None:
-        stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        with stderr_path.open("ab") as stderr:
-            os.chmod(stderr_path, 0o600)
+    async def start(self, cmd: List[str], *, cwd: str, env: Dict[str, str], stderr_path: Optional[Path]) -> None:
+        """stderr_path None: the agent's own messages are not kept (a private-mode chat)."""
+        if stderr_path is None:
             self._proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=stderr, limit=_READ_CHUNK, start_new_session=True,
+                stderr=asyncio.subprocess.DEVNULL, limit=_READ_CHUNK, start_new_session=True,
             )
+        else:
+            stderr_path.parent.mkdir(parents=True, exist_ok=True)
+            with stderr_path.open("ab") as stderr:
+                os.chmod(stderr_path, 0o600)
+                self._proc = await asyncio.create_subprocess_exec(
+                    *cmd, cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                    stderr=stderr, limit=_READ_CHUNK, start_new_session=True,
+                )
         self._reader = asyncio.create_task(self._read_loop())
 
     async def request(self, method: str, params: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:

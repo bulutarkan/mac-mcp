@@ -71,6 +71,8 @@ struct ChatSummary: Identifiable, Hashable {
     var queue: [ChatQueued]
     /// Whether the agent takes pictures in a message; nil until it has started and said.
     var takesImages: Bool?
+    /// Started in private mode: kept only in memory, gone when Mac MCP stops.
+    var isPrivate: Bool
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
@@ -98,6 +100,7 @@ struct ChatSummary: Identifiable, Hashable {
                        files: ($0["attachments"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
         }
         takesImages = object["takes_images"] as? Bool
+        isPrivate = object["private"] as? Bool ?? false
     }
 
     var projectName: String { (project as NSString).lastPathComponent }

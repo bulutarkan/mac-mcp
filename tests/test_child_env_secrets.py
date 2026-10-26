@@ -48,6 +48,14 @@ class ChildEnvironmentTests(unittest.TestCase):
         self.assertTrue(f"{USER_KEY[0]}={USER_KEY[1]}" in output, "the user's own variables must stay")
         self.assertTrue("HOME=" in output and "PATH=" in output)
 
+    def assert_clean_names(self, output: str) -> None:
+        """Job output is stored with secret values masked (#114), so jobs print only the variable names."""
+        names = set(output.split())
+        for name in SYNTHETIC:
+            self.assertNotIn(name, names, f"{name} reached the child")
+        self.assertIn(USER_KEY[0], names, "the user's own variables must stay")
+        self.assertTrue({"HOME", "PATH"} <= names)
+
     def test_strip_list_is_narrow(self) -> None:
         self.assertIn("MCP_API_KEY", SERVER_ONLY_ENV_KEYS)
         self.assertTrue(all(name == "MCP_API_KEY" or name.startswith("MAC_MCP_") for name in SERVER_ONLY_ENV_KEYS))
@@ -62,15 +70,16 @@ class ChildEnvironmentTests(unittest.TestCase):
         self.assert_clean(result["stdout"])
 
     def test_background_job_env_has_no_server_key(self) -> None:
-        job = tools_jobs.start_background_job(self.settings, "env", cwd=str(self.root / "work"))
+        job = tools_jobs.start_background_job(self.settings, "env | cut -d= -f1", cwd=str(self.root / "work"))
         tools_jobs.wait_jobs(self.settings, [job["job_id"]], timeout_s=30)
         output = tools_jobs.get_job_output(self.settings, job["job_id"])
-        self.assert_clean(str(output.get("stdout") or ""))
+        self.assert_clean_names(str(output.get("stdout") or ""))
 
     def test_parallel_commands_env_has_no_server_key(self) -> None:
-        result = tools_jobs.run_commands_parallel(self.settings, ["env"], cwd=str(self.root / "work"), timeout_s=30)
+        result = tools_jobs.run_commands_parallel(self.settings, ["env | cut -d= -f1"], cwd=str(self.root / "work"),
+                                                  timeout_s=30)
         job_id = result["started"][0]["job_id"]
-        self.assert_clean(str(tools_jobs.get_job_output(self.settings, job_id).get("stdout") or ""))
+        self.assert_clean_names(str(tools_jobs.get_job_output(self.settings, job_id).get("stdout") or ""))
 
     def test_developer_tools_still_run(self) -> None:
         commands = ["git --version", "python3 -c 'print(117)'"]

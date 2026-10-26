@@ -444,8 +444,15 @@ private struct ChatHeaderBar: View {
                             .onTapGesture(count: 2) { renaming = true }
                             .help("Double-click to rename")
                     }
-                    Text("\(chat.projectName) · \(agentLabel)").font(.system(size: 11)).foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text("\(chat.projectName) · \(agentLabel)")
+                        if chat.isPrivate {
+                            Label("Not saved", systemImage: "eye.slash")
+                                .help("Private mode was on when this chat started: it is kept only until Mac MCP quits.")
+                        }
+                    }
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
             }
             Spacer()

@@ -23,6 +23,8 @@ struct PrivacyPane: View {
     @MacMCPState private var loaded = false
     @MacMCPState private var runDetailDays = 30
     @MacMCPState private var runDetailChoices: [Int] = [7, 30, 90]
+    @MacMCPState private var chatDays = 90
+    @MacMCPState private var chatChoices: [Int] = [7, 30, 90, 180, 365]
     @MacMCPState private var message = ""
     @MacMCPState private var knowledgeFolders: [[String: Any]] = []
     @MacMCPState private var knowledgePending = 0
@@ -70,7 +72,7 @@ struct PrivacyPane: View {
                                           on: "Paused: nothing is observed and no agent starts.")
                                 Divider().padding(.vertical, 10)
                                 switchRow("Private mode",
-                                          "Work continues, but Mac MCP keeps nothing about it: no activity history, usage, memories, lessons or run timelines. The security audit log still records tool names and outcomes.",
+                                          "Work continues, but Mac MCP keeps nothing about it: no activity history, usage, memories, lessons or run timelines, and new chats are not saved. The security audit log still records tool names and outcomes.",
                                           isOn: Binding(get: { privateMode }, set: { save(["private_mode": $0]) }),
                                           on: "On: nothing about the work is kept.")
                             }
@@ -136,6 +138,26 @@ struct PrivacyPane: View {
                                         save(["run_detail_retention_days": days])
                                     })) {
                                         ForEach(runDetailChoices, id: \.self) { days in Text("\(days) days").tag(days) }
+                                    }
+                                    .labelsHidden()
+                                    .fixedSize()
+                                    .disabled(!loaded)
+                                }
+                                .padding(.vertical, 10)
+                                Divider()
+                                HStack(alignment: .center, spacing: 16) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Mac MCP Chat history").font(SettingsType.body)
+                                        Text("Chats you haven’t used for this long are removed. A chat that is working is kept.")
+                                            .font(SettingsType.note).foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer()
+                                    Picker("Keep chats", selection: Binding(get: { chatDays }, set: { days in
+                                        chatDays = days
+                                        save(["chat_retention_days": days])
+                                    })) {
+                                        ForEach(chatChoices, id: \.self) { days in Text("\(days) days").tag(days) }
                                     }
                                     .labelsHidden()
                                     .fixedSize()
@@ -419,7 +441,7 @@ struct PrivacyPane: View {
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Keep Mac MCP data out of Time Machine").font(SettingsType.body)
-                    Text("Activity, memories, lessons, agent output, jobs and file history are left out of backups, which may not be encrypted. A restored Mac then starts without them.")
+                    Text("Activity, chats, memories, lessons, agent output, jobs and file history are left out of backups, which may not be encrypted. A restored Mac then starts without them.")
                         .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -626,6 +648,8 @@ struct PrivacyPane: View {
         if let rows = object["recipients"] as? [[String: Any]] { recipients = rows }
         if let days = object["run_detail_retention_days"] as? Int { runDetailDays = days }
         if let choices = object["run_detail_retention_choices"] as? [Int], !choices.isEmpty { runDetailChoices = choices }
+        if let days = object["chat_retention_days"] as? Int { chatDays = days }
+        if let choices = object["chat_retention_choices"] as? [Int], !choices.isEmpty { chatChoices = choices }
     }
 
     private func load() async {
@@ -650,7 +674,8 @@ struct PrivacyPane: View {
                 if let object = try await state.dashboardJSON("dashboard/api/privacy/settings", body: changes) as? [String: Any] {
                     apply(object)
                     message = "Saved · applies right away"
-                    if changes.keys.contains("exclude_from_backups") || changes.keys.contains("run_detail_retention_days") {
+                    if changes.keys.contains("exclude_from_backups") || changes.keys.contains("run_detail_retention_days")
+                        || changes.keys.contains("chat_retention_days") {
                         await load()  // the store list says how long things are kept
                     }
                 }

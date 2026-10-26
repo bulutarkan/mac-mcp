@@ -47,8 +47,8 @@ from . import app_undo, owner_prompts, privacy_inventory, privacy_policy, schedu
 from . import scheduled_tasks as task_store
 from . import run_budget, run_diagnosis, scheduled_task_runner
 from .runtime_settings import (
-    MEMORY_RETENTION_CHOICES, RUN_DETAIL_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, run_detail_privacy, server_setting,
-    update_runtime_setting, usage_privacy,
+    CHAT_RETENTION_CHOICES, MEMORY_RETENTION_CHOICES, RUN_DETAIL_RETENTION_CHOICES, USAGE_RETENTION_CHOICES,
+    chat_retention_days, run_detail_privacy, server_setting, update_runtime_setting, usage_privacy,
 )
 from .tools_memory import memory_clear, memory_delete, memory_export_all, memory_overview, memory_search, memory_update
 from .usage_metering import clear_usage
@@ -835,6 +835,8 @@ def create_dashboard_routes(
                              "filevault": privacy_inventory.filevault_on(),
                              "run_detail_retention_days": run_detail_privacy()["retention_days"],
                              "run_detail_retention_choices": list(RUN_DETAIL_RETENTION_CHOICES),
+                             "chat_retention_days": chat_retention_days(),
+                             "chat_retention_choices": list(CHAT_RETENTION_CHOICES),
                              "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True})
 
     async def privacy_settings(request: Request) -> Response:
@@ -849,6 +851,11 @@ def create_dashboard_routes(
                 return JSONResponse({"ok": False, "error": "invalid_run_detail_retention_days",
                                      "allowed": list(RUN_DETAIL_RETENTION_CHOICES)}, status_code=400)
             updates["run_detail_retention_days"] = int(body["run_detail_retention_days"])
+        if "chat_retention_days" in body:
+            if body["chat_retention_days"] not in CHAT_RETENTION_CHOICES or isinstance(body["chat_retention_days"], bool):
+                return JSONResponse({"ok": False, "error": "invalid_chat_retention_days",
+                                     "allowed": list(CHAT_RETENTION_CHOICES)}, status_code=400)
+            updates["chat_retention_days"] = int(body["chat_retention_days"])
         for field, key in (("paused", "observation_paused"), ("private_mode", "private_mode")):
             if field in body:
                 if not isinstance(body[field], bool):
@@ -881,8 +888,12 @@ def create_dashboard_routes(
             backups = await asyncio.to_thread(privacy_inventory.set_backup_exclusion, updates["exclude_from_backups"])
         if "run_detail_retention_days" in updates:
             await asyncio.to_thread(task_store.apply_retention)  # "applies right away" means now
+        if "chat_retention_days" in updates:
+            from .chat_sessions import get_host as chat_host
+            await chat_host().expire()
         return JSONResponse({"ok": True, **privacy_policy.policy(fresh=True),
                              "run_detail_retention_days": run_detail_privacy()["retention_days"],
+                             "chat_retention_days": chat_retention_days(),
                              "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True,
                              **({"backups": backups} if backups is not None else {})})
 

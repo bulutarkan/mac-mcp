@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -15,6 +16,7 @@ from typing import Any, Dict, Iterable, List
 
 from . import paths
 from .runtime_settings import (
+    chat_retention_days,
     memory_privacy,
     run_detail_privacy,
     provider_enabled,
@@ -63,6 +65,29 @@ def _measure(targets: Iterable[Path]) -> Dict[str, Any]:
         total += _directory_bytes(root)
     private = bool(modes) and all(mode in {"0o700", "0o600"} for mode in modes)
     return {"exists": exists, "bytes": total, "files": files, "modes": sorted(set(modes)), "owner_only": private}
+
+
+def _chat_folders(root: Path) -> List[Path]:
+    """The chats themselves; the agent downloads and settings kept beside them are not your data."""
+    if not root.is_dir() or root.is_symlink():
+        return []
+    return sorted(child for child in root.iterdir() if child.is_dir() and not child.is_symlink()
+                  and _CHAT_FOLDER.match(child.name))
+
+
+def _measure_chats(root: Path) -> Dict[str, Any]:
+    row = _measure([root])
+    total = files = 0
+    for folder in _chat_folders(root):
+        for current, _dirs, names in os.walk(folder):
+            for name in names:
+                try:
+                    total += (Path(current) / name).lstat().st_size
+                    files += 1
+                except OSError:
+                    continue
+    row.update({"bytes": total, "files": files})
+    return row
 
 
 def filevault_on() -> Any:
@@ -116,6 +141,8 @@ _EXCLUDE_XATTR = "com.apple.metadata:com_apple_backup_excludeItem"
 _EXCLUDE_VALUE = plistlib.dumps("com.apple.backupd", fmt=plistlib.FMT_BINARY).hex()
 
 
+_CHAT_FOLDER = re.compile(r"^chat_[0-9a-f]{12}$")  # as chat_sessions.CHAT_ID
+
 # Kept in backups whatever the choice: small, and needed to restore Mac MCP itself.
 _BACKED_UP_ALWAYS = frozenset({"saved_logins", "audit_log", "logs"})
 
@@ -126,8 +153,11 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
     evidence = run_evidence_privacy()
     run_detail = run_detail_privacy()
     from .tools_agents import agent_retention_days  # late: tools_agents is large and imports this module's peers
+    from .tools_jobs import job_retention
     agent_days = agent_retention_days()
+    jobs = job_retention()
     telemetry = paths.telemetry_dir()
+    chats = paths.state_dir() / "chats"  # chat_sessions.chats_root()
     rows = [
         ("tool_activity", "Tool activity", "Which tools ran, when, how long and whether they worked (no prompts or results).",
          [telemetry], f"{usage['retention_days']} days" if usage["enabled"] else "not recorded"),
@@ -138,7 +168,10 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
          [paths.runs_dir()], f"{evidence['retention_days']} days" + ("" if evidence["capture"] else ", screenshots off")),
         ("agents", "Delegated agents", "Prompts, output and results of agents Mac MCP started.",
          [paths.agents_dir(), paths.agent_teams_dir()], f"{agent_days} days after they finish" if agent_days else "until deleted"),
-        ("jobs", "Background jobs", "Output of long shell commands.", [paths.jobs_dir()], "until deleted"),
+        ("chats", "Mac MCP Chat", "Your chats with coding agents: messages, answers and the steps they took.",
+         [chats], f"{chat_retention_days()} days after the last use"),
+        ("jobs", "Background jobs", "Output of long shell commands.", [paths.jobs_dir()],
+         f"{jobs['days']} days after they finish, the latest {jobs['max_jobs']} at most"),
         ("file_history", "File change history", "Copies kept so file edits can be undone.", [paths.transactions_dir()],
          "until deleted"),
         ("provider_usage", "Agent token usage", "Tokens and cost reported by agent providers.", [paths.provider_usage_db()],
@@ -160,7 +193,7 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
         row = {"key": key, "name": name, "holds": holds, "kept": kept, "paths": [str(path) for path in targets],
                "deletable": key in DELETABLE}
         if measure:
-            row.update(_measure(targets))
+            row.update(_measure_chats(chats) if key == "chats" else _measure(targets))
             existing = [path for path in targets if path.exists()]
             row["in_backups"] = (None if not existing else
                                  not all(backup_excluded(path) is True for path in existing))
@@ -208,8 +241,8 @@ def recipients() -> List[Dict[str, Any]]:
 
 # Stores the owner can move to the Trash from Settings > Privacy (or mac-mcp privacy delete).
 # Settings, the saved-login index, the audit log and logs are not: they run Mac MCP itself.
-DELETABLE = ("tool_activity", "memory", "lessons", "run_evidence", "agents", "jobs", "file_history", "provider_usage",
-             "backups", "knowledge")
+DELETABLE = ("tool_activity", "memory", "lessons", "run_evidence", "agents", "chats", "jobs", "file_history",
+             "provider_usage", "backups", "knowledge")
 # The package installer keeps its own rollback copy (backups/pkg-*) and prunes it itself.
 _KEPT_BACKUPS = "pkg-*"
 
@@ -229,6 +262,8 @@ def trash_stores(keys: Iterable[str], *, trash_root: Path, stamp: str) -> Dict[s
         if store["key"] == "backups":
             sources = [child for root in sources if root.is_dir() for child in sorted(root.iterdir())
                        if not child.match(_KEPT_BACKUPS)]
+        elif store["key"] == "chats":
+            sources = [child for root in sources for child in _chat_folders(root)]
         for path in sources:
             raw = str(path)
             if not path.exists():

@@ -3328,12 +3328,14 @@ def create_app():
                 raise TimeoutError from exc
 
         scheduled_task_runner.set_recipe_runner(run_scheduled_recipe)
+        from .chat_sessions import get_host as chat_host
+        chat_retention = asyncio.create_task(chat_host().retention_loop())  # unused chats expire (#114)
         try:
             async with serve_lifespan(asgi_app) as state:
                 yield state
         finally:
             scheduled_task_runner.set_recipe_runner(None)
-            from .chat_sessions import get_host as chat_host
+            chat_retention.cancel()
             await chat_host().shutdown()  # Mac MCP Chat's agent processes stop with the server
 
     app.router.lifespan_context = lifespan_with_recipe_runner
