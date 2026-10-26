@@ -31,7 +31,7 @@ struct AutomationPane: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Automation").font(.title2.weight(.semibold))
                     Text("Work that runs without you asking each time: on a schedule, or with one click from Shortcuts and Siri.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(SettingsType.note).foregroundStyle(.secondary)
                 }
                 Picker("", selection: $navigation.tab) {
                     ForEach(AutomationTab.allCases) { tab in
@@ -153,7 +153,7 @@ struct RecipesPane: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Saved steps you run again with one click: here, from the Shortcuts app and Siri (“Run Mac MCP Recipe”), or with a link.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(SettingsType.note).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
                         .buttonStyle(.borderless)
@@ -170,9 +170,15 @@ struct RecipesPane: View {
                 } else if recipes.isEmpty {
                     emptyState
                 } else {
-                    VStack(spacing: 9) {
-                        ForEach(recipes) { recipe in card(recipe) }
+                    // #125: one list box with hairlines between rows, as in the Usage tabs.
+                    VStack(spacing: 0) {
+                        ForEach(Array(recipes.enumerated()), id: \.element.id) { index, recipe in
+                            if index > 0 { Divider().padding(.leading, 54) }
+                            row(recipe)
+                        }
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .usageListBox()
                     howToMake
                 }
             }
@@ -181,60 +187,51 @@ struct RecipesPane: View {
         }
     }
 
-    private func card(_ recipe: Recipe) -> some View {
+    private func row(_ recipe: Recipe) -> some View {
         let hovering = hovered == recipe.id
         return HStack(spacing: 12) {
-            RecipeIcon()
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(recipe.name).font(.body.weight(.semibold)).lineLimit(1)
-                    Text(recipe.statusLabel)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Capsule().fill(recipe.statusColor.opacity(0.16)))
-                        .foregroundStyle(recipe.statusColor)
-                    if recipe.changesThings {
-                        Text("Changes things")
-                            .font(.caption2)
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Capsule().fill(Color.primary.opacity(0.07)))
-                            .foregroundStyle(.secondary)
-                    }
+            RecipeIcon(size: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(recipe.name).font(SettingsType.title).lineLimit(1)
+                    StatusDot(text: recipe.statusLabel, color: recipe.statusColor)
+                    if recipe.changesThings { SettingsBadge(text: "Changes things") }
                 }
                 Text(recipe.summary.isEmpty ? recipe.metaLine : "\(recipe.summary) · \(recipe.metaLine)")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(SettingsType.note).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
         }
-        .taskCard(highlight: recipe.status == "draft" ? .orange : nil, hovering: hovering)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.primary.opacity(hovering ? 0.04 : 0))
+        .contentShape(Rectangle())
         .onHover { inside in hovered = inside ? recipe.id : (hovered == recipe.id ? nil : hovered) }
         .accessibilityElement(children: .combine)
         .activatable("Opens the recipe") { openID = recipe.id }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            RecipeIcon(size: 46).padding(.top, 14)
-            Text("No recipes yet").font(.headline)
+        VStack(spacing: 10) {
+            RecipeIcon(size: 40).padding(.top, 6)
+            Text("No recipes yet").font(SettingsType.title)
             Text("A recipe is something an AI app did for you once, saved so it can run again. Ask your AI app to do a task and save it as a recipe; it shows up here as a draft for you to check and turn on.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .font(SettingsType.note).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 440)
             howToMake
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 20)
-        .taskCard()
     }
 
     private var howToMake: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("To make one, ask your AI app, for example:", systemImage: "lightbulb")
-                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                .font(SettingsType.note.weight(.semibold)).foregroundStyle(.secondary)
             ForEach(["Read tomorrow's calendar and my reminders, and save it as a recipe called “Tomorrow”.",
                      "Open my Meta Ads report in Safari and save that as a recipe called “Ads report”."], id: \.self) { example in
                 HStack(alignment: .top, spacing: 6) {
-                    Text("“\(example)”").font(.caption).textSelection(.enabled)
+                    Text("“\(example)”").font(SettingsType.note).textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     Button {
@@ -246,9 +243,9 @@ struct RecipesPane: View {
                 }
             }
         }
-        .padding(10)
+        .padding(.horizontal, 14).padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.04)))
+        .usageListBox()
     }
 
     private func load() async {
@@ -362,10 +359,13 @@ private struct RecipeDetailView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(recipe.name).font(.title3.weight(.semibold))
                         if !recipe.summary.isEmpty {
-                            Text(recipe.summary).font(.callout).foregroundStyle(.secondary)
+                            Text(recipe.summary).font(SettingsType.body).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text(recipe.metaLine).font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            StatusDot(text: recipe.statusLabel, color: recipe.statusColor)
+                            Text(recipe.metaLine).font(SettingsType.note).foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                 }
@@ -373,7 +373,7 @@ private struct RecipeDetailView: View {
                 if recipe.status == "draft" {
                     Label("A draft: an AI app saved it, and it runs only once it's turned on. Check the steps below first.",
                           systemImage: "exclamationmark.bubble")
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 9).fill(Color.orange.opacity(0.12)))
@@ -395,7 +395,7 @@ private struct RecipeDetailView: View {
                     section("Values it asks for") {
                         ForEach(recipe.parameters, id: \.name) { parameter in
                             HStack(spacing: 10) {
-                                Text(parameter.name).font(.callout).frame(width: 120, alignment: .leading)
+                                Text(parameter.name).font(SettingsType.body).frame(width: 120, alignment: .leading)
                                 TextField(placeholder(parameter.spec), text: Binding(
                                     get: { values[parameter.name] ?? "" },
                                     set: { values[parameter.name] = $0 }))
@@ -411,13 +411,15 @@ private struct RecipeDetailView: View {
                     } else {
                         ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                             let line = Self.describe(step)
+                            if index > 0 { Divider() }
                             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                Text("\(index + 1)").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                                Text("\(index + 1)").font(SettingsType.meta.weight(.bold)).foregroundStyle(.secondary)
+                                    .monospacedDigit()
                                     .frame(width: 18, alignment: .trailing)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(line.title).font(.callout)
+                                    Text(line.title).font(SettingsType.body)
                                     if !line.detail.isEmpty {
-                                        Text(line.detail).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                                        Text(line.detail).font(SettingsType.meta.monospaced()).foregroundStyle(.secondary)
                                             .lineLimit(2).truncationMode(.tail)
                                     }
                                 }
@@ -428,9 +430,9 @@ private struct RecipeDetailView: View {
 
                 section("Run it from elsewhere") {
                     Text("Shortcuts: add the “Run Mac MCP Recipe” action and pick this recipe, or an “Open URLs” action with the link below. Each run asks you first.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(SettingsType.note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
-                        Text(recipe.link).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        Text(recipe.link).font(SettingsType.note.monospaced()).textSelection(.enabled)
                             .lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Button(copied ? "Copied" : "Copy Link") {
@@ -480,12 +482,14 @@ private struct RecipeDetailView: View {
         }
     }
 
+    /// A titled group as every Settings group is drawn: the title above, the content in the quiet list box.
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title).font(SettingsType.title)
             VStack(alignment: .leading, spacing: 8) { content() }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .taskCard()
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .usageListBox()
         }
     }
 

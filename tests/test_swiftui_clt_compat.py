@@ -26,8 +26,9 @@ class SwiftUICommandLineToolsCompatibilityTests(unittest.TestCase):
         # 9 before #200/#201 added three sizing properties; the session inspector adds one more; #20 the failed filter.
         self.assertEqual(14, menu.count("@MacMCPState "))
         # +1: the Apps pane's shortcut list (#195); +2: its app support list (#262) and Permissions Details (#246);
-        # +1: why that list could not load (#19); +1: the memory review sheet (#60)
-        self.assertEqual(24, settings.count("@MacMCPState "))
+        # +1: why that list could not load (#19); +1: the memory review sheet (#60);
+        # +4: the Voice name and rate as typed, and the note for each (#125)
+        self.assertEqual(28, settings.count("@MacMCPState "))
 
     def test_build_script_compiles_compatibility_source(self) -> None:
         script = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")

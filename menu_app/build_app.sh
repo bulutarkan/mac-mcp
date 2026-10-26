@@ -85,6 +85,8 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/UsageOverview.swift"
   "${SCRIPT_DIR}/Sources/SavedLoginsView.swift"
   "${SCRIPT_DIR}/Sources/SettingsSearch.swift"
+  "${SCRIPT_DIR}/Sources/SettingsSearchLabels.swift"
+  "${SCRIPT_DIR}/Sources/SettingsRules.swift"
   "${SCRIPT_DIR}/Sources/RecipeLauncher.swift"
   "${SCRIPT_DIR}/Sources/RecipeIntents.swift"
   "${SCRIPT_DIR}/Sources/DoctorReport.swift"

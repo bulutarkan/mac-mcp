@@ -280,18 +280,25 @@ struct MacsPane: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 if !message.isEmpty {
-                    Label(message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    Label(message, systemImage: "exclamationmark.triangle").font(SettingsType.note).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(requests) { request in requestCard(request) }
                 DeviceSection(title: "Macs", symbol: "laptopcomputer", summary: macsSummary, isOpen: $macsOpen) {
                     macsControls
                 } content: {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 12)], spacing: 12) {
-                        thisMacCard
-                        ForEach(peers) { peer in peerCard(peer) }
-                        addCard
+                    // #125: one list box with hairlines between the Macs, as in the Usage tabs.
+                    VStack(spacing: 0) {
+                        thisMacRow
+                        ForEach(peers) { peer in
+                            Divider().padding(.leading, 58)
+                            peerRow(peer)
+                        }
+                        Divider().padding(.leading, 58)
+                        addRow
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .usageListBox()
                     if !clients.isEmpty { whoCanUse }
                 }
                 IPhoneSection(state: state, profile: profile, isOpen: $iphoneOpen)
@@ -338,7 +345,7 @@ struct MacsPane: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Devices").font(.title2.weight(.semibold))
             Text("Use your Macs and your iPhone from the AI app connected to this Mac.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(SettingsType.note).foregroundStyle(.secondary)
         }
     }
 
@@ -356,7 +363,7 @@ struct MacsPane: View {
                 .accessibilityLabel("How do my Macs work together?")
                 .popover(isPresented: $showInfo, arrowEdge: .bottom) { AutomationExplainer.macs(profile: profile) }
             HStack(spacing: 8) {
-                    Text(available ? "Available" : "Busy").font(.callout.weight(.medium))
+                    Text(available ? "Available" : "Busy").font(SettingsType.body.weight(.medium))
                         .foregroundStyle(available ? Color.green : Color.orange)
                     Toggle("Available to my other Macs", isOn: Binding(get: { available }, set: { value in
                         Task { await act("dashboard/api/fleet/availability", ["available": value]) }
@@ -381,18 +388,21 @@ struct MacsPane: View {
     // MARK: Someone is asking
 
     private func requestCard(_ request: FleetRequest) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            MacPicture(model: "Mac", size: 52)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("\(request.name) wants to use this Mac").font(.headline)
+        HStack(alignment: .center, spacing: 12) {
+            MacPicture(model: "Mac", size: 32)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text("\(request.name) wants to use this Mac").font(SettingsType.title)
+                    StatusDot(text: "Asking now", color: .blue)
+                }
                 Label(MacAccess.title(request.permission)
                         + (request.permission == "full" && request.fullFor != "none"
                             ? " " + MacAccess.durationTitle(request.fullFor).lowercased() : "")
                         + " — " + MacAccess.blurb(request.permission),
                       systemImage: MacAccess.symbol(request.permission))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(SettingsType.note).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
-                    Text("Allow it only if that Mac shows").font(.caption).foregroundStyle(.secondary)
+                    Text("Allow it only if that Mac shows").font(SettingsType.note).foregroundStyle(.secondary)
                     Text(request.checkCode).font(.system(size: 20, weight: .semibold, design: .monospaced)).tracking(2)
                         .accessibilityLabel("code \(request.checkCode)")
                 }
@@ -405,113 +415,107 @@ struct MacsPane: View {
             }
             .disabled(busy)
         }
-        .taskCard(highlight: .accentColor)
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .usageListBox()
     }
 
-    // MARK: Cards
+    // MARK: Rows
 
-    private var thisMacCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                MacPicture(model: thisModel)
-                Spacer()
-                PresencePill(presence: available ? "available" : "busy")
-            }
-            VStack(alignment: .leading, spacing: 3) {
+    private var thisMacRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            MacPicture(model: thisModel, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
                 if let draft = renaming {
                     HStack(spacing: 6) {
                         TextField("Name", text: Binding(get: { draft }, set: { renaming = $0 }))
                             .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 240)
                             .onSubmit { Task { await rename() } }
                         Button("Save") { Task { await rename() } }
                     }
                 } else {
-                    HStack(spacing: 6) {
-                        Text(thisName).font(.headline).lineLimit(1)
+                    HStack(spacing: 8) {
+                        Text(thisName).font(SettingsType.title).lineLimit(1)
                         Button { renaming = thisName } label: { Image(systemName: "pencil") }
                             .buttonStyle(.borderless).help("Rename this Mac").accessibilityLabel("Rename this Mac")
+                        StatusDot(text: available ? "Available" : "Busy", color: available ? .green : .orange)
                     }
                 }
-                Text("This Mac · " + thisModel).font(.caption).foregroundStyle(.secondary)
+                Text("This Mac · " + thisModel).font(SettingsType.note).foregroundStyle(.secondary)
                 Text(thisURL.isEmpty ? "No public address yet: other Macs can’t reach it."
                                      : "Set to \(MacAccess.profileTitle(profile)) in Permissions & Safety")
-                    .font(.caption).foregroundStyle(thisURL.isEmpty ? Color.orange : Color.secondary)
+                    .font(SettingsType.note).foregroundStyle(thisURL.isEmpty ? Color.orange : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 8)
         }
-        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
-        .taskCard(highlight: Color.accentColor.opacity(0.6))
+        .padding(.horizontal, 14).padding(.vertical, 11)
     }
 
-    private func peerCard(_ peer: FleetPeer) -> some View {
+    private func peerRow(_ peer: FleetPeer) -> some View {
         let hovering = hovered == peer.id
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                MacPicture(model: peer.model)
-                    .opacity(peer.presence == "offline" || peer.presence == "ended" ? 0.45 : 1)
-                Spacer()
-                PresencePill(presence: peer.presence)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(peer.name).font(.headline).lineLimit(1)
+        let presence = PresencePill(presence: peer.presence)
+        return HStack(alignment: .center, spacing: 12) {
+            MacPicture(model: peer.model, size: 32)
+                .opacity(peer.presence == "offline" || peer.presence == "ended" ? 0.45 : 1)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(peer.name).font(SettingsType.title).lineLimit(1)
+                    StatusDot(text: presence.title, color: presence.color)
+                }
                 Label(peer.accessLine, systemImage: MacAccess.symbol(peer.limited ? peer.effective : peer.granted))
-                    .font(.caption).foregroundStyle(peer.limited ? Color.orange : Color.secondary)
-                Text(peer.detailLine).font(.caption).foregroundStyle(.secondary)
+                    .font(SettingsType.note).foregroundStyle(peer.limited ? Color.orange : Color.secondary)
+                Text(peer.detailLine).font(SettingsType.note).foregroundStyle(.secondary)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
-        }
-        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
-        .taskCard(hovering: hovering)
-        .overlay(alignment: .bottomTrailing) {
+            Spacer(minLength: 8)
             Menu {
                 Button("Remove from This Mac", role: .destructive) { removingPeer = peer }
             } label: {
-                Image(systemName: "ellipsis.circle").font(.body)
+                Image(systemName: "ellipsis.circle").font(.system(size: 14))
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .padding(10)
             .opacity(hovering ? 1 : 0.55)
             .accessibilityLabel("More for \(peer.name)")
         }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(Color.primary.opacity(hovering ? 0.04 : 0))
         .onHover { inside in hovered = inside ? peer.id : (hovered == peer.id ? nil : hovered) }
         .accessibilityElement(children: .contain)
     }
 
-    private var addCard: some View {
+    private var addRow: some View {
         Button {
             adding = true
         } label: {
-            VStack(spacing: 8) {
-                Image(systemName: "plus").font(.system(size: 22, weight: .light))
-                Text("Add a Mac").font(.callout.weight(.medium))
-                Text("Use another Mac that invited this one").font(.caption).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                UsageSymbolTile(symbol: "plus", size: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add a Mac").font(SettingsType.title).foregroundStyle(Color.accentColor)
+                    Text("Use another Mac that invited this one").font(SettingsType.note).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
             }
-            .frame(maxWidth: .infinity, minHeight: 172)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
-                .foregroundStyle(Color.accentColor.opacity(0.5))
-        )
     }
 
     // MARK: Who can use this Mac
 
     private var whoCanUse: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Who can use this Mac").font(.headline)
+            Text("Who can use this Mac").font(SettingsType.title)
             VStack(spacing: 0) {
                 ForEach(clients) { client in
                     HStack(spacing: 12) {
-                        Image(systemName: "desktopcomputer").foregroundStyle(.secondary).frame(width: 22)
-                            .accessibilityHidden(true)
+                        UsageSymbolTile(symbol: "desktopcomputer")
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(client.name).font(.callout.weight(.medium))
-                            Text(clientLine(client)).font(.caption)
+                            Text(client.name).font(SettingsType.title)
+                            Text(clientLine(client)).font(SettingsType.note)
                                 .foregroundStyle(client.limited ? Color.orange : Color.secondary)
                         }
                         .accessibilityElement(children: .combine)
@@ -519,16 +523,17 @@ struct MacsPane: View {
                         accessMenu(client)
                         Button("Stop") { stoppingClient = client }
                     }
-                    .padding(.vertical, 8)
-                    if client.id != clients.last?.id { Divider() }
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    if client.id != clients.last?.id { Divider().padding(.leading, 54) }
                 }
             }
-            .taskCard()
+            .usageListBox()
             if !available {
                 Label("This Mac is Busy, so none of them can use it right now.", systemImage: "moon.fill")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(SettingsType.note).foregroundStyle(.orange)
             }
         }
+        .padding(.top, 6)
     }
 
     /// The owner gives full access again for a while, or less (#80). Only here: the other Mac cannot ask for it.

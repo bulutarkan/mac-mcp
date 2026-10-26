@@ -519,6 +519,32 @@ struct SettingsGroupStyle: GroupBoxStyle {
     }
 }
 
+/// A status the way Connections › Browser shows it: a small dot in its colour and a quiet word.
+struct StatusDot: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6).accessibilityHidden(true)
+            Text(text).font(SettingsType.meta).foregroundStyle(.secondary)
+        }
+        .fixedSize()
+    }
+}
+
+/// A quiet tag after a row's title ("Local", "Changes things").
+struct SettingsBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text).font(SettingsType.meta).foregroundStyle(.secondary)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Capsule().fill(Color.primary.opacity(0.08)))
+            .fixedSize()
+    }
+}
+
 /// A small coloured dot before the text, for a status line ("Paused: …").
 struct DotLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {

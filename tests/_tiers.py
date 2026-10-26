@@ -29,6 +29,7 @@ SWIFT_ONLY = (
     "test_provider_usage_section",
     "test_scheduled_task_checks_native",
     "test_scheduler_watchdog_native",
+    "test_settings_rules",
     "test_settings_search",
     "test_tool_activity_bubble_epoch",
     "test_update_progress_surface",

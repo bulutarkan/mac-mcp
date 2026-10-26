@@ -64,8 +64,9 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Its words, the labels it shows and what people call them (#125).
     var searchTerms: String {
-        SettingsSearchIndex.terms[rawValue] ?? ""
+        SettingsSearchIndex.searchTerms(for: rawValue)
     }
 
     /// The sidebar group this section sits in (#250).
@@ -161,6 +162,12 @@ private enum SettingsFeedbackScope: String, Equatable {
     case voice
 }
 
+/// The Voice pane's two typed fields.
+private enum VoiceField: Hashable {
+    case name
+    case rate
+}
+
 private struct SettingsSaveFeedback: Equatable {
     let scope: SettingsFeedbackScope
     let message: String
@@ -188,6 +195,12 @@ struct SettingsView: View {
     @MacMCPState private var memoryClearPreview: MemoryClearResult?
     @MacMCPState private var reviewingMemory = false
     @MacMCPState private var groqKey = ""
+    /// Voice name and rate as typed, before Return or leaving the field saves them; nil when not edited.
+    @MacMCPState private var voiceNameDraft: String?
+    @MacMCPState private var ttsRateDraft: String?
+    @MacMCPState private var voiceNameProblem: String?
+    @MacMCPState private var ttsRateProblem: String?
+    @FocusState private var voiceField: VoiceField?
     @MacMCPState private var decisionsKey = ""
     @MacMCPState private var cloudflareToken = ""
     @MacMCPState private var settingsSearch = ""
@@ -962,11 +975,15 @@ struct SettingsView: View {
                         .accessibilityHidden(true)
                 }
                 .onChange(of: settingsSearch) { _ in
-                    // Never leave a pane on screen that the search no longer lists.
-                    let matches = filteredSections
-                    if !matches.contains(selection), let first = matches.first {
-                        selection = first
-                    }
+                    // Never leave a pane on screen that the search no longer lists: show the best match,
+                    // on the tab its words name (#125); the open pane stays while it matches as well.
+                    guard let hit = SettingsSearchIndex.target(
+                        query: settingsSearch,
+                        sections: SettingsSection.allCases.map { ($0.rawValue, $0.title) },
+                        current: selection.rawValue
+                    ), let section = SettingsSection(rawValue: hit.section) else { return }
+                    selection = section
+                    if let tab = hit.tab { openSearchTab(tab) }
                 }
 
             if filteredSections.isEmpty {
@@ -1030,6 +1047,20 @@ struct SettingsView: View {
         }
         .frame(width: 224)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.38))
+    }
+
+    /// The tab a search names, by the tab ids SettingsSearchIndex uses.
+    private func openSearchTab(_ tab: String) {
+        switch tab {
+        case "browser": connectionsTab = .browser
+        case "mobile": connectionsTab = .mobile
+        case "ai-clients": connectionsTab = .clients
+        case "agents-general": tabs.agents = .general
+        case "protection": tabs.privacy = .protection
+        case "scheduled-tasks": AutomationNavigation.shared.tab = .tasks
+        case "recipes": AutomationNavigation.shared.tab = .recipes
+        default: tabs.select(link: tab)
+        }
     }
 
     private func sidebarRow(_ item: SettingsSection) -> some View {
@@ -1753,7 +1784,10 @@ struct SettingsView: View {
     private var browserPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                sectionLead("Browser Companions", subtitle: "Visual Companion status and background-safe browser integration.")
+                sectionLead(
+                    "Agents in Safari and Chrome",
+                    subtitle: "Turn these on so agents can work in your browser tabs in the background, and you can see which page they are using."
+                )
 
                 settingsDataStateRow(state.browserSettingsState) {
                     state.refreshSafariExtensionState()
@@ -2368,17 +2402,39 @@ struct SettingsView: View {
                         voiceRow {
                             Text("Voice").foregroundStyle(.secondary).accessibilityHidden(true)
                         } control: {
+                            // #125: typed values are saved on Return or when the field is left, and only if
+                            // Microsoft's text-to-speech would take them.
                             HStack {
-                                TextField("tr-TR-AhmetNeural", text: $settings.voiceName)
+                                TextField("tr-TR-AhmetNeural", text: Binding(
+                                    get: { voiceNameDraft ?? settings.voiceName }, set: { voiceNameDraft = $0 }))
                                     .textFieldStyle(.roundedBorder)
                                     .frame(maxWidth: 220)
+                                    .focused($voiceField, equals: .name)
+                                    .onSubmit { commitVoiceName() }
+                                    .help(VoiceSettingsFormat.voiceHint)
                                     .accessibilityLabel("Voice name")
                                 Text("Rate").foregroundStyle(.secondary).accessibilityHidden(true)
-                                TextField("-5%", text: $settings.ttsRate).frame(width: 58)
+                                TextField("-5%", text: Binding(
+                                    get: { ttsRateDraft ?? settings.ttsRate }, set: { ttsRateDraft = $0 })).frame(width: 58)
                                     .textFieldStyle(.roundedBorder)
+                                    .focused($voiceField, equals: .rate)
+                                    .onSubmit { commitTTSRate() }
+                                    .help(VoiceSettingsFormat.rateHint)
                                     .accessibilityLabel("Speech rate")
                             }
                         }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Voice is a name such as tr-TR-AhmetNeural or en-US-AriaNeural; rate is slower or faster than normal, such as -5% or +10%. Each is saved when you press Return or leave its field.")
+                                .font(SettingsType.note).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            ForEach([voiceNameProblem, ttsRateProblem].compactMap { $0 }, id: \.self) { problem in
+                                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                                    .font(SettingsType.note).foregroundStyle(.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14).padding(.bottom, 10)
                     }
                     .usageListBox()
                 }
@@ -2386,8 +2442,15 @@ struct SettingsView: View {
                 .onChange(of: settings.outputDevice) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
                 .onChange(of: settings.language) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
                 .onChange(of: settings.timeoutSeconds) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
-                .onChange(of: settings.voiceName) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
-                .onChange(of: settings.ttsRate) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+                .onChange(of: voiceField) { [voiceField] _ in
+                    // Leaving a field commits it, the same as Return.
+                    if voiceField == .name { commitVoiceName() }
+                    if voiceField == .rate { commitTTSRate() }
+                }
+                .onDisappear {
+                    commitVoiceName()
+                    commitTTSRate()
+                }
 
                 Spacer(minLength: 0)
             }
@@ -2734,23 +2797,24 @@ struct SettingsView: View {
     private var decisionAccelerationBox: some View {
         GroupBox("Decision Acceleration") {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
+                // #125: where it is used is the one control; Off turns it off.
+                HStack(alignment: .center, spacing: 16) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("OpenAI Decisions for ambiguous targets")
+                        Text("Use OpenAI Decisions")
                             .font(SettingsType.title)
-                        Text("Off by default. When off, or without a verified key, browser and Mac actions run exactly as before.")
+                        Text("When several buttons or fields look equally right, Mac MCP can ask OpenAI which one you meant: choose where, or Off to keep Mac MCP's own choice.")
                             .font(SettingsType.meta)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer()
-                    Toggle("OpenAI Decisions for ambiguous targets", isOn: $settings.decisionAccelerationEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .onChange(of: settings.decisionAccelerationEnabled) { _ in
-                            persistSettings(scope: .decisions, success: "Saved · applies live")
-                            Task { await state.refreshDecisionAcceleration(reloadKey: true) }
-                        }
+                    Spacer(minLength: 12)
+                    Picker("Use OpenAI Decisions", selection: decisionScopeBinding) {
+                        ForEach(DecisionScope.allCases) { scope in Text(scope.title).tag(scope) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    .accessibilityLabel("Use OpenAI Decisions")
                 }
 
                 HStack {
@@ -2797,23 +2861,32 @@ struct SettingsView: View {
         return state.decisionAcceleration?.keyStatus ?? "unverified"
     }
 
-    private var decisionKeyStatusText: String {
-        switch decisionKeyStatus {
-        case "missing":
-            return "No key · Decision layer inactive"
-        case "valid":
-            return settings.decisionAccelerationEnabled ? "Key verified · Decision layer active" : "Key verified · turn on to use"
-        case "invalid":
-            return "Key rejected by OpenAI · Decision layer inactive"
-        default:
-            if let status = state.decisionAcceleration?.status, status != "valid" {
-                return "Key check: \(status.replacingOccurrences(of: "_", with: " "))"
+    /// Where Decisions is used as the picker shows it: Off whenever it is turned off or its scope is off.
+    private var decisionScope: DecisionScope {
+        guard settings.decisionAccelerationEnabled else { return .off }
+        return DecisionScope(rawValue: settings.decisionAccelerationScope) ?? .off
+    }
+
+    private var decisionScopeBinding: Binding<DecisionScope> {
+        Binding(
+            get: { decisionScope },
+            set: { scope in
+                guard scope != decisionScope else { return }
+                settings.decisionAccelerationEnabled = scope != .off
+                settings.decisionAccelerationScope = scope.rawValue
+                persistSettings(scope: .decisions, success: "Saved · applies live")
+                Task { await state.refreshDecisionAcceleration(reloadKey: true) }
             }
-            return "Key saved · press Test to verify"
-        }
+        )
+    }
+
+    private var decisionKeyStatusText: String {
+        DecisionScope.statusText(scope: decisionScope, keyStatus: decisionKeyStatus,
+                                 checkStatus: state.decisionAcceleration?.status)
     }
 
     private var decisionKeyStatusSymbol: String {
+        if decisionScope == .off { return "pause.circle" }
         switch decisionKeyStatus {
         case "valid": return "checkmark.shield.fill"
         case "invalid": return "xmark.shield"
@@ -2823,6 +2896,7 @@ struct SettingsView: View {
     }
 
     private var decisionKeyStatusColor: Color {
+        if decisionScope == .off { return .secondary }
         switch decisionKeyStatus {
         case "valid": return .green
         case "invalid": return .red
@@ -4103,6 +4177,34 @@ struct SettingsView: View {
         }
     }
 
+    /// Saves the typed voice name if edge-tts would take it; otherwise keeps it in the field with a note.
+    private func commitVoiceName() {
+        guard let draft = voiceNameDraft else { return }
+        guard let value = VoiceSettingsFormat.voice(draft) else {
+            voiceNameProblem = VoiceSettingsFormat.voiceProblem(draft)
+            return
+        }
+        voiceNameDraft = nil
+        voiceNameProblem = nil
+        guard value != settings.voiceName else { return }
+        settings.voiceName = value
+        persistSettings(scope: .voice, success: "Saved · applies live")
+    }
+
+    /// Saves the typed rate, written as a signed percentage, if it is one; otherwise keeps it with a note.
+    private func commitTTSRate() {
+        guard let draft = ttsRateDraft else { return }
+        guard let value = VoiceSettingsFormat.rate(draft) else {
+            ttsRateProblem = VoiceSettingsFormat.rateProblem(draft)
+            return
+        }
+        ttsRateDraft = nil
+        ttsRateProblem = nil
+        guard value != settings.ttsRate else { return }
+        settings.ttsRate = value
+        persistSettings(scope: .voice, success: "Saved · applies live")
+    }
+
     private func saveGroqKey() {
         do {
             try settings.saveGroqKey(groqKey)
@@ -4131,7 +4233,7 @@ struct SettingsView: View {
     private func removeDecisionsKey() {
         do {
             try settings.removeDecisionsKey()
-            saveFeedback = SettingsSaveFeedback(scope: .decisions, message: "Key removed · Decision layer inactive", isError: false)
+            saveFeedback = SettingsSaveFeedback(scope: .decisions, message: "Key removed · OpenAI Decisions not used", isError: false)
             Task { await state.refreshDecisionAcceleration(reloadKey: true) }
         } catch {
             saveFeedback = SettingsSaveFeedback(

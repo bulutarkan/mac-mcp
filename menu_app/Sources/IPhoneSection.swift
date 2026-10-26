@@ -26,8 +26,8 @@ struct DeviceSection<Controls: View, Content: View>: View {
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
                         Image(systemName: symbol).font(.title3).foregroundStyle(Color.accentColor).frame(width: 26)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(title).font(.headline)
-                            Text(summary).font(.caption).foregroundStyle(.secondary)
+                            Text(title).font(SettingsType.title)
+                            Text(summary).font(SettingsType.note).foregroundStyle(.secondary)
                         }
                     }
                     .contentShape(Rectangle())
@@ -143,16 +143,23 @@ struct IPhoneSection: View {
             HStack(alignment: .top, spacing: 16) {
                 phoneCard
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("What may agents do on your iPhone?").font(.callout.weight(.medium))
-                    ForEach(IPhoneAccess.options, id: \.self) { option in accessTile(option) }
+                    Text("What may agents do on your iPhone?").font(SettingsType.title)
+                    // #125: the choices in one list box with hairlines, as in the Usage tabs.
+                    VStack(spacing: 0) {
+                        ForEach(Array(IPhoneAccess.options.enumerated()), id: \.element) { index, option in
+                            if index > 0 { Divider().padding(.leading, 54) }
+                            accessTile(option)
+                        }
+                    }
+                    .usageListBox()
                     if limited {
                         Label("This Mac is set to \(MacAccess.profileTitle(profile)) in Permissions & Safety, so agents only read your iPhone. Change that setting to let them tap and type.",
                               systemImage: "checkmark.shield")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(SettingsType.note).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if !problem.isEmpty {
-                        Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                        Label(problem, systemImage: "exclamationmark.triangle").font(SettingsType.note).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -197,10 +204,10 @@ struct IPhoneSection: View {
             }
             .accessibilityHidden(true)
             VStack(spacing: 3) {
-                Text(phoneName).font(.callout.weight(.semibold))
-                Text(phase.title).font(.caption.weight(.semibold)).foregroundStyle(phase.color)
+                Text(phoneName).font(SettingsType.title)
+                StatusDot(text: phase.title, color: phase.color)
                 Text(phase.detail)
-                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .font(SettingsType.note).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !isOpenOnMac {
@@ -209,8 +216,8 @@ struct IPhoneSection: View {
             }
         }
         .frame(width: 190)
-        .padding(.vertical, 6)
-        .taskCard()
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .usageListBox()
     }
 
     private func accessTile(_ option: String) -> some View {
@@ -219,29 +226,30 @@ struct IPhoneSection: View {
             Task { await choose(option) }
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: IPhoneAccess.symbol(option)).font(.title3).frame(width: 26)
+                Image(systemName: IPhoneAccess.symbol(option))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(selected ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05)))
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(IPhoneAccess.title(option)).font(.callout.weight(.semibold))
-                        if option == "read_only" {
-                            Text("Default").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                                .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(Capsule().fill(Color.secondary.opacity(0.12)))
-                        }
+                        Text(IPhoneAccess.title(option)).font(SettingsType.title)
+                        if option == "read_only" { SettingsBadge(text: "Default") }
                     }
-                    Text(IPhoneAccess.blurb(option)).font(.caption).foregroundStyle(.secondary)
+                    Text(IPhoneAccess.blurb(option)).font(SettingsType.note).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .font(.system(size: 17))
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary.opacity(0.5))
             }
+            .padding(.horizontal, 14).padding(.vertical, 9)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(working)
-        .taskCard(highlight: selected ? .accentColor : nil)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 

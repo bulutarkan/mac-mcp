@@ -15,7 +15,6 @@ from typing import Any, Dict, Iterable, List
 
 from . import paths
 from .runtime_settings import (
-    load_runtime_settings,
     memory_privacy,
     run_detail_privacy,
     provider_enabled,
@@ -171,8 +170,10 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
 
 def recipients() -> List[Dict[str, Any]]:
     """Every place data can leave this Mac, and whether it is on now."""
-    settings = load_runtime_settings()
-    decisions = settings.get("decision_acceleration") if isinstance(settings.get("decision_acceleration"), dict) else {}
+    # Decisions is on only when it is enabled for a scope other than "off", as the engine reads it (#125).
+    from .decision_engine import load_decision_config
+
+    decisions = load_decision_config()
     mode = str(server_setting("public_endpoint_mode", "none") or "none")
     return [
         {"key": "ai_apps", "name": "AI apps you connect", "active": True,
@@ -200,7 +201,7 @@ def recipients() -> List[Dict[str, Any]]:
          "sends": "Task prompts and the files and tool results those agents read."},
         {"key": "voice", "name": "Groq (voice transcription)", "active": tool_enabled("ask_user_voice", default=False),
          "sends": "Audio of voice questions, when you answer by voice."},
-        {"key": "decisions", "name": "OpenAI (decision acceleration)", "active": decisions.get("enabled") is True,
+        {"key": "decisions", "name": "OpenAI (decision acceleration)", "active": decisions.enabled and decisions.scope != "off",
          "sends": "Short descriptions of ambiguous on-screen targets to pick the right one."},
     ]
 

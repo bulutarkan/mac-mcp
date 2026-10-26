@@ -446,6 +446,26 @@ class StatusPrivacyTests(PrivacySettings):
                          report["privacy"])
 
 
+class DecisionsRecipientTests(PrivacySettings):
+    """#125: OpenAI Decisions is listed as on only when the engine would really use it."""
+
+    def active(self, section: object) -> bool:
+        from mcp_server import privacy_inventory
+
+        self.settings.write_text(json.dumps({"decision_acceleration": section}), encoding="utf-8")
+        return next(row["active"] for row in privacy_inventory.recipients() if row["key"] == "decisions")
+
+    def test_scope_off_or_disabled_is_not_on(self) -> None:
+        self.assertFalse(self.active({"enabled": True, "scope": "off"}))
+        self.assertFalse(self.active({"enabled": False, "scope": "both"}))
+        self.assertFalse(self.active({"enabled": True, "scope": "everything"}))  # the engine refuses it too
+
+    def test_each_real_scope_is_on(self) -> None:
+        for scope in ("browser", "native", "both"):
+            self.assertTrue(self.active({"enabled": True, "scope": scope}), scope)
+        self.assertTrue(self.active({"enabled": True}))  # the engine's default scope is both
+
+
 class BackupStoreTests(unittest.TestCase):
     def test_backups_move_to_the_trash_but_package_rollback_stays(self) -> None:
         from mcp_server import privacy_inventory as inv

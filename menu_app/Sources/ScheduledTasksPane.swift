@@ -142,7 +142,7 @@ struct ScheduledTasksPane: View {
                         }
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text("AI tasks and scripts that run on their own: on a schedule, or when a file arrives.")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(SettingsType.note).foregroundStyle(.secondary)
                             Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
                                 .buttonStyle(.borderless)
                                 .help("What are Scheduled Tasks?")
@@ -175,13 +175,13 @@ struct ScheduledTasksPane: View {
 
                 if loaded, !message.isEmpty {
                     Label(message, systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(SettingsType.note).foregroundStyle(.secondary)
                 }
 
                 if observationPaused, tasks.contains(where: { $0.isAI && $0.state == "active" }) {
                     Label("Observation is paused in Privacy, so AI tasks are skipped until you turn it back on. Scripts still run.",
                           systemImage: "pause.circle")
-                        .font(.caption)
+                        .font(SettingsType.note)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 9).fill(Color.orange.opacity(0.12)))
@@ -192,11 +192,10 @@ struct ScheduledTasksPane: View {
                         Image(systemName: "clock").foregroundStyle(Color.accentColor)
                         Text("Up next: ").fontWeight(.semibold) + Text("\(TaskTime.upcoming(Date(timeIntervalSince1970: at))) · \(next["name"] as? String ?? "")")
                     }
-                    .font(.callout)
-                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .font(SettingsType.body)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(TaskStyle.accentStrip))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.accentColor.opacity(0.35)))
+                    .usageListBox()
                 }
 
                 if !loaded {
@@ -208,9 +207,15 @@ struct ScheduledTasksPane: View {
                 } else if tasks.isEmpty {
                     emptyState
                 } else {
-                    VStack(spacing: 9) {
-                        ForEach(tasks) { task in card(task) }
+                    // #125: one list box with hairlines between rows, as in the Usage tabs.
+                    VStack(spacing: 0) {
+                        ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
+                            if index > 0 { Divider().padding(.leading, 54) }
+                            row(task)
+                        }
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .usageListBox()
                 }
             }
             .padding(22)
@@ -219,23 +224,23 @@ struct ScheduledTasksPane: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             HStack(spacing: -8) {
-                TaskIcon(ai: true, size: 46)
-                TaskIcon(ai: false, size: 46).offset(y: 8)
+                TaskIcon(ai: true, size: 40)
+                TaskIcon(ai: false, size: 40).offset(y: 8)
             }
-            .padding(.top, 18)
-            Text("Nothing scheduled yet").font(.headline)
+            .padding(.top, 14)
+            Text("Nothing scheduled yet").font(SettingsType.title)
             Text("Have an agent write your Monday report, or run a script every evening. You can also ask your AI app to suggest a task; it waits here for your approval.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .font(SettingsType.note).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             HStack(spacing: 8) {
                 ForEach(TaskTemplate.all) { template in templateButton(template) }
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 26)
-        .taskCard()
+        .padding(.vertical, 22)
+        .usageListBox()
     }
 
     private func templateButton(_ template: TaskTemplate) -> some View {
@@ -257,35 +262,36 @@ struct ScheduledTasksPane: View {
     }
 
     @ViewBuilder
-    private func card(_ task: ScheduledTask) -> some View {
+    private func row(_ task: ScheduledTask) -> some View {
         let waiting = task.proposal != nil
         let hovering = hovered == task.id
         HStack(spacing: 12) {
-            TaskKindIcon(kind: task.proposal?["kind"] as? String ?? task.kind)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
+            TaskKindIcon(kind: task.proposal?["kind"] as? String ?? task.kind, size: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
                     Text(waiting && !task.approved ? (task.proposal?["name"] as? String ?? task.name) : task.name)
-                        .font(.body.weight(.semibold)).lineLimit(1)
+                        .font(SettingsType.title).lineLimit(1)
                     if waiting {
-                        Text(scriptChanged(task) ? "Script changed" : task.approved ? "Change suggested" : "Needs your approval")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Capsule().fill(Color.orange.opacity(0.16)))
-                            .foregroundStyle(Color.orange)
+                        StatusDot(text: scriptChanged(task) ? "Script changed" : task.approved ? "Change suggested" : "Needs your approval",
+                                  color: .orange)
                     }
                 }
-                subtitle(task).font(.caption).lineLimit(1)
+                subtitle(task).font(SettingsType.note).lineLimit(1)
             }
             Spacer(minLength: 8)
             if waiting {
                 Button("Review") { reviewing = task }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
+                    .controlSize(.small)
             } else {
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
             }
         }
-        .taskCard(highlight: waiting ? .orange : nil, hovering: hovering)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.primary.opacity(hovering ? 0.04 : 0))
+        .contentShape(Rectangle())
         .opacity(task.paused ? 0.55 : 1)
         .onHover { inside in hovered = inside ? task.id : (hovered == task.id ? nil : hovered) }
         .accessibilityElement(children: .combine)
@@ -376,13 +382,11 @@ private struct TaskDetailView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(task.name).font(.title2.weight(.semibold))
                         Text(([task.scheduleText, task.isRecipe ? "Recipe" : task.isAI ? "AI task" : "Script"] + (task.isAI ? [agentName] : [])).joined(separator: " · "))
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(SettingsType.body).foregroundStyle(.secondary)
                     }
                     Spacer()
                     if task.paused {
-                        Text("Paused").font(.caption.weight(.semibold))
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                        StatusDot(text: "Paused", color: .secondary)
                     }
                 }
 
@@ -425,24 +429,25 @@ private struct TaskDetailView: View {
 
                 facts
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("RECENT RUNS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).kerning(0.6)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Recent Runs").font(SettingsType.title)
                     if let problem = runsProblem, runs.isEmpty {
                         LoadProblem(message: problem) { await loadRuns() }
                     } else if runs.isEmpty {
                         Text(task.watchesFolder ? "No runs yet. It runs when a new file arrives."
                              : task.nextRunAt.map { "No runs yet. The first one is \(TaskTime.upcoming($0))." } ?? "No runs yet.")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(SettingsType.body).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .taskCard()
+                            .padding(.horizontal, 14).padding(.vertical, 12)
+                            .usageListBox()
                     } else {
                         VStack(spacing: 0) {
                             ForEach(Array(runs.enumerated()), id: \.element.id) { index, run in
-                                if index > 0 { Divider() }
+                                if index > 0 { Divider().padding(.leading, 14) }
                                 runRow(run)
                             }
                         }
-                        .taskCard()
+                        .usageListBox()
                     }
                 }
             }
@@ -531,7 +536,8 @@ private struct TaskDetailView: View {
             }
             factRow("bell", "When it finishes", task.notify ? "Notifies you" : "No notification")
         }
-        .taskCard()
+        .padding(.horizontal, 14).padding(.vertical, 3)
+        .usageListBox()
     }
 
     /// A script with its arguments, or a command, as one line.
@@ -569,12 +575,12 @@ private struct TaskDetailView: View {
             Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 16)
             Text(title).foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
             Text(value)
-                .font(mono ? .system(.callout, design: .monospaced) : .callout)
+                .font(mono ? SettingsType.body.monospaced() : SettingsType.body)
                 .lineLimit(lines)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
         }
-        .font(.callout)
+        .font(SettingsType.body)
         .padding(.vertical, 7)
     }
 
@@ -584,19 +590,21 @@ private struct TaskDetailView: View {
             Image(systemName: run.symbol).foregroundStyle(run.color).font(.body)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(TaskTime.stamp(run.scheduledFor ?? run.startedAt)).font(.callout.weight(.semibold))
-                    Text(runMeta(run)).font(.caption).foregroundStyle(.secondary)
+                    Text(TaskTime.stamp(run.scheduledFor ?? run.startedAt)).font(SettingsType.title)
+                    Text(runMeta(run)).font(SettingsType.note).foregroundStyle(.secondary)
                 }
                 if let text = runText(run) {
-                    Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(text).font(SettingsType.note).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
             Spacer()
             if run.status != "skipped", run.status != "running" {
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
             }
         }
-        .padding(.vertical, 9)
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         if run.status == "skipped" {
             row

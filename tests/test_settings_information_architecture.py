@@ -48,7 +48,9 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         self.assertIn('paneHeader(\n                    "Connections"', self.view)
         self.assertIn("switch connectionsTab {\n            case .browser: browserPane", self.view)
         self.assertIn("case .clients: clientsPane", self.view)
-        self.assertIn('sectionLead("Browser Companions"', self.view)
+        # #125: the Browser tab says what the person gets, not the companions' technical name.
+        self.assertIn('sectionLead(\n                    "Agents in Safari and Chrome"', self.view)
+        self.assertNotIn('sectionLead("Browser Companions"', self.view)
         self.assertIn('sectionLead(\n                    "Mobile Access"', self.view)
         self.assertIn('"Choose a public endpoint above before pairing a phone."', self.view)
 
