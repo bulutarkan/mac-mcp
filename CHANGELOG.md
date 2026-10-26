@@ -1,3 +1,12 @@
+## Unreleased
+
+### Security and privacy fixes (roadmap #112, #113, #115, #117, #118)
+- Pausing observation now holds everywhere: REST calls (`/api`, including paired Macs), the dashboard's tab frame, `browser_checkpoint`, `context_handoff` and saving a workspace no longer read pages, tabs, the screen, the clipboard or the Finder selection while paused. A test now fails when a new observing tool is not classified.
+- Secrets read from the clipboard (random-looking keys), from Mac MCP's own token files (dashboard, Chrome companion, Cloudflare tunnel, also through a symlink) or from several files at once are remembered, so the existing check stops them from leaving through a browser field or a request. Job lists show commands with credentials masked. A ChatGPT connector address with `?ApiKey=` is never held back, also after `.env` was read.
+- Commands and background jobs no longer inherit the server's own keys (`MCP_API_KEY`, the Chrome bridge token, the Claude Code token, the Decisions and Groq keys); your own exported keys, PATH and HOME stay. AppleScript goes to `osascript` on stdin, out of the process list.
+- npm publishes only from a tag that is the signed stable checkpoint itself, packed from that exact commit, with a digest-checked npm in a job of its own that alone can request the publishing token.
+- Mobile pairing keeps a bounded record of attempts (200 per minute across all addresses), and the unauthenticated development mode accepts only Mac MCP's own Chrome companion as a browser extension.
+
 ## [2.3.1] - 2026-10-26
 
 **In short:** Mac MCP Chat arrives: talk to your own Claude, Codex, OpenCode, Copilot, Antigravity and other agents in a project folder, each signed in as you, with files, images, live command output and messages that wait their turn. Settings get one calm look throughout, with Usage in tabs (Tools, Delegated Agents, Chat, Data & Storage). The menu bar app is plainer and shows one card at a time; agent teams check their settings before starting, share full reports and never lose a message; delegated agents use your memories and skills; GitHub Copilot joins as an agent. Install with npm, `install.sh` or the package; existing installs get it with `mac-mcp update`.
