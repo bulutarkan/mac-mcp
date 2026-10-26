@@ -216,7 +216,7 @@ class CommandTests(unittest.TestCase):
     def test_grok_never_waits_for_approval_and_loses_lifecycle_tools(self) -> None:
         write = harness.command({"provider": "grok", "binary": "grok", "cwd": "/w", "access_mode": "workspace_write",
                                  "reasoning": "high", "resume_session_id": "s"}, "do it")
-        self.assertEqual(["grok", "--no-auto-update", "--single", "do it", "--output-format", "streaming-json"], write[:6])
+        self.assertEqual(["grok", "--no-auto-update", "--single=do it", "--output-format", "streaming-json"], write[:5])
         self.assertIn("bypassPermissions", write)
         removed = write[write.index("--disallowed-tools") + 1].split(",")
         self.assertIn("scheduler_create", removed)

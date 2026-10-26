@@ -339,7 +339,8 @@ def command(meta: Dict[str, Any], prompt: str) -> List[str]:
                 cmd += ["--add-dir", str(root)]
         return cmd
     cmd = [
-        binary, "--no-auto-update", "--single", prompt, "--output-format", "streaming-json",
+        # --single=<prompt>: clap refuses a separate value that starts with "-" (#119).
+        binary, "--no-auto-update", f"--single={prompt}", "--output-format", "streaming-json",
         # Headless runs cannot answer permission prompts; restricted modes are bounded by the
         # Seatbelt profile and full mode is unrestricted by design (as for Claude Code).
         "--permission-mode", "bypassPermissions",

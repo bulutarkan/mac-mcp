@@ -88,6 +88,12 @@ DETAILED_RESULT_LIMIT = 20000
 # separately so a parent can page through it with get_agent(result_mode="full").
 FULL_RESULT_LIMIT = 512_000
 MAX_RESULT_PAGE_CHARS = 100_000
+# What one provider run may print (stdout and stderr together) before it is stopped (#119). The largest
+# real agent log seen was ~14 MB; a run past this is runaway output, not work. One line is parsed as an
+# event only up to the line limit; the rest of it is not kept, so memory stays bounded however long it is.
+AGENT_OUTPUT_BUDGET_BYTES = 64 * 1024 * 1024
+AGENT_OUTPUT_LINE_LIMIT_BYTES = 8 * 1024 * 1024
+_OUTPUT_READ_CHUNK_BYTES = 64 * 1024
 TEAM_RESULT_LIMIT = 2000
 DEFAULT_WAIT_TIMEOUT_S = 30
 MAX_WAIT_TIMEOUT_S = 300
@@ -4798,7 +4804,8 @@ def _memory_skill_instruction(scope: ResourceScope, *, provenance_class: str, sc
 
     MCP clients need not pass the server's instructions to the model, so agents Mac MCP starts get
     the rules here. Only for agents that reach Mac MCP and may use those tools; work that came from
-    outside content never writes memory. Lookups are conditional, saving is rare and silent."""
+    outside content never writes memory, and neither does a read-only agent (#119): it looks up only.
+    Lookups are conditional, saving is rare and silent."""
     if not scoped_mcp:
         return ""
     families = scope.tool_families
@@ -4818,7 +4825,15 @@ def _memory_skill_instruction(scope: ResourceScope, *, provenance_class: str, sc
             "- Before work that follows a procedure (design or UI, a framework, a file format, a review, release or "
             "report routine), call skill_search once, even for a short task, and skill_get the best match if one fits."
         )
-    if memory and provenance_class == "local":
+    read_only = scope.access_mode.value == "read_only"
+    if memory and read_only:
+        lines.append(
+            "- This task is read-only: you can look up memories and skills but not save. memory_add, memory_update "
+            "and lesson_record are not available to you."
+            + (" If the task states a lasting preference, decision or correction of the owner, state it in one line "
+               "of your report so the lead can save it." if provenance_class == "local" else "")
+        )
+    elif memory and provenance_class == "local":
         lines.append(
             "- When the task states a lasting preference of the owner ('from now on', 'always', 'never'), a decision "
             "or a correction, saving it is part of the task: before your final answer, memory_search for it, then "
@@ -5291,12 +5306,12 @@ def _access_instruction(access_mode: str, permission_profile: Optional[str]) -> 
             "Files, repositories, configuration and services on this Mac are read-only: do not modify them. "
             "In the browser, act as the task asks (click, type, submit, post) with the browser tools."
         )
-    # Read-only agents may still save to the owner's memory (#110) and message their team; without saying so
-    # they took "no external state" to forbid memory_add and dropped the preference they were told to keep.
+    # Read-only agents look up the owner's memory and skills but never save to them (#119, reversing #110);
+    # team messages stay allowed, so it is said here rather than left to "no external state".
     return (
         "This task is read-only. Do not modify files, configuration, services, repositories, or external state. "
-        "Use only inspection/read commands and tools. Saving to the owner's Mac MCP memory (memory_add, "
-        "memory_update) and team messages are allowed: they do not change this Mac."
+        "Use only inspection/read commands and tools. You may look up the owner's Mac MCP memory and skills "
+        "(memory_search, skill_search, skill_get) but not save to them. Team messages are allowed."
     )
 
 
@@ -7603,7 +7618,9 @@ def _build_provider_command(
             cmd += ["--variant", reasoning]
         if resume_session_id:
             cmd += ["--session", resume_session_id]
-        cmd.append(prompt)
+        # "--" ends the options, so a prompt that starts with "-" is the message, never an option (#119);
+        # opencode run joins the words after it into the message as it does the positional ones.
+        cmd += ["--", prompt]
         return cmd
 
     if provider == "claude":
@@ -7631,7 +7648,7 @@ def _build_provider_command(
             cmd += ["--model", model]
         if reasoning:
             cmd += ["--config", f'model_reasoning_effort="{reasoning}"']
-        cmd += [resume_session_id, prompt]
+        cmd += ["--", resume_session_id, prompt]  # see below: a prompt is never read as an option
         return cmd
 
     cmd = [
@@ -7655,7 +7672,9 @@ def _build_provider_command(
         cmd += ["--model", model]
     if reasoning:
         cmd += ["--config", f'model_reasoning_effort="{reasoning}"']
-    cmd.append(prompt)
+    # Without "--", a prompt starting with "-" is parsed as an option ("--version" printed the version)
+    # and one that is a subcommand's name ("review") runs that subcommand (#119).
+    cmd += ["--", prompt]
     return cmd
 
 
@@ -8329,15 +8348,77 @@ def _record_provider_event(agent_id: str, raw_line: str) -> None:
     except HTTPException:
         return
 
-def _capture_provider_stream(agent_id: str, stream, path: Path, parse_events: bool) -> None:
+class _OutputBudget:
+    """Bytes one provider run may still print, shared by its stdout and stderr readers."""
+
+    def __init__(self, limit: Optional[int] = None) -> None:
+        self.limit = int(AGENT_OUTPUT_BUDGET_BYTES if limit is None else limit)
+        self.used = 0
+        self.exceeded = threading.Event()
+        self._lock = threading.Lock()
+
+    def take(self, size: int) -> bool:
+        with self._lock:
+            if self.exceeded.is_set():
+                return False
+            if self.used + size > self.limit:
+                self.exceeded.set()
+                return False
+            self.used += size
+            return True
+
+
+def _output_limit_note(limit: Optional[int] = None) -> str:
+    limit = AGENT_OUTPUT_BUDGET_BYTES if limit is None else limit
+    return (f"Mac MCP stopped this agent: its output passed the {limit / (1024 * 1024):g} MiB limit for one run. "
+            "The logs keep what came before the limit.")
+
+
+def _capture_provider_stream(agent_id: str, stream, path: Path, parse_events: bool,
+                             budget: Optional[_OutputBudget] = None) -> None:
+    """Copy a provider stream to its log line by line, in bounded chunks (#119).
+
+    readline() on a pipe buffers a whole line however long it is; here a line keeps at most
+    AGENT_OUTPUT_LINE_LIMIT_BYTES and the run stops reading once the shared budget is spent."""
+    raw = getattr(stream, "buffer", stream)
+    read = getattr(raw, "read1", None) or raw.read
+    pending = bytearray()
+    dropped = 0
     with path.open("a", encoding="utf-8", errors="replace") as handle:
-        for line in iter(stream.readline, ""):
-            if not line:
-                break
-            handle.write(line)
+        def emit() -> None:
+            text = bytes(pending).decode("utf-8", errors="replace")
+            if dropped:
+                text = text.rstrip("\n") + f"\n[mac-mcp: line cut, {dropped} more bytes not kept]\n"
+            handle.write(text)
             handle.flush()
             if parse_events:
-                _record_provider_event(agent_id, line)
+                _record_provider_event(agent_id, text)
+
+        while True:
+            chunk = read(_OUTPUT_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8", errors="replace")
+            if budget is not None and not budget.take(len(chunk)):
+                break
+            start = 0
+            while start < len(chunk):
+                newline = chunk.find(b"\n", start)
+                end = len(chunk) if newline < 0 else newline + 1
+                room = max(0, AGENT_OUTPUT_LINE_LIMIT_BYTES - len(pending))
+                pending += chunk[start:start + min(room, end - start)]
+                dropped += max(0, end - start - room)
+                if newline >= 0:
+                    emit()
+                    pending.clear()
+                    dropped = 0
+                start = end
+        if pending or dropped:
+            emit()
+        if budget is not None and budget.exceeded.is_set():
+            handle.write(f"\n[mac-mcp: {_output_limit_note(budget.limit)}]\n")
+            handle.flush()
     try:
         stream.close()
     except Exception:
@@ -8468,8 +8549,9 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
         if cancelled_at_start:
             _kill_group(proc.pid, signal_module.SIGTERM)
             return proc.wait(), "cancelled"
-        out_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stdout, stdout_path, True), daemon=True)
-        err_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stderr, stderr_path, False), daemon=True)
+        output_budget = _OutputBudget()
+        out_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stdout, stdout_path, True, output_budget), daemon=True)
+        err_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stderr, stderr_path, False, output_budget), daemon=True)
         out_thread.start(); err_thread.start()
         attempt_started = time.monotonic()
         last_admission_heartbeat = 0.0
@@ -8488,6 +8570,8 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
                 last_admission_heartbeat = heartbeat_now
             if latest.get("status") == "cancelled":
                 stop_reason = "cancelled"
+            if stop_reason is None and output_budget.exceeded.is_set():
+                stop_reason = "output_limit"
             if stop_reason is None and time.monotonic() - attempt_started >= timeout_s:
                 stop_reason = "timeout"
             elif stop_reason is None and idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
@@ -8502,6 +8586,8 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
             time.sleep(0.2)
         exit_code = proc.wait()
         out_thread.join(timeout=2); err_thread.join(timeout=2)
+        if stop_reason is None and output_budget.exceeded.is_set():
+            stop_reason = "output_limit"  # it ended on its own (a closed pipe) after the limit
         return exit_code, stop_reason
     finally:
         agent_message_bridge.finish(message_bridge, terminal=True)
@@ -8616,6 +8702,8 @@ def _worker(agent_id: str) -> int:
                 return 0
             if exit_code == 0 and stop_reason is None:
                 break
+            if stop_reason == "output_limit":
+                break  # the same task would print the same flood again
             if attempt_index + 1 >= max_attempts:
                 break
 
@@ -8752,6 +8840,8 @@ def _worker(agent_id: str) -> int:
     if not result:
         error_tail = _tail_text(stderr_path, max_lines=30, max_chars=3000)
         result = error_tail or "Agent finished without a final handoff. Check logs with get_agent(include_logs=true)."
+    if final_reason == "output_limit":
+        result = _output_limit_note() + "\n\n" + result
 
     legacy_gate = _legacy_gate_from_text(result)
     contract_error: Optional[Dict[str, str]] = None
@@ -8840,6 +8930,8 @@ def _worker(agent_id: str) -> int:
         final_status = "timeout"
     elif final_reason == "stalled":
         final_status = "stalled"
+    elif final_reason == "output_limit":
+        final_status = "failed"
     else:
         final_status = "completed" if exit_code == 0 else "failed"
     if final_status == "completed" and contract_error is not None and not contract_salvaged:
@@ -8898,6 +8990,9 @@ def _worker(agent_id: str) -> int:
                 current["note"] = f"Provider emitted an invalid typed result contract ({(contract_error or {}).get('code') or 'unknown'})."
             elif final_reason == "result_reported_failure":
                 current["note"] = "Typed result envelope reported outcome=failure."
+            elif final_reason == "output_limit":
+                current["note"] = _output_limit_note()
+                current["failure_reason"] = "output_limit"
             elif final_reason in {"provider_auth_expired", "auth_error"}:
                 provider_name = str(current.get("provider") or "provider")
                 login = {"codex": "codex login", "claude": "claude auth login"}.get(provider_name, f"the {provider_name} sign-in")

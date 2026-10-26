@@ -123,6 +123,36 @@ def _within(path: Path, root: Path) -> bool:
         return False
 
 
+def _safe_worktree_target(anchor: Path, agent_id: str) -> Path:
+    """The agent's worktree path under the anchor, checked before git runs (#119).
+
+    git worktree add follows a symlinked .mac-mcp-worktrees (or a symlinked ancestor) and would put the
+    checkout wherever it points; the scope check after the add came too late. Any symlink on the way is
+    refused, and the path must resolve to itself."""
+    def refuse(path: Path, why: str) -> AgentWorktreeError:
+        return AgentWorktreeError(
+            "git_worktree_path_unsafe", f"Refusing to create the agent worktree: {path} {why}.",
+            details={"path": str(path)},
+        )
+
+    if not agent_id or agent_id in {".", ".."} or Path(agent_id).name != agent_id:
+        raise refuse(anchor / _WORKTREE_DIRNAME / str(agent_id), "is not a plain directory name")
+    root_parent = anchor / _WORKTREE_DIRNAME
+    target = root_parent / agent_id
+    for part in (target, root_parent, anchor, *anchor.parents):
+        try:
+            mode = os.lstat(part).st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(mode):
+            raise refuse(part, "is a symbolic link")
+        if part != target and not stat.S_ISDIR(mode):
+            raise refuse(part, "is not a directory")
+    if target.resolve(strict=False) != target:
+        raise refuse(target, "does not resolve to itself")
+    return target
+
+
 def _repo_root(cwd: Path) -> Path | None:
     proc = _run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"], check=False, timeout=15)
     if proc.returncode != 0:
@@ -244,11 +274,12 @@ def prepare_worktree(
     _git(repo, "cat-file", "-e", f"{resolved_base}^{{commit}}")
     branch = f"mac-mcp/agent/{agent_id}"
     root_parent = anchor / _WORKTREE_DIRNAME
-    worktree = (root_parent / agent_id).resolve(strict=False)
+    worktree = _safe_worktree_target(anchor, agent_id)
     if worktree.exists():
         raise AgentWorktreeError("git_worktree_exists", f"Agent worktree path already exists: {worktree}")
     _ensure_local_exclude(repo)
     root_parent.mkdir(parents=True, exist_ok=True)
+    worktree = _safe_worktree_target(anchor, agent_id)  # again: no link was swapped in meanwhile
     try:
         _git(repo, "worktree", "add", "--quiet", "-b", branch, str(worktree), resolved_base, timeout=120)
     except Exception:

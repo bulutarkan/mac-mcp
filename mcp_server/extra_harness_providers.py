@@ -324,6 +324,9 @@ def copilot_env(home: Path, keychain_lookup: Callable[[str], Optional[str]], mod
 
 
 def command(meta: Dict[str, Any], prompt: str) -> List[str]:
+    """A prompt that starts with "-" is never read as an option (#119): positional prompts follow "--", and
+    prompt options take it as --opt=<prompt> where the CLI would otherwise refuse a leading "-" (checked
+    against each CLI: Goose and Copilot refused it, agy's Go flags bind the next word as given)."""
     provider = str(meta["provider"])
     binary = str(meta["binary"])
     model = str(meta.get("model") or "").strip()
@@ -340,7 +343,7 @@ def command(meta: Dict[str, Any], prompt: str) -> List[str]:
         if resume:
             cmd += ["--session", resume]
         # pi prints a JSONL stream even with --mode=json.
-        return [*cmd, prompt]
+        return [*cmd, "--", prompt]
     if provider == "kilo":
         cmd = [binary, "run", "--format", "json", "--auto", "--dir", cwd]
         if model:
@@ -349,7 +352,7 @@ def command(meta: Dict[str, Any], prompt: str) -> List[str]:
             cmd += ["--variant", reasoning]
         if resume:
             cmd += ["--session", resume]
-        return [*cmd, prompt]
+        return [*cmd, "--", prompt]
     if provider == "cline":
         cmd = [binary, "--json", "--auto-approve", "true", "--cwd", cwd, "--config",
                str(meta["private_home"]), "--data-dir", str(Path(meta["private_home"]) / "data")]
@@ -360,9 +363,9 @@ def command(meta: Dict[str, Any], prompt: str) -> List[str]:
         if reasoning:
             cmd += ["--thinking", reasoning]
         # No resume: Cline's --id switches to its interactive chat, which --json refuses.
-        return [*cmd, prompt]
+        return [*cmd, "--", prompt]
     if provider == "goose":
-        cmd = [binary, "run", "--text", prompt, "--output-format", "stream-json",
+        cmd = [binary, "run", f"--text={prompt}", "--output-format", "stream-json",
                "--max-tool-repetitions", "8", "--max-turns", "40"]
         if model:
             vendor, _, name = model.partition("/")
@@ -374,7 +377,7 @@ def command(meta: Dict[str, Any], prompt: str) -> List[str]:
         return cmd
     if provider == "copilot":
         # The model comes from COPILOT_MODEL (copilot_env), which strips a BYOK provider prefix.
-        cmd = [binary, "-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user",
+        cmd = [binary, f"--prompt={prompt}", "--output-format", "json", "--allow-all-tools", "--no-ask-user",
                "--disable-builtin-mcps", "--no-auto-update", "--disable-client-telemetry",
                "--secret-env-vars=COPILOT_PROVIDER_API_KEY,COPILOT_GITHUB_TOKEN",
                "--excluded-tools", *COPILOT_EXCLUDED_TOOLS]

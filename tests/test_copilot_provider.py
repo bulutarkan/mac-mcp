@@ -124,7 +124,7 @@ class HomeAndCommandTests(unittest.TestCase):
                 "reasoning": "high", "resume_session_id": "0aabb489-275e-4117-a1a4-293bf8ca4dd7",
                 "cwd": "/tmp/work", "access_mode": "read_only", "extra_roots": ["/tmp/work", "/tmp/data"]}
         cmd = extra.command(meta, "do the thing")
-        self.assertEqual(["/opt/homebrew/bin/copilot", "-p", "do the thing", "--output-format", "json"], cmd[:5])
+        self.assertEqual(["/opt/homebrew/bin/copilot", "--prompt=do the thing", "--output-format", "json"], cmd[:4])
         for flag in ("--allow-all-tools", "--no-ask-user", "--disable-builtin-mcps", "--no-auto-update",
                      "--disable-client-telemetry"):
             self.assertIn(flag, cmd)

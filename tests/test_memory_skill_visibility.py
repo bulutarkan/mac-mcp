@@ -1,8 +1,8 @@
 """Memory and skills where agents see them (#110, part 1).
 
 skill_search and skill_get are in the default core list; every memory and skill summary says when to use it
-and fits the compact limit. Read-only agents may still remember what they learned, and nothing else
-opens with it. Saving and recalling are silent: no instruction asks an agent to announce them.
+and fits the compact limit. Read-only agents look memories and skills up but never save (#119).
+Saving and recalling are silent: no instruction asks an agent to announce them.
 """
 import tests._state_isolation  # noqa: F401  (must precede mcp_server imports)
 import unittest
@@ -22,11 +22,12 @@ class MemorySkillVisibilityTests(unittest.TestCase):
                 self.assertIn(tool, CORE_TOOL_NAMES)
                 self.assertLessEqual(len(CORE_TOOL_SUMMARIES[tool]), COMPACT_DESCRIPTION_LIMIT)
 
-    def test_read_only_agents_may_remember_and_nothing_else_opens(self):
-        for tool in ("memory_add", "memory_update", "memory_search", "skill_search", "skill_get"):
+    def test_read_only_agents_look_up_but_never_save(self):
+        for tool in ("memory_search", "skill_search", "skill_get"):
             with self.subTest(tool=tool):
                 self.assertTrue(evaluate_profile("read_only", declared_risk(tool)).allowed)
-        for tool in ("memory_delete", "lesson_record", "write_file", "edit_file", "run_command"):
+        for tool in ("memory_add", "memory_update", "memory_delete", "lesson_record", "write_file", "edit_file",
+                     "run_command"):
             with self.subTest(tool=tool):
                 self.assertFalse(evaluate_profile("read_only", declared_risk(tool)).allowed)
         # Browser-only agents stay scoped to the browser and to questions for the owner.

@@ -40,6 +40,7 @@ from .version import __version__
 CHAT_ID = re.compile(r"^chat_[0-9a-f]{12}$")
 IDLE_STOP_S = 15 * 60  # an idle chat's agent process stops; the next message reopens the session
 PERMISSION_WAIT_S = 30 * 60
+MAX_PENDING_PERMISSIONS = 8  # questions open at once in one chat; more are declined without asking (#119)
 CREDENTIAL_TTL_S = 24 * 3600
 MAX_TEXT = 200_000
 MAX_TITLE = 120
@@ -1370,6 +1371,8 @@ class ChatHost:
     async def _on_request(self, chat: Chat, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if method != "session/request_permission":
             raise AcpError("Mac MCP Chat does not offer that.", -32601)
+        if len(chat.permissions) >= MAX_PENDING_PERMISSIONS:
+            return {"outcome": {"outcome": "cancelled"}}
         call = params.get("toolCall") if isinstance(params.get("toolCall"), dict) else {}
         options = [{"id": str(option.get("optionId") or ""), "label": str(option.get("name") or ""),
                     "kind": str(option.get("kind") or "")}

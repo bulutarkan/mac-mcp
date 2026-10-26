@@ -965,21 +965,10 @@ def resolve_risk(tool: str, arguments: Optional[Mapping[str, Any]] = None) -> tu
     return declared, effective
 
 
-# A read-only agent may still remember what it learned. The memory tools refuse secrets and respect
-# private mode themselves (tools_memory), so this opens nothing else.
-_PROFILE_EXTRA_TOOLS: dict[str, frozenset[str]] = {
-    "read_only": frozenset({"memory_add", "memory_update"}),
-}
-
-
 def evaluate_profile(profile_name: str, risk: RiskAssessment) -> PolicyDecision:
     profile = PROFILES.get(profile_name)
     if profile is None:
         return PolicyDecision(False, profile_name, "profile_denied", "unknown_profile")
-    extras = _PROFILE_EXTRA_TOOLS.get(profile.name, frozenset())
-    # The same tool through tool_invoke is the same call (#110): a read-only agent's memory_add was denied there.
-    if risk.tool in extras or (risk.tool == "tool_invoke" and risk.invoked_tool in extras):
-        return PolicyDecision(True, profile.name, "profile_allowed", "allowed")
     denied_capabilities: tuple[str, ...] = ()
     if profile.allowed_capabilities is not None:
         denied_capabilities = tuple(sorted(

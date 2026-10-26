@@ -21,7 +21,7 @@ from mcp_server.usage_metering import (
 
 
 def scope(**extra) -> ResourceScope:
-    return ResourceScope.from_dict({"access_mode": "read_only", "path_roots": ["/tmp"], **extra})
+    return ResourceScope.from_dict({"access_mode": "workspace_write", "path_roots": ["/tmp"], **extra})
 
 
 class AgentInstructionTests(unittest.TestCase):
@@ -75,17 +75,39 @@ class AgentInstructionTests(unittest.TestCase):
         self.assertLess(effective.index("Mac MCP memory and skills"), effective.index("TASK_RESULT_ENVELOPE_V1"))
         self.assertTrue(effective.startswith("Write the weekly report.\n\nMac MCP memory and skills"))
 
-    def test_read_only_agents_are_told_memory_saves_are_allowed(self) -> None:
+    def test_read_only_agents_look_up_but_are_never_invited_to_save(self) -> None:
+        # Owner decision (#119, reversing #110): read_only is truly read-only, memory included.
         text = agents._access_instruction("read_only", "read_only")
         self.assertIn("This task is read-only.", text)
-        self.assertIn("Saving to the owner's Mac MCP memory (memory_add, memory_update) and team messages are allowed", text)
+        self.assertIn("You may look up the owner's Mac MCP memory and skills (memory_search, skill_search, skill_get) "
+                      "but not save to them. Team messages are allowed.", text)
+        self.assertNotIn("Saving to the owner's Mac MCP memory", text)
+        read_only = ResourceScope.from_dict({"access_mode": "read_only", "path_roots": ["/tmp"]})
+        for provenance in ("local", "external"):
+            block = agents._memory_skill_instruction(read_only, provenance_class=provenance, scoped_mcp=True)
+            with self.subTest(provenance=provenance):
+                self.assertIn("call memory_search with a few key words", block)
+                self.assertIn("skill_get the best match", block)
+                self.assertIn("you can look up memories and skills but not save", block)
+                self.assertNotIn("saving it is part of the task", block)
+                self.assertNotIn("memory_update the match or memory_add", block)
+        local = agents._memory_skill_instruction(read_only, provenance_class="local", scoped_mcp=True)
+        self.assertIn("state it in one line of your report so the lead can save it", local)
+        external = agents._memory_skill_instruction(read_only, provenance_class="external", scoped_mcp=True)
+        self.assertNotIn("so the lead can save it", external)
 
-    def test_a_read_only_agent_may_save_through_tool_invoke_too(self) -> None:
-        from mcp_server.policy import evaluate_profile, resolve_risk
+    def test_a_read_only_agent_cannot_save_directly_or_through_tool_invoke(self) -> None:
+        from mcp_server.policy import declared_risk, evaluate_profile, resolve_risk, tool_availability
 
-        for tool, allowed in (("memory_add", True), ("memory_update", True), ("write_file", False), ("memory_delete", False)):
-            _, risk = resolve_risk("tool_invoke", {"tool_name": tool, "arguments": {}})
-            self.assertEqual(allowed, evaluate_profile("read_only", risk).allowed, tool)
+        for tool in ("memory_add", "memory_update", "lesson_record", "lesson_feedback", "memory_delete", "write_file"):
+            with self.subTest(tool=tool):
+                self.assertFalse(evaluate_profile("read_only", declared_risk(tool)).allowed)
+                self.assertFalse(tool_availability("read_only", tool)["available"])
+                _, risk = resolve_risk("tool_invoke", {"tool_name": tool, "arguments": {}})
+                self.assertFalse(evaluate_profile("read_only", risk).allowed)
+        for tool in ("memory_search", "skill_search", "skill_get", "team_messages"):
+            with self.subTest(tool=tool):
+                self.assertTrue(evaluate_profile("read_only", declared_risk(tool)).allowed)
 
     def test_a_memorys_source_is_text_not_a_path(self) -> None:
         from mcp_server.policy import evaluate_tool_scope

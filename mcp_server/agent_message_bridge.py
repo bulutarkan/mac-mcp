@@ -367,12 +367,12 @@ def trust_codex_hooks(*, codex_home: Path, hooks_path: Path, cwd: str, env: Dict
 
 
 def apply_args(provider: str, cmd: List[str], args: List[str], drop_flags: Optional[List[str]] = None) -> List[str]:
-    """Put the hook arguments where the CLI reads options: before Claude's '--', else before the prompt."""
+    """Put the hook arguments where the CLI reads options: before the '--' that ends them, else before the prompt."""
     if drop_flags:
         cmd = [part for part in cmd if part not in drop_flags]
     if not args:
         return cmd
-    if provider == "claude" and "--" in cmd:
+    if "--" in cmd:
         index = cmd.index("--")
         return [*cmd[:index], *args, *cmd[index:]]
     return [*cmd[:-1], *args, cmd[-1]]

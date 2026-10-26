@@ -16,7 +16,12 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 PROTOCOL_VERSION = 1
 log = logging.getLogger(__name__)
-_LINE_LIMIT = 32 * 1024 * 1024  # a tool result can be one long line
+# Per connection (#119): one message may be this long (a tool result can be one long line); a longer one
+# is skipped and the stream goes on. Requests from the agent beyond the open limit are refused at once,
+# without a handler, so a flood never reaches the owner as prompts.
+_LINE_LIMIT = 32 * 1024 * 1024
+_READ_CHUNK = 64 * 1024
+_MAX_OPEN_REQUESTS = 32
 
 NotificationHandler = Callable[[str, Dict[str, Any]], Awaitable[None]]
 RequestHandler = Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any]]]
@@ -59,7 +64,7 @@ class AcpConnection:
             os.chmod(stderr_path, 0o600)
             self._proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=stderr, limit=_LINE_LIMIT, start_new_session=True,
+                stderr=stderr, limit=_READ_CHUNK, start_new_session=True,
             )
         self._reader = asyncio.create_task(self._read_loop())
 
@@ -117,22 +122,43 @@ class AcpConnection:
                 future.set_exception(exc)
 
     async def _read_loop(self) -> None:
+        line = bytearray()
+        skipping = False  # inside a line over _LINE_LIMIT: dropped up to its newline
         try:
             while True:
-                line = await self._proc.stdout.readline()
-                if not line:
+                chunk = await self._proc.stdout.read(_READ_CHUNK)
+                if not chunk:
                     break
-                try:
-                    message = json.loads(line)
-                except ValueError:
-                    continue  # agents may log a stray non-JSON line; never fatal
-                if isinstance(message, dict):
-                    await self._dispatch(message)
-        except (asyncio.LimitOverrunError, ValueError):
-            pass
+                start = 0
+                while True:
+                    newline = chunk.find(b"\n", start)
+                    if newline < 0:
+                        if not skipping:
+                            line += chunk[start:]
+                            if len(line) > _LINE_LIMIT:
+                                line.clear()
+                                skipping = True
+                        break
+                    if not skipping:
+                        line += chunk[start:newline]
+                        if len(line) <= _LINE_LIMIT:
+                            await self._handle_line(bytes(line))
+                    line.clear()
+                    skipping = False
+                    start = newline + 1
+            if line and not skipping:
+                await self._handle_line(bytes(line))
         finally:
             self._fail_pending(AcpClosed("The agent stopped."))
             self.closed.set()
+
+    async def _handle_line(self, line: bytes) -> None:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return  # agents may log a stray non-JSON line; never fatal
+        if isinstance(message, dict):
+            await self._dispatch(message)
 
     async def _dispatch(self, message: Dict[str, Any]) -> None:
         method = message.get("method")
@@ -150,6 +176,11 @@ class AcpConnection:
             return
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if "id" in message:
+            if len(self._tasks) >= _MAX_OPEN_REQUESTS:
+                with contextlib.suppress(AcpClosed):
+                    await self._send({"jsonrpc": "2.0", "id": message["id"],
+                                      "error": {"code": -32000, "message": "Too many open requests."}})
+                return
             # A request (a permission prompt) may wait for the person, so it runs on its own.
             self._spawn(self._answer(message["id"], str(method), params))
         else:
