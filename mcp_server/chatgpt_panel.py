@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+import re
 from urllib.parse import urlsplit
 import base64
 
@@ -219,7 +221,12 @@ def register_chatgpt_panel(mcp: Any, telemetry: Any, settings: Any) -> None:
             "With models_for=<provider>, return only that enabled provider's discovered model catalog."
         ),
     )
-    async def mac_mcp_panel_state(models_for: str | None = None) -> dict[str, Any]:
+    async def mac_mcp_panel_state(models_for: str | None = None, host_theme: str | None = None) -> dict[str, Any]:
+        if host_theme:
+            # What the host told the panel about its theme (no content, a few words): diagnoses a panel that
+            # stays dark in a light host.
+            logging.getLogger(__name__).warning(
+                "mac_mcp_panel_host_theme: %s", re.sub(r"[^A-Za-z0-9=;:._{}\"\-]", "?", str(host_theme)[:160]))
         if models_for:
             return panel_model_catalog(settings, models_for)
         return panel_snapshot(telemetry, settings)

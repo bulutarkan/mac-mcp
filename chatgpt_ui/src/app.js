@@ -146,15 +146,35 @@ function unpack(result) {
 const app = new McpAppBridge({ name: 'Mac MCP', version: '0.2.2' });
 // The panel follows the host theme: MCP Apps hostContext.theme, or the Apps SDK window.openai.theme.
 // Partial context updates without a theme keep the current one; unknown stays dark.
+// When the host names no theme, the frame's own colour scheme (which follows the host app) decides.
+const hostTheme = { context: undefined, openai: undefined };
+const schemeQuery = window.matchMedia?.('(prefers-color-scheme: light)');
 function applyTheme(theme) {
-  if (theme !== 'light' && theme !== 'dark') return;
+  if (theme !== 'light' && theme !== 'dark') return false;
   document.documentElement.dataset.theme = theme;
+  return true;
 }
-applyTheme(window.openai?.theme);
-window.addEventListener('openai:set_globals', (event) => applyTheme(event.detail?.globals?.theme), { passive: true });
+function applySchemeFallback() {
+  if (hostTheme.context === undefined && hostTheme.openai === undefined && schemeQuery) {
+    document.documentElement.dataset.theme = schemeQuery.matches ? 'light' : 'dark';
+  }
+}
+function noteOpenAiTheme(theme) {
+  if (applyTheme(theme)) hostTheme.openai = theme;
+}
+noteOpenAiTheme(window.openai?.theme);
+applySchemeFallback();
+schemeQuery?.addEventListener?.('change', applySchemeFallback);
+window.addEventListener('openai:set_globals', (event) => noteOpenAiTheme(event.detail?.globals?.theme), { passive: true });
+// What the host said about its theme, for the server log: tells a host that sends none from one we misread.
+function hostThemeReport() {
+  const raw = (value) => (value === undefined ? '-' : String(typeof value === 'object' ? JSON.stringify(value) : value).slice(0, 40));
+  return `context=${raw(hostTheme.contextRaw)};openai=${raw(window.openai?.theme)};scheme=${schemeQuery ? (schemeQuery.matches ? 'light' : 'dark') : '-'};applied=${document.documentElement.dataset.theme || 'dark'}`;
+}
 // Host chrome (e.g. the desktop composer over a fullscreen app) is reported as safe-area insets.
 app.onhostcontext = (context) => {
-  applyTheme(context.theme);
+  if ('theme' in context) hostTheme.contextRaw = context.theme;
+  if (applyTheme(context.theme)) hostTheme.context = context.theme;
   const insets = context.safeAreaInsets;
   if (insets) for (const side of ['top', 'right', 'bottom', 'left']) {
     const value = Number(insets[side]);
@@ -179,7 +199,7 @@ async function refresh() {
   if (!state.connected || state.busy) return;
   state.busy = true;
   updateControls();
-  try { hydrate(await call('mac_mcp_panel_state')); notify(''); }
+  try { hydrate(await call('mac_mcp_panel_state', { host_theme: hostThemeReport() })); notify(''); }
   catch (error) { notify(`Refresh failed: ${error.message || error}`, true); }
   finally { state.busy = false; updateControls(); }
 }

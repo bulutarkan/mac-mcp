@@ -421,7 +421,10 @@ class ChatGPTPanelPageTests(unittest.TestCase):
     def test_theme_follows_the_host_and_stays_dark_when_unknown(self):
         app = self.src["app.js"]
         self.assertIn("applyTheme(context.theme)", app)
-        self.assertIn("if (theme !== 'light' && theme !== 'dark') return;", app)
+        self.assertIn("if (theme !== 'light' && theme !== 'dark') return false;", app)
+        # A host that names no theme: the frame's own colour scheme decides, and what the host sent is logged.
+        self.assertIn("matchMedia?.('(prefers-color-scheme: light)')", app)
+        self.assertIn("call('mac_mcp_panel_state', { host_theme: hostThemeReport() })", app)
         # Dark is the :root default; light only under an explicit data-theme.
         self.assertIn("color-scheme:dark;", self.src["style.css"].split(":root[data-theme")[0])
 
