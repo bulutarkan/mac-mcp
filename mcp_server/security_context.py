@@ -20,6 +20,7 @@ from .data_guard import (
     scan_sensitive_source,
     scan_upload_content,
     secret_fingerprints,
+    without_url_api_keys,
 )
 from .policy import (
     Capability,
@@ -677,8 +678,9 @@ class SecurityContextManager:
         state = self.touch(key, public_session_id)
         scan = scan_sensitive_source(tool, arguments, result)
         with self._lock:
+            # A connector URL's ?ApiKey= never makes a paste sensitive (#85).
             if tool == "clipboard_set":
-                content = str(arguments.get("content") or "")
+                content = without_url_api_keys(str(arguments.get("content") or ""))
                 outgoing = secret_fingerprints(content, include_entropy=True, include_whole=True)
                 state.clipboard_sensitive = contains_direct_secret(content) or bool(state.sensitive_fingerprints.intersection(outgoing))
                 state.last_seen_at = time.time()
@@ -688,6 +690,7 @@ class SecurityContextManager:
                 # Only a successful read proves what the clipboard holds; a busy or
                 # failed read leaves the previous paste sensitivity in place.
                 if content is not None:
+                    content = without_url_api_keys(content)
                     incoming = secret_fingerprints(content, include_entropy=True, include_whole=True)
                     state.clipboard_sensitive = (
                         scan.sensitive

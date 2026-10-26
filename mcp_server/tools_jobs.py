@@ -14,6 +14,7 @@ from fastapi import HTTPException, status
 
 from .security import BASE_DIR, Settings, require_shell_enabled, truncate
 from . import result_pages
+from .data_guard import mask_command_credentials
 from .workspace_sandbox import shell_execution_plan
 from .file_transactions import abort_capture_transaction
 from .shell_transactions import begin_shell_capture, finalize_shell_capture, shell_capture_http_error
@@ -482,6 +483,9 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
 def _public_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(meta)
     result["job_id"] = job_id
+    if isinstance(meta.get("command"), str):
+        # Records written before #113 kept the command as typed.
+        result["command"] = mask_command_credentials(meta["command"])
     result["duration_ms"] = int((float(meta.get("ended_at") or _now()) - float(meta.get("started_at", _now()))) * 1000)
     return result
 
@@ -535,7 +539,8 @@ def start_background_job(
     started_at = _now()
     meta = {
         "job_id": job_id,
-        "command": command,
+        # The record is listed later (list_jobs, get_job_status): credentials never reach it (#113).
+        "command": mask_command_credentials(command),
         "cwd": str(workdir),
         "pid": None,
         "status": "starting",
@@ -601,7 +606,7 @@ def start_background_job(
 
     result = {
         "ok": True, "job_id": job_id, "pid": proc.pid, "status": "running",
-        "command": command, "cwd": str(workdir), "sandboxed": plan.sandboxed,
+        "command": meta["command"], "cwd": str(workdir), "sandboxed": plan.sandboxed,
         "reversible_capture": bool(reversible),
     }
     if capture_txid:

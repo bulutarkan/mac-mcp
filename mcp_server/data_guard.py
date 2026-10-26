@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,22 @@ _URL_SECRET_RE = re.compile(
 _ENV_SECRET_RE = re.compile(
     r"(?im)^(\s*[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*\s*=\s*)(.+)$"
 )
+# The owner's decision (#85): an API key in a URL query string (ChatGPT's connector URL carries
+# ?ApiKey=) is never blocked or flagged by the egress checks. Logs still redact it (_URL_SECRET_RE).
+_URL_API_KEY_RE = re.compile(r"(?i)([?&]api[_-]?key=)[^&#\s\"'<>]*")
+# Opaque values from a source no path vouches for (the clipboard). A random-looking key mixes upper
+# case, lower case and digits, carries at least 4.1 bits/char (hex digests, git SHAs and UUIDs top out
+# at 4.0-4.09: 16-17 symbols) and comes in short case runs (paths and CamelCase identifiers average 4+
+# characters per run; random base62/base64 keys of 32+ characters stay under 3.5 in 99.9% of draws).
+_OPAQUE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_+/-])[A-Za-z0-9_+/-]{32,256}={0,2}(?![A-Za-z0-9_+/=-])")
+_URL_SPAN_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
+_CASE_RUN_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
+_OPAQUE_MIN_ENTROPY = 4.1
+_OPAQUE_MAX_MEAN_RUN = 3.5
+# NAME_TOKEN=value anywhere in a command line (export, inline env, flags).
+_ASSIGNED_SECRET_RE = re.compile(
+    r"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*=)(\"[^\"]*\"|'[^']*'|[^\s;&|]+)"
+)
 
 _SOURCE_TOOLS = frozenset({
     "read_file", "read_multiple_files", "clipboard_get", "run_command",
@@ -38,6 +55,8 @@ _SOURCE_TOOLS = frozenset({
     # Other tools that hand host content to the model: AppleScript output, process
     # command lines, delegated-agent reports and stored memories.
     "run_applescript", "process_list", "get_agent", "memory_get", "memory_search", "knowledge_search",
+    # Job records carry the command line.
+    "list_jobs", "get_job_status",
 })
 # grep -rn output: "path:line:content".
 _SEARCH_LINE_RE = re.compile(r"^(?P<path>[^\n:]+):(?P<line>\d+):(?P<content>.*)$")
@@ -76,11 +95,38 @@ def _entropy(text: str) -> float:
     return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
+def without_url_api_keys(text: str) -> str:
+    """The text with every URL api_key/ApiKey query value emptied (#85, see _URL_API_KEY_RE)."""
+    return _URL_API_KEY_RE.sub(r"\1", str(text or ""))
+
+
+def _configured_token_paths() -> frozenset[str]:
+    """Mac MCP's own credential files (dashboard, Chrome companion, Cloudflare tunnel) where the
+    configuration puts them, canonical. Imported on use: those modules pull in more than this one."""
+    from .chrome_background_bridge import chrome_companion_token_path
+    from .public_endpoint import cloudflare_token_path
+    from .security import dashboard_token_path
+
+    found: set[str] = set()
+    for resolver in (dashboard_token_path, chrome_companion_token_path, cloudflare_token_path):
+        try:
+            found.add(os.path.realpath(resolver().expanduser()))
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return frozenset(found)
+
+
 def sensitive_path_class(value: Any) -> Optional[str]:
     text = str(value or "").strip()
     if not text:
         return None
     path = Path(text).expanduser()
+    try:
+        # By canonical path: these names have no extension, and a symlink or ../ must not hide them.
+        if os.path.realpath(path) in _configured_token_paths():
+            return "token_file"
+    except (OSError, ValueError):
+        pass
     lower = str(path).lower()
     name = path.name.lower()
     parts = {part.lower() for part in path.parts}
@@ -126,6 +172,27 @@ def _entropy_candidates(text: str) -> list[str]:
     return found
 
 
+def _opaque_candidates(text: str, *, skip_urls: bool = True) -> list[str]:
+    """Random-looking tokens (see _OPAQUE_MIN_ENTROPY). URLs are skipped by default: document and
+    file ids in links look random too, and an API key in a query string is not flagged (#85)."""
+    value = str(text or "")
+    if skip_urls:
+        value = _URL_SPAN_RE.sub(" ", value)
+    found: list[str] = []
+    for match in _OPAQUE_TOKEN_RE.finditer(value):
+        token = match.group(0)
+        if not (any(ch.isupper() for ch in token) and any(ch.islower() for ch in token)
+                and any(ch.isdigit() for ch in token)):
+            continue
+        if _entropy(token) < _OPAQUE_MIN_ENTROPY:
+            continue
+        runs = _CASE_RUN_RE.findall(token)
+        if runs and sum(len(run) for run in runs) / len(runs) > _OPAQUE_MAX_MEAN_RUN:
+            continue
+        found.append(token)
+    return found
+
+
 def _env_secret_values(text: str) -> list[str]:
     """Values of NAME_TOKEN= / SERVICE_API_KEY= style lines (.env files). Only for remembering what
     was read: on its own this pattern would also match ordinary outgoing code samples."""
@@ -166,6 +233,15 @@ def redact_sensitive_text(text: str) -> str:
     value = _KNOWN_TOKEN_RE.sub("[REDACTED]", value)
     value = _URL_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", value)
     value = _ENV_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", value)
+    return value
+
+
+def mask_command_credentials(command: str) -> str:
+    """A shell command as job records keep and list it: credentials masked, the rest readable."""
+    value = redact_sensitive_text(command)
+    value = _ASSIGNED_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", value)
+    for token in sorted(set(_opaque_candidates(value, skip_urls=False)), key=len, reverse=True):
+        value = value.replace(token, "[REDACTED]")
     return value
 
 
@@ -218,6 +294,21 @@ def _result_path(arguments: Mapping[str, Any], result: Any) -> Optional[str]:
     return None
 
 
+def _file_records(result: Any) -> Optional[list[Mapping[str, Any]]]:
+    """read_multiple_files' per-file records, also when an MCP call delivers them serialized."""
+    if isinstance(result, (list, tuple)) and len(result) == 1:
+        result = getattr(result[0], "text", result[0])
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    files = result.get("files") if isinstance(result, Mapping) else None
+    if not isinstance(files, list):
+        return None
+    return [item for item in files if isinstance(item, Mapping)]
+
+
 def _scan_search_results(result: Any) -> SensitiveSourceScan:
     """Fingerprint secrets in search matches without keeping any raw value.
 
@@ -234,10 +325,13 @@ def _scan_search_results(result: Any) -> SensitiveSourceScan:
     fingerprints: set[str] = set()
     source_class: Optional[str] = None
     lines = [line for text in texts for line in str(text or "").splitlines()]
+    path_classes: dict[str, Optional[str]] = {}  # one canonical-path lookup per file, not per line
     for raw_line in lines[:5000]:
         match = _SEARCH_LINE_RE.match(raw_line)
         path, content = (match.group("path"), match.group("content")) if match else ("", raw_line)
-        path_class = sensitive_path_class(path) if path else None
+        if path and path not in path_classes:
+            path_classes[path] = sensitive_path_class(path)
+        path_class = path_classes.get(path) if path else None
         direct = secret_fingerprints(content, include_entropy=False)
         entropy = secret_fingerprints(content, include_entropy=True).difference(direct)
         if direct:
@@ -259,8 +353,22 @@ def scan_sensitive_source(tool: str, arguments: Mapping[str, Any], result: Any) 
         return SensitiveSourceScan(False)
     if name == "search_files":
         return _scan_search_results(result)
+    if name == "read_multiple_files":
+        records = _file_records(result)
+        if records is not None:
+            # Each file by its own path, so a credential file among ordinary ones counts as one.
+            scans = [scan_sensitive_source("read_file", {"path": record.get("path")}, record) for record in records]
+            return SensitiveSourceScan(
+                any(scan.sensitive for scan in scans),
+                tuple(sorted({reason for scan in scans for reason in scan.reasons})),
+                frozenset(fingerprint for scan in scans for fingerprint in scan.fingerprints),
+                next((scan.source_class for scan in scans if scan.source_class), None),
+            )
 
     source_class = sensitive_path_class(_result_path(arguments, result))
+    if source_class is None and isinstance(result, Mapping) and result.get("path"):
+        # The path the tool actually read (resolved), when the requested one was relative.
+        source_class = sensitive_path_class(result.get("path"))
     reasons: set[str] = set()
     fingerprints: set[str] = set()
     include_whole = bool(source_class)
@@ -274,6 +382,13 @@ def scan_sensitive_source(tool: str, arguments: Mapping[str, Any], result: Any) 
             include_whole = True
 
     for text in _walk_strings(result):
+        if name == "clipboard_get":
+            # No path vouches for clipboard text, so only random-looking tokens are remembered (#113).
+            text = without_url_api_keys(text)
+            opaque = {_digest(token) for token in _opaque_candidates(text)}
+            if opaque:
+                reasons.add("high_entropy_secret")
+                fingerprints.update(opaque)
         direct = secret_fingerprints(text, include_entropy=False, include_whole=False)
         entropy = secret_fingerprints(text, include_entropy=True, include_whole=False).difference(direct)
         if direct:
@@ -477,9 +592,11 @@ def scan_sensitive_egress(
 
     known = set(known_fingerprints)
     for payload in _browser_payload_strings(name, arguments):
+        payload = without_url_api_keys(payload)
         if not payload:
             continue
         for index, text in enumerate([payload, *decoded_variants(payload)]):
+            text = without_url_api_keys(text)
             encoded = "encoded_" if index else ""
             if contains_direct_secret(text):
                 return EgressScan(True, f"{encoded}direct_secret_pattern", "browser_payload")
@@ -706,7 +823,7 @@ def redact_sensitive_source_result(tool: str, arguments: Mapping[str, Any], resu
         if key in safe and isinstance(safe[key], str):
             safe[key] = "[SENSITIVE OUTPUT REDACTED]"
     if name in {"run_commands_parallel", "wait_jobs", "process_list", "get_agent", "memory_get", "memory_search",
-                "knowledge_search"}:
+                "knowledge_search", "list_jobs", "get_job_status"}:
         # Nested command/job outputs can vary by provider; once a result is known
         # sensitive, do not persist nested free-form strings.
         def scrub(value: Any, depth: int = 0) -> Any:
