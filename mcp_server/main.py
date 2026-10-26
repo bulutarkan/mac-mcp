@@ -580,8 +580,9 @@ DEFAULT_SESSION_IDLE_TIMEOUT_S = 1800.0
 def session_idle_timeout_s() -> float:
     """How long an MCP session may sit without a request before the server forgets it.
 
-    Only requests count: an open event stream does not. `mac-mcp stdio` sets a forgotten session up
-    again on its own; MAC_MCP_SESSION_IDLE_TIMEOUT_S (60 s to 1 day) helps clients that do not.
+    A request in progress or an open event stream keeps it (mcp 1.30). `mac-mcp stdio` sets a
+    forgotten session up again on its own; MAC_MCP_SESSION_IDLE_TIMEOUT_S (60 s to 1 day) helps
+    clients that do not.
     """
     raw = os.getenv("MAC_MCP_SESSION_IDLE_TIMEOUT_S", "").strip()
     try:

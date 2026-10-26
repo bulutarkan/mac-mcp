@@ -16,8 +16,8 @@ dependencies = [
   "uvicorn[standard]==0.32.1",
   "httpx==0.28.1",
   "python-dotenv==1.2.3",
-  "mcp[cli]==1.28.1",
-  "fastembed==0.8.0",
+  "mcp[cli]==1.30.0",
+  "fastembed==0.9.1",
   "PyYAML==6.0.3",
   "edge-tts==7.2.8"
 ]
