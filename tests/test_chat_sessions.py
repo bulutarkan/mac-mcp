@@ -101,7 +101,12 @@ FAKE_AGENT = textwrap.dedent('''\
         method, params = msg["method"], msg.get("params") or {}
         log.write(json.dumps({"method": method, "params": params}) + "\\n"); log.flush()
         if method == "initialize":
-            result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "promptCapabilities": {"image": True}}}
+            result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "promptCapabilities": {"image": True}},
+                      "authMethods": [{"id": "oauth-personal", "name": "Log in with Google"}]}
+        elif method == "authenticate":
+            if os.path.exists(LOG_PATH + ".needauth") and params.get("methodId") == "oauth-personal":
+                os.remove(LOG_PATH + ".needauth")
+            result = {}
         elif method == "session/new":
             if os.path.exists(LOG_PATH + ".needauth"):
                 send({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32000, "message": "Authentication required"}})
@@ -414,6 +419,53 @@ class ChatHostTest(unittest.TestCase):
         self.assertIn("copilot login", chat["agent_error"])
         self.assertEqual(state["items"][-2]["tone"], "error")
         self.assertIn("Sign in to GitHub Copilot", state["items"][-2]["text"])
+
+    def test_agent_without_a_chosen_sign_in_is_told_which_one_and_opens(self):
+        Path(str(self.log) + ".needauth").write_text("1")
+
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "hello")
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return state
+
+        with mock.patch.dict(chat_sessions.AGENTS["copilot"], {"auth_method": "oauth-personal"}):
+            state = self.run_async(scenario())
+        methods = [entry.get("method") for entry in self.agent_log() if entry.get("method")]
+        self.assertEqual(methods[:4], ["initialize", "session/new", "authenticate", "session/new"])
+        self.assertFalse(state["chat"].get("agent_error"))
+        self.assertEqual([item["type"] for item in state["items"] if item["type"] == "assistant"], ["assistant"])
+
+    def test_downloaded_agent_is_checked_before_it_is_unpacked(self):
+        import hashlib
+        import zipfile
+        archive = Path(self.tmp.name) / "server.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            info = zipfile.ZipInfo("agy_acp_server.par")
+            info.external_attr = 0o100755 << 16
+            bundle.writestr(info, "#!/bin/sh\n")
+        spec = {"version": "9.9.9", "url": archive.as_uri(), "cmd": "agy_acp_server.par",
+                "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+        with mock.patch.dict(chat_sessions.AGENTS["antigravity"], {"download": spec}):
+            with mock.patch.dict(spec, {"sha256": "0" * 64}):
+                with self.assertRaises(chat_sessions.ChatError):
+                    chat_sessions._ensure_download("antigravity")
+            self.assertFalse(chat_sessions._download_dir("antigravity").exists())
+            chat_sessions._ensure_download("antigravity")
+            server = chat_sessions._download_dir("antigravity") / "agy_acp_server.par"
+            self.assertTrue(os.access(server, os.X_OK))
+            with mock.patch.object(chat_sessions, "_binary", return_value="/opt/agy"):
+                self.assertEqual(chat_sessions._command("antigravity"), [str(server)])
+        evil = Path(self.tmp.name) / "evil.zip"
+        with zipfile.ZipFile(evil, "w") as bundle:
+            bundle.writestr("../outside.txt", "x")
+        bad = dict(spec, version="6.6.6", url=evil.as_uri(), sha256=hashlib.sha256(evil.read_bytes()).hexdigest())
+        with mock.patch.dict(chat_sessions.AGENTS["antigravity"], {"download": bad}):
+            with self.assertRaises(chat_sessions.ChatError):
+                chat_sessions._ensure_download("antigravity")
+        self.assertFalse((chat_sessions.chats_root() / "outside.txt").exists())
 
     def test_mcp_startup_reports_are_not_steps(self):
         async def scenario():

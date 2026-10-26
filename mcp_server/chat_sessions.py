@@ -89,6 +89,20 @@ AGENTS: Dict[str, Dict[str, Any]] = {
         "label": "Cline", "cli": "cline", "login": "cline auth",
         "command": ["{cli}", "--acp"],
     },
+    "antigravity": {
+        # The agy CLI speaks no ACP: Google ships Antigravity's ACP server apart (ACP registry `antigravity-acp`),
+        # fetched on first use like the npx adapters, pinned and checked. It uses the owner's Antigravity sign-in.
+        "label": "Antigravity", "cli": "agy", "login": "agy",
+        "command": ["{download}"],
+        "download": {
+            "version": "1.4.3",
+            "url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.3-darwin-arm64.zip",
+            "sha256": "c57db0a9b8b712daa9c3c17cdb990a61842ea569f279e8bd79d7aa85a303b20b",
+            "cmd": "agy_acp_server.par",
+        },
+        # Until a sign-in method is chosen it opens no session; the owner's Google sign-in is the one agy uses.
+        "auth_method": "oauth-personal",
+    },
     "copilot": {
         "label": "GitHub Copilot", "cli": "copilot", "login": "copilot login",
         # Copilot offers no model over ACP: the chat lists the models its own CLI documents and restarts it
@@ -171,7 +185,9 @@ def _command(agent: str) -> Optional[List[str]]:
     if not cli:
         return None
     command = list(AGENTS[agent]["command"])
-    if command[0] == "{cli}":
+    if command[0] == "{download}":
+        command[0] = str(_download_dir(agent) / AGENTS[agent]["download"]["cmd"])  # fetched at the first start
+    elif command[0] == "{cli}":
         command[0] = cli
     else:
         tool = _which(command[0])
@@ -179,6 +195,50 @@ def _command(agent: str) -> Optional[List[str]]:
             return None
         command[0] = tool
     return command
+
+
+def _download_dir(agent: str) -> Path:
+    spec = AGENTS[agent]["download"]
+    return chats_root() / "agents" / f"{agent}-{spec['version']}"
+
+
+def _ensure_download(agent: str) -> None:
+    """An agent's ACP server that ships as an archive: downloaded once, its SHA-256 checked, unpacked in place."""
+    import hashlib
+    import urllib.request
+    import zipfile
+    spec = AGENTS[agent]["download"]
+    folder = _download_dir(agent)
+    if (folder / spec["cmd"]).is_file():
+        return
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{agent}-", dir=str(folder.parent)))
+    try:
+        archive = staging / "download.zip"
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(spec["url"], timeout=120) as response, archive.open("wb") as out:  # noqa: S310 - pinned https URL
+            for chunk in iter(lambda: response.read(1 << 20), b""):
+                digest.update(chunk)
+                out.write(chunk)
+        if digest.hexdigest() != spec["sha256"]:
+            raise ChatError(f"{AGENTS[agent]['label']}'s download did not match its checksum; nothing was installed.",
+                            "agent_missing")
+        unpacked = staging / "files"
+        with zipfile.ZipFile(archive) as bundle:
+            for entry in bundle.infolist():
+                target = (unpacked / entry.filename).resolve()
+                if not str(target).startswith(str(unpacked.resolve()) + os.sep):
+                    raise ChatError(f"{AGENTS[agent]['label']}'s download has an unexpected file layout.", "agent_missing")
+                bundle.extract(entry, unpacked)
+                if not entry.is_dir() and (entry.external_attr >> 16) & 0o111:
+                    target.chmod(0o755)
+        if not (unpacked / spec["cmd"]).is_file():
+            raise ChatError(f"{AGENTS[agent]['label']}'s download has no {spec['cmd']}.", "agent_missing")
+        os.replace(unpacked, folder)
+    except OSError as exc:
+        raise ChatError(f"Could not download {AGENTS[agent]['label']}'s ACP server: {exc}", "agent_missing") from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def _codex_wrapper() -> Optional[Path]:
@@ -931,6 +991,8 @@ class ChatHost:
                                  lambda method, params: self._on_request(chat, method, params))
             if spec.get("restart_options"):
                 command[1:1] = _restart_args(chat)  # before Copilot's variadic --excluded-tools
+            if spec.get("download"):
+                await asyncio.to_thread(_ensure_download, agent)
             await conn.start(command, cwd=project, env=_agent_env(agent, chat.meta.get("model") or "", token),
                              stderr_path=chat.dir / "agent.log")
             chat.conn = conn
@@ -946,29 +1008,15 @@ class ChatHost:
                 servers = [] if spec.get("mcp_on_command_line") else [
                     {"type": "http", "name": spec.get("mcp_name", "mac-mcp"), "url": _mcp_endpoint(),
                      "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}]
-                previous = chat.meta.get("acp_session_id")
-                opened: Dict[str, Any] = {}
-                if previous and (init.get("agentCapabilities") or {}).get("loadSession"):
-                    chat.replaying = True  # the agent replays the conversation; the transcript already has it
-                    try:
-                        opened = await conn.request("session/load", {"sessionId": previous, "cwd": project,
-                                                                     "mcpServers": servers}, timeout=120)
-                        chat.session_id = previous
-                    except AcpError as exc:
-                        if _needs_sign_in(exc):
-                            raise
-                        if any(item.get("type") == "turn" for item in chat.items):
-                            # Only worth saying when there was a conversation (an empty session is not kept).
-                            chat.add("notice", text="The earlier conversation could not be reopened; the agent starts fresh.",
-                                     tone="warning")
-                    finally:
-                        chat.replaying = False
-                if not chat.session_id:
-                    opened = await conn.request("session/new", {"cwd": project, "mcpServers": servers}, timeout=120)
-                    chat.session_id = str(opened.get("sessionId") or "")
-                    if not chat.session_id:
-                        raise ChatError("The agent did not open a session.", "agent_failed")
-                    chat.meta["acp_session_id"] = chat.session_id
+                methods = {str(entry.get("id")) for entry in init.get("authMethods") or [] if isinstance(entry, dict)}
+                try:
+                    opened = await self._open_session(chat, init, servers)
+                except AcpError as exc:
+                    # An agent with no sign-in method chosen yet (Antigravity) opens a session once told which one.
+                    if not (_needs_sign_in(exc) and spec.get("auth_method") in methods):
+                        raise
+                    await conn.request("authenticate", {"methodId": spec["auth_method"]}, timeout=180)
+                    opened = await self._open_session(chat, init, servers)
             except AcpError as exc:
                 if _needs_sign_in(exc):
                     raise ChatError(f"Sign in to {spec['label']} first: run `{spec['login']}` in Terminal.",
@@ -982,6 +1030,35 @@ class ChatHost:
             chat.meta.pop("agent_error", None)
             chat.bump()
             chat.save()
+
+    async def _open_session(self, chat: Chat, init: Dict[str, Any], servers: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """The agent's earlier session for this chat (session/load) or a new one."""
+        conn = chat.conn
+        project = chat.meta["project"]
+        previous = chat.meta.get("acp_session_id")
+        opened: Dict[str, Any] = {}
+        if previous and (init.get("agentCapabilities") or {}).get("loadSession"):
+            chat.replaying = True  # the agent replays the conversation; the transcript already has it
+            try:
+                opened = await conn.request("session/load", {"sessionId": previous, "cwd": project,
+                                                             "mcpServers": servers}, timeout=120)
+                chat.session_id = previous
+            except AcpError as exc:
+                if _needs_sign_in(exc):
+                    raise
+                if any(item.get("type") == "turn" for item in chat.items):
+                    # Only worth saying when there was a conversation (an empty session is not kept).
+                    chat.add("notice", text="The earlier conversation could not be reopened; the agent starts fresh.",
+                             tone="warning")
+            finally:
+                chat.replaying = False
+        if not chat.session_id:
+            opened = await conn.request("session/new", {"cwd": project, "mcpServers": servers}, timeout=120)
+            chat.session_id = str(opened.get("sessionId") or "")
+            if not chat.session_id:
+                raise ChatError("The agent did not open a session.", "agent_failed")
+            chat.meta["acp_session_id"] = chat.session_id
+        return opened
 
     async def _apply_choices(self, chat: Chat) -> None:
         """The owner's picks (model, thinking, mode) survive a restart of the agent: set them again."""
