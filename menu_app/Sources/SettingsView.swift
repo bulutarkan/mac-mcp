@@ -130,15 +130,6 @@ private let connectClients: [(id: String, title: String)] = [
     ("opencode", "OpenCode"), ("claude-desktop", "Claude Desktop"),
 ]
 
-
-private struct UsageHeatCell: Identifiable {
-    let dateKey: String
-    let value: Int
-    let calls: Int
-
-    var id: String { dateKey }
-}
-
 private enum UsageAggregation: String, CaseIterable, Identifiable {
     case daily = "Daily"
     case weekly = "Weekly"
@@ -1354,20 +1345,13 @@ struct SettingsView: View {
                             usageOverviewCard(usage)
                             usageActivityCard(usage)
                             if !usage.topTools.isEmpty {
-                                GroupBox {
-                                    UsageTopToolsList(tools: usage.topTools, format: compactNumber)
-                                        .padding(.vertical, 2)
-                                } label: {
-                                    Label("Top Tools", systemImage: "list.number")
-                                }
+                                Text("Top tools").font(.system(size: 13, weight: .semibold)).padding(.top, 14)
+                                UsageTopToolsList(tools: usage.topTools,
+                                                  total: usage.totals.inputTokens + usage.totals.outputTokens)
                             }
                             if let memorySkills = usage.memorySkills, !memorySkills.isEmpty {
-                                GroupBox {
-                                    MemorySkillUsageView(usage: memorySkills, format: compactNumber)
-                                        .padding(.vertical, 2)
-                                } label: {
-                                    Label("Memory and Skills", systemImage: "brain")
-                                }
+                                Text("Memory and skills").font(.system(size: 13, weight: .semibold)).padding(.top, 14)
+                                MemorySkillUsageView(usage: memorySkills)
                             }
                         } else if state.usageLoading {
                             GroupBox {
@@ -1414,148 +1398,123 @@ struct SettingsView: View {
         }
     }
 
-    /// Mac MCP's own tool traffic at a glance; how it is measured lives in the info tooltip.
+    /// Mac MCP's own tool traffic in a sentence; how it is measured lives in the info tooltip.
     private func usageOverviewCard(_ usage: UsageSummaryEnvelope) -> some View {
         let totals = usage.totals
-        let succeeded = totals.calls > 0 ? Double(totals.successCount) / Double(totals.calls) : nil
-        return GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 5) {
-                            Text("Tool data processed")
-                                .font(.subheadline.weight(.semibold))
-                            Image(systemName: "info.circle")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .help(usageMeasurementHelp(usage))
-                                .accessibilityLabel("About tool data processed")
-                        }
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(compactNumber(totals.inputTokens + totals.outputTokens))
-                                .font(.system(size: 26, weight: .semibold, design: .rounded))
-                                .monospacedDigit()
-                            Text("tokens through Mac MCP tools")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text("An estimate of the text that went through Mac MCP tools. Not your AI app’s model tokens or bill.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 12)
-                    Picker("Calls from", selection: $usageActor) {
-                        ForEach(UsageActorFilter.allCases) { item in
-                            Text(item.rawValue).tag(item)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .fixedSize()
-                    .help("Count every caller, only your primary assistant, or only delegated subagents")
-                    .onChange(of: usageActor) { value in
-                        Task { await state.refreshUsage(actorClass: value.apiValue) }
-                    }
+        return HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(UsageFormat.compact(totals.inputTokens + totals.outputTokens))
+                        .font(.system(size: 34, weight: .semibold)).monospacedDigit()
+                        .help("\(UsageFormat.exact(totals.inputTokens + totals.outputTokens)) tokens")
+                    Text("tokens through Mac MCP tools").font(.system(size: 15, weight: .medium)).foregroundStyle(.secondary)
                 }
-
-                UsageSplitBar(
-                    first: ("Arguments", totals.inputTokens),
-                    second: ("Results", totals.outputTokens),
-                    format: compactNumber
-                )
-
-                Divider()
-
-                HStack(alignment: .top, spacing: 12) {
-                    UsageStat(title: "tool calls", value: compactNumber(totals.calls))
-                    UsageStat(
-                        title: "succeeded",
-                        value: succeeded.map(usagePercentText) ?? "—",
-                        help: "\(totals.errorCount) failed calls",
-                        tint: (succeeded ?? 1) < 0.9 ? .orange : nil
-                    )
-                    UsageStat(
-                        title: "typical response",
-                        value: latencyText(totals.p50LatencyMs, relation: totals.p50LatencyRelation),
-                        help: "Median / slowest 5%: " + latencyPairText(
-                            p50: totals.p50LatencyMs,
-                            p50Relation: totals.p50LatencyRelation,
-                            p95: totals.p95LatencyMs,
-                            p95Relation: totals.p95LatencyRelation
-                        )
-                    )
-                    UsageStat(
-                        title: "payload",
-                        value: byteText(totals.inputBytes + totals.outputBytes),
-                        help: "\(totals.imageCount) images · \(byteText(totals.binaryBytes)) binary"
-                    )
-                }
-
-                if let diagnostics = usage.diagnostics,
-                   (diagnostics.queueDropped ?? 0) > 0 || (diagnostics.workerErrors ?? 0) > 0 {
-                    Label(
-                        "Some calls were not measured: \(diagnostics.queueDropped ?? 0) dropped · \(diagnostics.workerErrors ?? 0) worker errors",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                }
-            }
-            .padding(.vertical, 2)
-        } label: {
-            Label("Mac MCP Tools", systemImage: "waveform.path.ecg")
-        }
-    }
-
-    private func usageActivityCard(_ usage: UsageSummaryEnvelope) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .center, spacing: 12) {
-                    Text(usageActivityLine(usage))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    Picker("View", selection: $usageAggregation) {
-                        ForEach(UsageAggregation.allCases) { item in
-                            Text(item.rawValue).tag(item)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .frame(width: 230)
-                }
-
-                usageHeatmap(usage)
-
+                Text(usageActivityLine(usage)).font(.system(size: 13)).foregroundStyle(.secondary)
                 HStack(spacing: 5) {
-                    Spacer()
-                    Text("Less")
-                    ForEach(0..<5, id: \.self) { level in
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(usageHeatColor(level: level))
-                            .frame(width: 9, height: 9)
-                            .accessibilityHidden(true)
-                    }
-                    Text("More")
+                    Text("An estimate of the text that went through Mac MCP tools. Not your AI app’s model tokens or bill.")
+                    Image(systemName: "info.circle")
+                        .help(usageMeasurementHelp(usage))
+                        .accessibilityLabel("About tool data processed")
                 }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 12)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.vertical, 2)
-        } label: {
-            Label("Activity", systemImage: "square.grid.3x3.fill")
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 12)
+            Picker("Calls from", selection: $usageActor) {
+                ForEach(UsageActorFilter.allCases) { item in
+                    Text(item.rawValue).tag(item)
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+            .help("Count every caller, only your primary assistant, or only delegated subagents")
+            .onChange(of: usageActor) { value in
+                Task { await state.refreshUsage(actorClass: value.apiValue) }
+            }
         }
     }
 
+    /// The days as bars split into results and arguments, then calls, speed and payload with what they mean.
+    private func usageActivityCard(_ usage: UsageSummaryEnvelope) -> some View {
+        let totals = usage.totals
+        let succeeded = totals.calls > 0 ? Double(totals.successCount) / Double(totals.calls) : nil
+        let buckets = usageBuckets(usage)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 14) {
+                usageLegend("Results", totals.outputTokens, UsageColors.results)
+                usageLegend("Arguments", totals.inputTokens, UsageColors.arguments)
+                Spacer(minLength: 8)
+                Picker("View", selection: $usageAggregation) {
+                    ForEach(UsageAggregation.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
+            }
+            .padding(.bottom, 14)
+            UsageBarChart(buckets: buckets,
+                          series: [UsageSeries(id: "results", name: "Results", color: UsageColors.results),
+                                   UsageSeries(id: "arguments", name: "Arguments", color: UsageColors.arguments)],
+                          spacing: usageAggregation == .weekly ? 14 : buckets.count > 120 ? 1 : buckets.count > 45 ? 2 : 4,
+                          label: "Tool data processed, \(usageAggregation.rawValue.lowercased())")
+            UsageFactsRow(facts: [
+                UsageFact(value: UsageFormat.compact(totals.calls), title: "Tool calls",
+                          note: succeeded.map { "\(usagePercentText($0)) succeeded, \(UsageFormat.exact(totals.errorCount)) failed." }
+                              ?? "None yet.",
+                          warning: (succeeded ?? 1) < 0.9),
+                UsageFact(value: Self.capitalized(UsageFormat.duration(totals.p50LatencyMs, relation: totals.p50LatencyRelation)),
+                          title: "Typical response",
+                          note: "The slowest 5% took " + UsageFormat.duration(totals.p95LatencyMs, relation: totals.p95LatencyRelation) + ".",
+                          help: "Median / slowest 5%: " + latencyPairText(
+                              p50: totals.p50LatencyMs, p50Relation: totals.p50LatencyRelation,
+                              p95: totals.p95LatencyMs, p95Relation: totals.p95LatencyRelation)),
+                UsageFact(value: UsageFormat.bytes(totals.inputBytes + totals.outputBytes), title: "Payload",
+                          note: "Including \(UsageFormat.count(totals.imageCount, "image")) and \(UsageFormat.bytes(totals.binaryBytes)) of other files."),
+            ])
+            .padding(.top, 20)
+            if let diagnostics = usage.diagnostics,
+               (diagnostics.queueDropped ?? 0) > 0 || (diagnostics.workerErrors ?? 0) > 0 {
+                Label(
+                    "Some calls were not measured: \(diagnostics.queueDropped ?? 0) dropped, \(diagnostics.workerErrors ?? 0) worker errors.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.orange)
+                .padding(.top, 8)
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private static func capitalized(_ text: String) -> String { text.prefix(1).uppercased() + text.dropFirst() }
+
+    private func usageLegend(_ title: String, _ value: Int, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
+            Text(title).foregroundStyle(.secondary)
+            Text(UsageFormat.compact(value)).fontWeight(.medium).monospacedDigit()
+        }
+        .font(.system(size: 12))
+        .help("\(UsageFormat.exact(value)) tokens")
+        .accessibilityElement(children: .combine)
+    }
+
+    /// "18,726 tool calls on 22 active days since Oct 4. The busiest was Oct 17."
     private func usageActivityLine(_ usage: UsageSummaryEnvelope) -> String {
-        let days = usageHeatmapDays(usage).filter { $0.calls > 0 || $0.totalTokens > 0 }
-        guard !days.isEmpty else { return "No activity in the last 12 months" }
-        var text = days.count == 1 ? "1 active day" : "\(days.count) active days"
-        if let busiest = days.max(by: { $0.totalTokens < $1.totalTokens }),
-           let since = ProviderUsageFormat.since(busiest.date) {
-            text += " · busiest \(since)"
+        let days = usageDays(usage).filter { $0.calls > 0 || $0.totalTokens > 0 }
+        guard !days.isEmpty else { return "No tool calls in the last 12 months." }
+        let calls = days.reduce(0) { $0 + $1.calls }
+        var text = "\(UsageFormat.count(calls, "tool call")) on \(UsageFormat.count(days.count, "active day"))"
+        if let first = usageDayDate(days[0].date) {
+            text += " since \(first.formatted(.dateTime.month(.abbreviated).day()))"
+        }
+        text += "."
+        if days.count > 1, let busiest = days.max(by: { $0.totalTokens < $1.totalTokens }),
+           let date = usageDayDate(busiest.date) {
+            text += " The busiest was \(date.formatted(.dateTime.month(.abbreviated).day()))."
         }
         return text
     }
@@ -1574,165 +1533,83 @@ struct SettingsView: View {
         return String(format: "%.1f%%", percent)
     }
 
-    @ViewBuilder
-    private func usageHeatmap(_ usage: UsageSummaryEnvelope) -> some View {
-        let cells = usageHeatCells(usage)
-        let paddedCount = ((cells.count + 6) / 7) * 7
-        let padded: [UsageHeatCell?] = cells.map(Optional.some)
-            + Array(repeating: nil, count: max(0, paddedCount - cells.count))
-        let columns = stride(from: 0, to: padded.count, by: 7).map {
-            Array(padded[$0..<min($0 + 7, padded.count)])
-        }
-        let maxValue = max(1, cells.map(\.value).max() ?? 1)
-
-        GeometryReader { proxy in
-            let spacing: CGFloat = 3
-            let weekCount = max(1, columns.count)
-            let totalSpacing = CGFloat(max(0, weekCount - 1)) * spacing
-            let fittedSize = (proxy.size.width - totalSpacing) / CGFloat(weekCount)
-            let cellSize = min(10, max(7, fittedSize))
-
-            HStack(alignment: .top, spacing: spacing) {
-                ForEach(Array(columns.enumerated()), id: \.offset) { _, week in
-                    VStack(spacing: spacing) {
-                        ForEach(Array(week.enumerated()), id: \.offset) { _, cell in
-                            if let cell {
-                                let ratio = Double(cell.value) / Double(maxValue)
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .fill(usageHeatColor(ratio: ratio, active: cell.value > 0))
-                                    .frame(width: cellSize, height: cellSize)
-                                    .help("\(cell.dateKey) · \(compactNumber(cell.value)) tokens · \(cell.calls) calls")
-                            } else {
-                                Color.clear.frame(width: cellSize, height: cellSize)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .frame(height: 88)
-        // VoiceOver gets a one-line summary plus one element per active month
-        // instead of 365 unlabeled squares.
-        .accessibilityRepresentation {
-            VStack(alignment: .leading) {
-                Text(usageHeatmapSummary(usage))
-                ForEach(usageMonthSummaries(usage)) { month in
-                    Text(month.spoken)
-                }
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Tool data processed, activity heatmap")
-        }
-    }
-
-    private struct UsageMonthSummary: Identifiable {
-        let id: String
-        let spoken: String
-    }
-
-    /// Last 365 days of raw daily rows, whatever aggregation the grid shows.
-    private func usageHeatmapDays(_ usage: UsageSummaryEnvelope) -> [UsageDay] {
+    private static let usageDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private func usageDayDate(_ key: String) -> Date? { Self.usageDayFormatter.date(from: key) }
+
+    /// The last 365 days of daily rows, whatever the chart shows.
+    private func usageDays(_ usage: UsageSummaryEnvelope) -> [UsageDay] {
         let calendar = Calendar(identifier: .gregorian)
         let today = calendar.startOfDay(for: Date())
         let start = calendar.date(byAdding: .day, value: -364, to: today) ?? today
-        let startKey = formatter.string(from: start)
-        return usage.daily.filter { $0.date >= startKey }
+        let startKey = Self.usageDayFormatter.string(from: start)
+        return usage.daily.filter { $0.date >= startKey }.sorted { $0.date < $1.date }
     }
 
-    private func usageHeatmapSummary(_ usage: UsageSummaryEnvelope) -> String {
-        let days = usageHeatmapDays(usage).filter { $0.calls > 0 || $0.totalTokens > 0 }
-        guard !days.isEmpty else { return "No MCP activity in the last 12 months." }
-        let tokens = days.reduce(0) { $0 + $1.totalTokens }
-        let calls = days.reduce(0) { $0 + $1.calls }
-        var text = "Last 12 months: \(compactNumber(tokens)) tokens in \(compactNumber(calls)) calls on \(days.count) active day\(days.count == 1 ? "" : "s")."
-        if let busiest = days.max(by: { $0.totalTokens < $1.totalTokens }) {
-            text += " Busiest day \(busiest.date), \(compactNumber(busiest.totalTokens)) tokens."
-        }
-        return text
-    }
-
-    private func usageMonthSummaries(_ usage: UsageSummaryEnvelope) -> [UsageMonthSummary] {
-        let parser = DateFormatter()
-        parser.calendar = Calendar(identifier: .gregorian)
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.dateFormat = "yyyy-MM"
-        let display = DateFormatter()
-        display.dateFormat = "LLLL yyyy"
-        var totals: [String: (tokens: Int, calls: Int)] = [:]
-        for day in usageHeatmapDays(usage) where day.calls > 0 || day.totalTokens > 0 {
-            let month = String(day.date.prefix(7))
-            let current = totals[month] ?? (0, 0)
-            totals[month] = (current.tokens + day.totalTokens, current.calls + day.calls)
-        }
-        return totals.keys.sorted().map { month in
-            let total = totals[month] ?? (0, 0)
-            let name = parser.date(from: month).map { display.string(from: $0) } ?? month
-            return UsageMonthSummary(
-                id: month,
-                spoken: "\(name): \(compactNumber(total.tokens)) tokens, \(compactNumber(total.calls)) calls"
-            )
-        }
-    }
-
-    private func usageHeatCells(_ usage: UsageSummaryEnvelope) -> [UsageHeatCell] {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
+    /// The chart's bars from the first measured day (at most a year back) to today: one per day, one per
+    /// week, or the running total.
+    private func usageBuckets(_ usage: UsageSummaryEnvelope) -> [UsageBucket] {
         let calendar = Calendar(identifier: .gregorian)
         let today = calendar.startOfDay(for: Date())
-        let start = calendar.date(byAdding: .day, value: -364, to: today) ?? today
-        let dailyMap = Dictionary(uniqueKeysWithValues: usage.daily.map { ($0.date, $0) })
-
-        var base: [(String, Int, Int, Date)] = []
-        for offset in 0..<365 {
-            guard let date = calendar.date(byAdding: .day, value: offset, to: start) else { continue }
-            let key = formatter.string(from: date)
-            let day = dailyMap[key]
-            base.append((key, day?.totalTokens ?? 0, day?.calls ?? 0, date))
+        let yearAgo = calendar.date(byAdding: .day, value: -364, to: today) ?? today
+        let firstMeasured = [usage.availableSince, usageDays(usage).first?.date].compactMap { $0 }.compactMap(usageDayDate).min()
+        var start = max(yearAgo, firstMeasured ?? today)
+        if let fortnight = calendar.date(byAdding: .day, value: -13, to: today), start > fortnight { start = fortnight }
+        let byDate = Dictionary(usage.daily.map { ($0.date, $0) }, uniquingKeysWith: { first, _ in first })
+        var days: [Date] = []
+        var cursor = start
+        while cursor <= today {
+            days.append(cursor)
+            cursor = calendar.date(byAdding: .day, value: 1, to: cursor) ?? today.addingTimeInterval(86_400)
         }
-
+        let name: (Date) -> String = { calendar.isDate($0, inSameDayAs: today) ? "Today" : $0.formatted(.dateTime.month(.abbreviated).day()) }
+        func detail(calls: Int, failed: Int) -> String? {
+            calls > 0 ? "\(UsageFormat.count(calls, "call")), \(UsageFormat.exact(failed)) failed" : nil
+        }
         switch usageAggregation {
         case .daily:
-            return base.map { UsageHeatCell(dateKey: $0.0, value: $0.1, calls: $0.2) }
-        case .weekly:
-            var weekTotals: [String: (tokens: Int, calls: Int)] = [:]
-            for row in base {
-                let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: row.3)
-                let weekKey = "\(comps.yearForWeekOfYear ?? 0)-\(comps.weekOfYear ?? 0)"
-                let current = weekTotals[weekKey] ?? (0, 0)
-                weekTotals[weekKey] = (current.tokens + row.1, current.calls + row.2)
+            return days.enumerated().map { index, date in
+                let day = byDate[Self.usageDayFormatter.string(from: date)]
+                return UsageBucket(id: index, title: name(date), axis: name(date),
+                                   parts: ["results": day?.outputTokens ?? 0, "arguments": day?.inputTokens ?? 0],
+                                   detail: detail(calls: day?.calls ?? 0, failed: day?.errorCount ?? 0))
             }
-            return base.map { row in
-                let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: row.3)
-                let key = "\(comps.yearForWeekOfYear ?? 0)-\(comps.weekOfYear ?? 0)"
-                let total = weekTotals[key] ?? (0, 0)
-                return UsageHeatCell(dateKey: row.0, value: total.tokens, calls: total.calls)
+        case .weekly:
+            var weeks: [(start: Date, calls: Int, failed: Int, results: Int, arguments: Int)] = []
+            for date in days {
+                let monday = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)) ?? date
+                let day = byDate[Self.usageDayFormatter.string(from: date)]
+                if weeks.last?.start != monday { weeks.append((max(monday, start), 0, 0, 0, 0)) }
+                weeks[weeks.count - 1].calls += day?.calls ?? 0
+                weeks[weeks.count - 1].failed += day?.errorCount ?? 0
+                weeks[weeks.count - 1].results += day?.outputTokens ?? 0
+                weeks[weeks.count - 1].arguments += day?.inputTokens ?? 0
+            }
+            return weeks.enumerated().map { index, week in
+                let label = week.start.formatted(.dateTime.month(.abbreviated).day())
+                return UsageBucket(id: index, title: "Week of \(label)", axis: label,
+                                   parts: ["results": week.results, "arguments": week.arguments],
+                                   detail: detail(calls: week.calls, failed: week.failed))
             }
         case .cumulative:
-            var tokens = 0
-            var calls = 0
-            return base.map { row in
-                tokens += row.1
-                calls += row.2
-                return UsageHeatCell(dateKey: row.0, value: tokens, calls: calls)
+            var calls = 0, results = 0, arguments = 0
+            return days.enumerated().map { index, date in
+                let day = byDate[Self.usageDayFormatter.string(from: date)]
+                calls += day?.calls ?? 0
+                results += day?.outputTokens ?? 0
+                arguments += day?.inputTokens ?? 0
+                let isToday = calendar.isDate(date, inSameDayAs: today)
+                return UsageBucket(id: index, title: isToday ? "Up to today" : "Up to \(name(date))", axis: name(date),
+                                   parts: ["results": results, "arguments": arguments],
+                                   detail: calls > 0 ? "\(UsageFormat.count(calls, "call")) in all" : nil)
             }
         }
-    }
-
-    private func usageHeatColor(ratio: Double, active: Bool) -> Color {
-        guard active else { return Color.secondary.opacity(0.10) }
-        let clamped = max(0.0, min(1.0, ratio))
-        return Color.accentColor.opacity(0.24 + 0.70 * sqrt(clamped))
-    }
-
-    private func usageHeatColor(level: Int) -> Color {
-        guard level > 0 else { return Color.secondary.opacity(0.10) }
-        return Color.accentColor.opacity(0.20 + Double(level) * 0.17)
     }
 
     private func compactNumber(_ value: Int) -> String {

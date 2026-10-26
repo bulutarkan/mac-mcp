@@ -349,6 +349,8 @@ final class AppState: ObservableObject {
     }
 
     func refreshAgentNotificationAuthorization(reconcilePreference: Bool = false) async {
+        // Only an app bundle has a notification center; an unbundled build (a UI test) would stop on it.
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let status = await AgentNotificationController.shared.authorizationState()
         setIfChanged(\.agentNotificationAuthorizationState, status)
         guard reconcilePreference,

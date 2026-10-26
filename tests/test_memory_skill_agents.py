@@ -212,7 +212,8 @@ class UsageCardSourceTests(unittest.TestCase):
     def test_the_usage_pane_shows_memory_and_skills(self) -> None:
         root = Path(__file__).resolve().parents[1] / "menu_app" / "Sources"
         settings = (root / "SettingsView.swift").read_text(encoding="utf-8")
-        self.assertIn('Label("Memory and Skills", systemImage: "brain")', settings)
+        self.assertIn('Text("Memory and skills")', settings)
+        self.assertIn("MemorySkillUsageView(usage: memorySkills)", settings)
         view = (root / "UsageOverview.swift").read_text(encoding="utf-8")
         for words in ("Memory lookups", "Memories saved", "Skills used", "held a secret"):
             self.assertIn(words, view)

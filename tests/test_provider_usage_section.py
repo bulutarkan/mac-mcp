@@ -58,6 +58,15 @@ class ProviderUsageSectionTests(unittest.TestCase):
         self.assertIn("private static let failureMark = 0.05", overview)
         build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
         self.assertIn('"${SCRIPT_DIR}/Sources/UsageOverview.swift"', build)
+        self.assertIn('"${SCRIPT_DIR}/Sources/UsageComponents.swift"', build)
+        # The three tabs speak one language: the same bar chart, facts and rows.
+        chat = (SOURCES / "ChatUsageSection.swift").read_text(encoding="utf-8")
+        section = SECTION.read_text(encoding="utf-8")
+        self.assertIn("UsageBarChart(", settings)
+        self.assertIn("UsageBarChart(", chat)
+        self.assertIn("UsageRow(", section)
+        self.assertIn("UsageRow(", chat)
+        self.assertIn("UsageRow(", overview)
 
     def test_every_known_agent_has_its_own_style_and_formatting_holds(self) -> None:
         providers = _swift_block(SOURCES / "SettingsStore.swift", "enum AgentProviders {")
@@ -88,6 +97,10 @@ precondition(ProviderUsageFormat.share(102_000_000, of: 123_614_000) == "83%")
 precondition(ProviderUsageFormat.share(0, of: 0) == "—")
 precondition(ProviderUsageFormat.since("not-a-date") == "not-a-date")
 precondition(ProviderUsageFormat.since(nil) == nil)
+precondition(UsageFormat.compact(102_000_000) == "102M" && UsageFormat.compact(12_400) == "12.4K" && UsageFormat.compact(820) == "820")
+precondition(UsageFormat.count(1, "call") == "1 call" && UsageFormat.count(2, "skill search", plural: "skill searches") == "2 skill searches")
+precondition(UsageBarChart.scaleTop(12_500_000) == 15_000_000 && UsageBarChart.scaleTop(158_300) == 200_000)
+precondition(UsageBarChart.axisPicks(23) == [0, 5, 11, 17, 22])
 print("PROVIDER_USAGE_SECTION_PASS")
 """
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,7 +110,8 @@ print("PROVIDER_USAGE_SECTION_PASS")
             built = subprocess.run(
                 [
                     "xcrun", "swiftc", "-target", "arm64-apple-macos13.0",
-                    str(SOURCES / "SwiftUICompat.swift"), str(SECTION), str(main), "-o", str(binary),
+                    str(SOURCES / "SwiftUICompat.swift"), str(SOURCES / "UsageComponents.swift"), str(SECTION),
+                    str(main), "-o", str(binary),
                 ],
                 capture_output=True, text=True, timeout=240,
             )

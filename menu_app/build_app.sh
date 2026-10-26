@@ -78,6 +78,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/OnboardingWindowController.swift"
   "${SCRIPT_DIR}/Sources/SettingsStore.swift"
   "${SCRIPT_DIR}/Sources/SettingsView.swift"
+  "${SCRIPT_DIR}/Sources/UsageComponents.swift"
   "${SCRIPT_DIR}/Sources/ProviderUsageSection.swift"
   "${SCRIPT_DIR}/Sources/TeamHistorySection.swift"
   "${SCRIPT_DIR}/Sources/SettingsTabs.swift"

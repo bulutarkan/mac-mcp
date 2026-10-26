@@ -29,7 +29,7 @@ class TruthfulTextTests(unittest.TestCase):
     def test_tool_payload_is_not_called_model_tokens(self) -> None:
         settings = read("SettingsView.swift")
         self.assertNotIn('Text("Payload Tokens")', settings)
-        self.assertIn('Text("Tool data processed")', settings)
+        self.assertIn('Text("tokens through Mac MCP tools")', settings)
         self.assertIn("Not your AI app’s model tokens or bill.", settings)
 
 

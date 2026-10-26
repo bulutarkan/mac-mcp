@@ -108,9 +108,11 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         self.assertNotIn(".textFieldStyle(.roundedBorder)\n                .font(.caption)", self.view)
         self.assertIn("window.titleVisibility = .hidden", self.window)
         self.assertIn('.keyboardShortcut("f", modifiers: .command)', self.view)
-        heatmap = self.view[self.view.index("private func usageHeatmap"):self.view.index("private func usageHeatCells")]
-        self.assertIn(".accessibilityRepresentation", heatmap)
-        self.assertIn("usageMonthSummaries(usage)", heatmap)
+        # Tool activity is bars VoiceOver can read one by one (a day, a week or the running total), not a grid.
+        chart = (ROOT / "menu_app" / "Sources" / "UsageComponents.swift").read_text(encoding="utf-8")
+        self.assertIn('.accessibilityLabel("\\(bucket.title): \\(UsageFormat.compact(bucket.total)) tokens"', chart)
+        self.assertIn('label: "Tool data processed, \\(usageAggregation.rawValue.lowercased())")', self.view)
+        self.assertNotIn("usageHeatmap", self.view)
 
 
 if __name__ == "__main__":
