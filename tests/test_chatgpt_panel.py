@@ -391,5 +391,48 @@ class ChatGPTPanelTests(unittest.TestCase):
         asyncio.run(run())
 
 
+class ChatGPTPanelPageTests(unittest.TestCase):
+    """The served panel page: accessible tabs, the host theme and a handshake that cannot hang."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def setUp(self):
+        self.built = (self.ROOT / "mcp_server/chatgpt_ui/control-center.html").read_text(encoding="utf-8")
+        self.src = {name: (self.ROOT / "chatgpt_ui/src" / name).read_text(encoding="utf-8")
+                    for name in ("index.html", "app.js", "bridge.js", "style.css")}
+
+    def test_built_page_matches_the_sources(self):
+        # The page is committed; a source change without `node chatgpt_ui/build.mjs` would ship stale.
+        self.assertIn(self.src["style.css"], self.built)
+        for marker in ('role="tablist"', 'aria-selected="true"', 'role="tabpanel"', ":root[data-theme=\"light\"]",
+                       "openai:set_globals", "Try again", "did not answer"):
+            self.assertIn(marker, self.built)
+
+    def test_tabs_follow_the_aria_tabs_pattern(self):
+        html, app = self.src["index.html"], self.src["app.js"]
+        self.assertEqual(4, html.count('role="tab"'))
+        self.assertEqual(4, html.count('role="tabpanel"'))
+        self.assertIn("b.setAttribute('aria-selected', String(selected))", app)
+        self.assertIn("b.tabIndex = selected ? 0 : -1", app)
+        for key in ("ArrowRight", "ArrowLeft", "Home", "End"):
+            self.assertIn(key, app)
+        self.assertIn(".control:focus-visible{outline:", self.src["style.css"])
+
+    def test_theme_follows_the_host_and_stays_dark_when_unknown(self):
+        app = self.src["app.js"]
+        self.assertIn("applyTheme(context.theme)", app)
+        self.assertIn("if (theme !== 'light' && theme !== 'dark') return;", app)
+        # Dark is the :root default; light only under an explicit data-theme.
+        self.assertIn("color-scheme:dark;", self.src["style.css"].split(":root[data-theme")[0])
+
+    def test_handshake_times_out_and_offers_a_retry(self):
+        bridge, app = self.src["bridge.js"], self.src["app.js"]
+        self.assertIn("async connect({ timeoutMs = 8000 } = {})", bridge)
+        self.assertIn("error.code = 'timeout'", bridge)
+        self.assertIn("notify(reason, true, { label: 'Try again', run: connect })", app)
+        # A save is never timed out: the host may be asking the person to confirm it.
+        self.assertIn("name === 'mac_mcp_panel_setting' ? 0 : 60000", app)
+
+
 if __name__ == "__main__":
     unittest.main()

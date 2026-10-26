@@ -39,19 +39,41 @@ function updateControls() {
   $('refresh').classList.toggle('spinning', state.busy);
   $('agent-save').disabled = !state.connected || state.busy || !state.catalog;
 }
-function notify(message, error = false) {
+function notify(message, error = false, action = null) {
   const item = $('notice');
   item.hidden = !message;
-  item.textContent = message || '';
+  item.replaceChildren(el('span', null, message || ''));
   item.classList.toggle('error', Boolean(error));
+  if (message && action) {
+    const button = el('button', null, action.label);
+    button.type = 'button';
+    button.addEventListener('click', action.run);
+    item.appendChild(button);
+  }
 }
-function switchTab(tab) {
+// Tabs follow the ARIA tabs pattern: one tab stop, arrow keys move between tabs.
+function switchTab(tab, focus = false) {
   if (!all('[data-panel]').some(s => s.dataset.panel === tab)) return;
-  all('[data-tab]').forEach(b => b.classList.toggle('selected', b.dataset.tab === tab));
+  all('[data-tab]').forEach(b => {
+    const selected = b.dataset.tab === tab;
+    b.classList.toggle('selected', selected);
+    b.setAttribute('aria-selected', String(selected));
+    b.tabIndex = selected ? 0 : -1;
+    if (selected && focus) b.focus();
+  });
   all('[data-panel]').forEach(s => { s.hidden = s.dataset.panel !== tab; });
 }
 all('[data-tab]').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 all('[data-goto]').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.goto)));
+$('tabs').addEventListener('keydown', (event) => {
+  const tabs = all('[data-tab]');
+  const index = tabs.indexOf(document.activeElement);
+  if (index < 0) return;
+  const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[event.key];
+  if (next === undefined) return;
+  event.preventDefault();
+  switchTab(tabs[(next + tabs.length) % tabs.length].dataset.tab, true);
+});
 
 function renderAgents(agents, target, limit) {
   const container = $(target);
@@ -121,9 +143,18 @@ function unpack(result) {
   try { return JSON.parse(text); } catch { return result; }
 }
 
-const app = new McpAppBridge({ name: 'Mac MCP', version: '0.2.1' });
+const app = new McpAppBridge({ name: 'Mac MCP', version: '0.2.2' });
+// The panel follows the host theme: MCP Apps hostContext.theme, or the Apps SDK window.openai.theme.
+// Partial context updates without a theme keep the current one; unknown stays dark.
+function applyTheme(theme) {
+  if (theme !== 'light' && theme !== 'dark') return;
+  document.documentElement.dataset.theme = theme;
+}
+applyTheme(window.openai?.theme);
+window.addEventListener('openai:set_globals', (event) => applyTheme(event.detail?.globals?.theme), { passive: true });
 // Host chrome (e.g. the desktop composer over a fullscreen app) is reported as safe-area insets.
 app.onhostcontext = (context) => {
+  applyTheme(context.theme);
   const insets = context.safeAreaInsets;
   if (insets) for (const side of ['top', 'right', 'bottom', 'left']) {
     const value = Number(insets[side]);
@@ -139,7 +170,9 @@ async function call(name, args = {}) {
     mac_mcp_panel_state: 'Refresh Mac MCP Control Center status and usage',
     mac_mcp_panel_setting: 'Save Mac MCP default agent from the Control Center',
   };
-  const result = await app.callServerTool({ name, arguments: hints[name] ? { ...args, description: hints[name] } : args });
+  // Reads give up after a minute; a save waits, since the host may ask the person to confirm it.
+  const timeoutMs = name === 'mac_mcp_panel_setting' ? 0 : 60000;
+  const result = await app.callServerTool({ name, arguments: hints[name] ? { ...args, description: hints[name] } : args }, { timeoutMs });
   return unpack(result);
 }
 async function refresh() {
@@ -268,11 +301,19 @@ $('agent-form').addEventListener('submit', async (event) => {
 // Data arrives with the host's tool result; refreshes are manual only (no polling).
 // A single fallback read covers hosts that open the panel without delivering a result.
 // No direct network requests, credentials, or cross-origin fetches from this iframe.
-app.connect().then(() => {
-  setStatus('online');
-  setTimeout(() => { if (!state.data) void refresh(); }, 1500);
-}).catch((error) => {
-  setStatus('offline');
-  notify(`MCP Apps bridge unavailable: ${error.message || error}`, true);
-});
+function connect() {
+  setStatus('connecting');
+  notify('');
+  app.connect({ timeoutMs: 8000 }).then(() => {
+    setStatus('online');
+    setTimeout(() => { if (!state.data) void refresh(); }, 1500);
+  }).catch((error) => {
+    setStatus('offline');
+    const reason = error.code === 'timeout'
+      ? 'ChatGPT did not answer the panel. Try again, or reopen Mac MCP in a new chat.'
+      : `MCP Apps bridge unavailable: ${error.message || error}`;
+    notify(reason, true, { label: 'Try again', run: connect });
+  });
+}
+connect();
 updateControls();

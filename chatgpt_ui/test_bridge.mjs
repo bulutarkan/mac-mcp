@@ -30,4 +30,12 @@ onMessage({ source: parent, data: { jsonrpc: '2.0', method: 'ui/notifications/to
 assert.equal(delivered, true);
 onMessage({ source: parent, data: { jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { displayMode: 'inline' } } });
 assert.equal(contexts[1].displayMode, 'inline');
-console.log('PASS: bridge initialization, host notification, tool call, tool-result dispatch, host context');
+// A host that never answers: initialize gives up instead of hanging, and a late reply is ignored.
+const silent = { postMessage(packet) { observed.push(packet); } };
+window.parent = silent;
+const quiet = new McpAppBridge({ name: 'Mac MCP', version: '0.1.1' });
+const started = Date.now();
+await assert.rejects(quiet.connect({ timeoutMs: 50 }), (error) => error.code === 'timeout');
+assert.ok(Date.now() - started < 1000);
+assert.equal(quiet.pending.size, 0);
+console.log('PASS: bridge initialization, host notification, tool call, tool-result dispatch, host context, init timeout');

@@ -154,7 +154,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 }
 ::selection { background: color-mix(in srgb, var(--tint) 32%, transparent); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
-.skip-link { position: fixed; z-index: 1000; top: 10px; left: 10px; transform: translateY(-180%); padding: 9px 14px; border-radius: 10px; color: #fff; background: var(--tint); text-decoration: none; }
+.skip-link { position: fixed; z-index: 1000; top: 10px; left: 10px; transform: translateY(-180%); padding: 9px 14px; border-radius: 10px; color: #fff; background: #0066cc; text-decoration: none; }
 .skip-link:focus { transform: none; }
 code, pre { font-family: var(--font-mono); }
 * { scrollbar-width: thin; scrollbar-color: var(--label-4) transparent; }
@@ -330,6 +330,12 @@ code, pre { font-family: var(--font-mono); }
 /* ── Control Center: six health tiles, and notifications beside them ─────── */
 .health-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: stretch; }
 .health-row > .integrity-alert { grid-column: 1 / -1; margin: 0; }
+.content > .auth-alert { margin: 0; font-weight: 500; line-height: 1.45; }
+.auth-alert strong { font-weight: 700; }
+.auth-alert code, .run-list code { font-family: var(--font-mono); font-size: .95em; }
+.run-list > .no-agents.is-error { color: var(--bad-text); }
+.inline-retry { margin-left: 4px; padding: 2px 9px; border: 0; border-radius: 99px; background: var(--fill-2); color: var(--tint-text); font: inherit; font-weight: 600; cursor: pointer; }
+.inline-retry:hover { background: var(--fill-3); }
 .health-strip { padding: 10px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .health-chip { min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 10px 12px; border-radius: 16px; background: var(--fill); }
 .health-chip > span:not(.health-dot) { grid-column: 2; min-width: 0; overflow: hidden; color: var(--label-2); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }

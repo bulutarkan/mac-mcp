@@ -44,6 +44,31 @@ class DashboardActivityAccessibilityTests(unittest.TestCase):
         # Focus is restored before the selection is cleared.
         self.assertLess(close.index("target.focus()"), close.index("state.selected = null"))
 
+    def test_closed_drawer_is_inert(self) -> None:
+        drawer = re.search(r'<aside class="detail-drawer"[^>]*>', self.html).group(0)
+        self.assertIn(" inert", drawer)
+        show = self.js[self.js.index("function showDrawer("):self.js.index("async function openAgentDrawer(")]
+        self.assertLess(show.index("els.drawer.inert = false"), show.index("els.drawerClose.focus()"))
+        close = self.js[self.js.index("function closeDrawer("):self.js.index("function seedTrace(")]
+        self.assertIn("els.drawer.inert = true", close)
+        self.assertIn("relisted", close)  # a re-rendered run or pack button gets focus back
+
+    def test_compact_sidebar_links_keep_their_names(self) -> None:
+        # At <= 1040 px the text spans are display:none, so the links need their own name.
+        sidebar = self.html[self.html.index('<ul class="nav-list">'):self.html.index("</ul>", self.html.index('<ul class="nav-list">'))]
+        for label in ("Overview", "Activity", "Changes", "Runs", "Catalog", "Agents"):
+            self.assertIn(f'aria-label="{label}"', sidebar)
+
+    def test_runs_have_loading_empty_error_and_sign_in_states(self) -> None:
+        self.assertIn('<li class="no-agents">Loading runs…</li>', self.html)
+        runs = self.js[self.js.index("async function refreshRuns()"):self.js.index("async function saveRunEvidenceSettings()")]
+        self.assertIn("error.status === 401", runs)
+        self.assertIn("Open Dashboard in the Mac MCP menu", runs)
+        self.assertIn("data-runs-retry", runs)
+        self.assertIn("No runs yet.", runs)
+        self.assertIn("state.runsLoaded", runs)
+        self.assertIn('banner.id = "authAlert"', self.js)
+
 
 if __name__ == "__main__":
     unittest.main()

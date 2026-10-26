@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>Mac MCP</title>
   <style>:root{
   --bg:#08090b;
@@ -13,11 +13,35 @@
   --line-strong:rgba(255,255,255,.14);
   --text:#f6f7f9;
   --muted:#a0a6b0;
-  --muted-2:#6b717c;
+  --muted-2:#868c97;
   --green:#65d8a7;
   --red:#ff786d;
+  --error-text:#ffb3ab;
+  --error-line:rgba(255,120,109,.32);
+  --error-fill:rgba(255,120,109,.06);
+  --halo:rgba(255,255,255,.1);
+  --focus-line:rgba(255,255,255,.32);
   --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
   color-scheme:dark;
+}
+/* Light follows the ChatGPT host theme (hostContext.theme); dark stays the default. */
+:root[data-theme="light"]{
+  --bg:#ffffff;
+  --surface:#f9f9fa;
+  --surface-2:#f0f0f2;
+  --line:rgba(13,13,15,.09);
+  --line-strong:rgba(13,13,15,.16);
+  --text:#0d0d0f;
+  --muted:#4b5059;
+  --muted-2:#63676f;
+  --green:#12805c;
+  --red:#c2302b;
+  --error-text:#b4231e;
+  --error-line:rgba(194,48,43,.3);
+  --error-fill:#fdf3f2;
+  --halo:rgba(13,13,15,.1);
+  --focus-line:rgba(13,13,15,.4);
+  color-scheme:light;
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--text)}
@@ -42,7 +66,7 @@ button{cursor:pointer}
 .top-actions{display:flex;align-items:center;gap:10px}
 .status{display:inline-flex;align-items:center;gap:7px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--muted-2);flex:none}
-.status.online .dot{background:var(--green);box-shadow:0 0 0 3px rgba(101,216,167,.14)}
+.status.online .dot{background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 16%,transparent)}
 .status.offline .dot{background:var(--red)}
 .icon-button{
   width:30px;height:30px;display:grid;place-items:center;padding:0;border-radius:9px;
@@ -63,6 +87,7 @@ button{cursor:pointer}
   color:var(--muted-2);font-size:12px;font-weight:550;white-space:nowrap;transition:color .15s;
 }
 .tab:hover{color:var(--muted)}
+.tab:focus-visible{outline-offset:-2px;border-radius:6px}
 .tab.selected{color:var(--text)}
 .tab.selected::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:1.5px;background:var(--text);border-radius:2px}
 .count{font-size:9.5px;line-height:1;padding:3px 5px;border-radius:5px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
@@ -71,12 +96,14 @@ button{cursor:pointer}
 .body{flex:1;padding:14px 16px 18px;display:flex;flex-direction:column;gap:12px}
 section{display:flex;flex-direction:column;gap:12px}
 .notice{padding:9px 12px;border-radius:10px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px;color:var(--muted)}
-.notice.error{border-color:rgba(255,120,109,.32);color:#ffb3ab;background:rgba(255,120,109,.06)}
+.notice{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.notice.error{border-color:var(--error-line);color:var(--error-text);background:var(--error-fill)}
+.notice button{flex:none;height:26px;padding:0 11px;border-radius:7px;border:1px solid currentColor;background:none;color:inherit;font-size:11.5px;font-weight:600}
 
 .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .stat{background:var(--surface);padding:12px 13px 11px;display:grid;grid-template-columns:1fr auto;grid-template-areas:"label sub" "value value";row-gap:6px;min-width:0}
 .label{grid-area:label;font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sub{grid-area:sub;font-size:9.5px;color:var(--muted-2);opacity:.75}
+.sub{grid-area:sub;font-size:9.5px;color:var(--muted-2)}
 .stat strong{grid-area:value;font-size:22px;font-weight:600;letter-spacing:-.03em;line-height:1.1;font-variant-numeric:tabular-nums}
 
 .split{display:grid;grid-template-columns:1fr;gap:12px}
@@ -91,7 +118,7 @@ section{display:flex;flex-direction:column;gap:12px}
 .row{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);min-width:0}
 .row:first-child{border-top:0}
 .row .dot{margin:0 2px}
-.row .dot.active{background:var(--text);box-shadow:0 0 0 3px rgba(255,255,255,.1);animation:pulse 1.8s ease-in-out infinite}
+.row .dot.active{background:var(--text);box-shadow:0 0 0 3px var(--halo);animation:pulse 1.8s ease-in-out infinite}
 .row .dot.done{background:var(--muted-2)}
 .row .dot.failed{background:var(--red)}
 @keyframes pulse{50%{opacity:.45}}
@@ -123,12 +150,13 @@ section{display:flex;flex-direction:column;gap:12px}
 .segmented button[aria-checked="true"]{background:var(--surface-2);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-strong)}
 .field-row{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:10px;font-size:11.5px;color:var(--muted)}
 .control{width:100%;min-width:0;height:30px;padding:0 9px;border-radius:8px;border:1px solid var(--line-strong);background:var(--bg);color:var(--text);font-size:11.5px;outline:0;transition:border-color .15s}
-.control:focus{border-color:rgba(255,255,255,.32)}
+.control:focus{border-color:var(--focus-line)}
+.control:focus-visible{outline:1.5px solid var(--text);outline-offset:1px}
 .control::placeholder{color:var(--muted-2)}
 select.control{appearance:none;-webkit-appearance:none;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--muted-2) 50%),linear-gradient(135deg,var(--muted-2) 50%,transparent 50%);background-position:calc(100% - 13px) 50%,calc(100% - 9px) 50%;background-size:4px 4px;background-repeat:no-repeat}
 .actions{display:flex;justify-content:flex-end;gap:6px}
 .primary,.ghost{height:28px;padding:0 13px;border-radius:8px;font-size:11.5px;font-weight:600;transition:opacity .15s,border-color .15s,color .15s}
-.primary{border:1px solid #fff;background:#f6f7f9;color:#08090b}
+.primary{border:1px solid var(--text);background:var(--text);color:var(--bg)}
 .primary:disabled{opacity:.35;cursor:not-allowed}
 .ghost{border:1px solid var(--line-strong);background:none;color:var(--muted)}
 .ghost:hover{color:var(--text)}
@@ -177,17 +205,17 @@ select.control{appearance:none;-webkit-appearance:none;cursor:pointer;background
       </div>
     </header>
 
-    <nav class="tabs" id="tabs" aria-label="Sections">
-      <button class="tab selected" data-tab="overview" type="button">Overview</button>
-      <button class="tab" data-tab="agents" type="button">Agents<span class="count mono" id="tab-agents" hidden>0</span></button>
-      <button class="tab" data-tab="usage" type="button">Usage</button>
-      <button class="tab" data-tab="settings" type="button">Settings</button>
-    </nav>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Sections">
+      <button class="tab selected" id="tab-btn-overview" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="panel-overview">Overview</button>
+      <button class="tab" id="tab-btn-agents" data-tab="agents" type="button" role="tab" aria-selected="false" aria-controls="panel-agents" tabindex="-1">Agents<span class="count mono" id="tab-agents" hidden>0</span></button>
+      <button class="tab" id="tab-btn-usage" data-tab="usage" type="button" role="tab" aria-selected="false" aria-controls="panel-usage" tabindex="-1">Usage</button>
+      <button class="tab" id="tab-btn-settings" data-tab="settings" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button>
+    </div>
 
     <main class="body">
       <div class="notice" id="notice" role="status" hidden></div>
 
-      <section data-panel="overview">
+      <section data-panel="overview" id="panel-overview" role="tabpanel" aria-labelledby="tab-btn-overview">
         <div class="stats">
           <div class="stat"><span class="label mono">Tool calls</span><strong id="calls">—</strong><span class="sub mono">24h</span></div>
           <div class="stat"><span class="label mono">Active agents</span><strong id="active-agents">—</strong><span class="sub mono">now</span></div>
@@ -206,14 +234,14 @@ select.control{appearance:none;-webkit-appearance:none;cursor:pointer;background
         </div>
       </section>
 
-      <section data-panel="agents" hidden>
+      <section data-panel="agents" id="panel-agents" role="tabpanel" aria-labelledby="tab-btn-agents" hidden>
         <article class="panel">
           <header class="panel-head"><h2>Delegated agents</h2><span class="meta mono">Last 20</span></header>
           <div class="list" id="agents"><p class="empty">No data yet.</p></div>
         </article>
       </section>
 
-      <section data-panel="usage" hidden>
+      <section data-panel="usage" id="panel-usage" role="tabpanel" aria-labelledby="tab-btn-usage" hidden>
         <article class="panel">
           <header class="panel-head"><h2>Provider tokens</h2><span class="meta mono">7d</span></header>
           <div class="list" id="usage-providers"><p class="empty">No data yet.</p></div>
@@ -231,7 +259,7 @@ select.control{appearance:none;-webkit-appearance:none;cursor:pointer;background
         </article>
       </section>
 
-      <section data-panel="settings" hidden>
+      <section data-panel="settings" id="panel-settings" role="tabpanel" aria-labelledby="tab-btn-settings" hidden>
         <article class="panel wide">
           <header class="panel-head"><h2>Default agent</h2><button class="link mono" id="agent-edit" type="button" hidden>Edit</button><span class="meta mono" id="agent-mode" hidden>Read-only</span></header>
           <dl class="rows" id="agent-view">
@@ -271,7 +299,7 @@ select.control{appearance:none;-webkit-appearance:none;cursor:pointer;background
 
     <footer class="foot mono"><span id="updated">Not loaded</span><span>Local · Private</span></footer>
   </div>
-  <script>(()=>{var v=class{constructor({name:t,version:n}){this.name=t,this.version=n,this.nextId=1,this.pending=new Map,this.ontoolresult=null,this.onhostcontext=null,window.addEventListener("message",a=>{if(a.source!==window.parent)return;let i=a.data;if(!(!i||i.jsonrpc!=="2.0"))if(i.id!==void 0&&this.pending.has(i.id)){let{resolve:r,reject:g}=this.pending.get(i.id);this.pending.delete(i.id),i.error?g(new Error(i.error.message||"Host request failed")):r(i.result)}else i.method==="ui/notifications/tool-result"?this.ontoolresult?.(i.params):i.method==="ui/notifications/host-context-changed"&&this.onhostcontext?.(i.params||{})})}request(t,n){let a=this.nextId++;return new Promise((i,r)=>{this.pending.set(a,{resolve:i,reject:r}),window.parent.postMessage({jsonrpc:"2.0",id:a,method:t,params:n},"*")})}notify(t,n={}){window.parent.postMessage({jsonrpc:"2.0",method:t,params:n},"*")}async connect(){let t=await this.request("ui/initialize",{appInfo:{name:this.name,version:this.version},appCapabilities:{},protocolVersion:"2026-01-26"});return this.notify("ui/notifications/initialized"),t?.hostContext&&this.onhostcontext?.(t.hostContext),t}callServerTool({name:t,arguments:n}){return this.request("tools/call",{name:t,arguments:n??{}})}};var o=e=>document.getElementById(e),p=e=>Array.from(document.querySelectorAll(e)),m=e=>e!=null&&e!==""&&Number.isFinite(Number(e)),c=e=>m(e)?new Intl.NumberFormat("en-US").format(Number(e)):"\u2014",_=e=>m(e)?new Intl.NumberFormat("en-US",{notation:"compact",maximumFractionDigits:1}).format(Number(e)):"n/a",S=e=>m(e)?e>=1e3?`${(e/1e3).toFixed(1)}s`:`${Math.round(e)}ms`:"\u2014",h={codex:"Codex",opencode:"OpenCode",claude:"Claude Code",kimi:"Kimi Code",grok:"Grok Build",antigravity:"Antigravity",pi:"pi",cline:"Cline",kilo:"Kilo Code",goose:"Goose",copilot:"GitHub Copilot"},q=new Set(["running","starting"]),T=new Set(["failed","error","cancelled","canceled","timeout","killed"]),s={data:null,connected:!1,busy:!1,editing:!1,catalog:null};function l(e,t,n){let a=document.createElement(e);return t&&(a.className=t),n!=null&&(a.textContent=String(n)),a}function d(e,...t){return t.forEach(n=>e.appendChild(n)),e}function j(e){if(!m(e))return"\u2014";let t=Number(e),n=Math.floor(t/86400),a=Math.floor(t%86400/3600),i=Math.floor(t%3600/60);return n?`${n}d ${a}h`:a?`${a}h ${i}m`:`${i}m`}function w(e){s.connected=e==="online",o("status").classList.toggle("online",e==="online"),o("status").classList.toggle("offline",e==="offline"),o("status-text").textContent={online:"Online",offline:"Offline"}[e]||"Connecting",u()}function u(){o("refresh").disabled=!s.connected||s.busy,o("refresh").classList.toggle("spinning",s.busy),o("agent-save").disabled=!s.connected||s.busy||!s.catalog}function f(e,t=!1){let n=o("notice");n.hidden=!e,n.textContent=e||"",n.classList.toggle("error",!!t)}function P(e){p("[data-panel]").some(t=>t.dataset.panel===e)&&(p("[data-tab]").forEach(t=>t.classList.toggle("selected",t.dataset.tab===e)),p("[data-panel]").forEach(t=>{t.hidden=t.dataset.panel!==e}))}p("[data-tab]").forEach(e=>e.addEventListener("click",()=>P(e.dataset.tab)));p("[data-goto]").forEach(e=>e.addEventListener("click",()=>P(e.dataset.goto)));function M(e,t,n){let a=o(t);if(a.replaceChildren(),!e.length){d(a,l("p","empty","No delegated agents yet."));return}for(let i of e.slice(0,n)){let r=String(i.status||"unknown").toLowerCase(),g=q.has(r)?"active":T.has(r)?"failed":"done",y=d(l("div","row-main"),l("strong",null,i.role||"Agent"),l("small",null,`${h[i.provider]||i.provider||"unknown"} \xB7 ${i.model||"default"}`));d(a,d(l("div","row"),l("i",`dot ${g}`),y,l("span","row-end",r)))}}function N(e,t,n){let a=o(t);if(a.replaceChildren(),!e.length){d(a,l("p","empty","No provider usage reported."));return}let i=Math.max(1,...e.map(r=>Number(r.total_tokens)||0));for(let r of e){let g=m(r.total_tokens)?Number(r.total_tokens):null,y=d(l("div","provider-line"),l("strong",null,h[r.name]||r.name||"Unknown"),l("span","row-end big",_(g))),F=n?`${c(r.turns||0)} turns \xB7 in ${_(r.input_tokens)} \xB7 out ${_(r.output_tokens)}`:`${c(r.turns||0)} turns`,k=d(l("div","bar"),l("i"));k.firstChild.style.width=`${g?Math.max(2,g/i*100):0}%`,d(a,d(l("div","row provider"),d(l("div","row-main"),y,l("small",null,F),k)))}}function x(e){if(!e||e.ok!==!0||!e.stats)return!1;s.data=e;let t=e.stats;o("version").textContent=e.version?`v${e.version}`:"\u2014",o("calls").textContent=c(t.calls),o("active-agents").textContent=c(e.active_agents),o("latency").textContent=S(t.latency_ms),o("errors").textContent=c(t.errors),o("usage-calls").textContent=c(t.calls),o("usage-active").textContent=c(t.active_calls),o("usage-latency").textContent=S(t.latency_ms),o("usage-errors").textContent=c(t.errors),o("usage-uptime").textContent=j(t.uptime_seconds);let n=Number(e.active_agents)||0;o("tab-agents").hidden=n===0,o("tab-agents").textContent=String(n);let a=Array.isArray(e.agents)?e.agents:[],i=Array.isArray(e.providers)?e.providers:[];return M(a,"overview-agents",4),M(a,"agents",20),N(i,"overview-providers",!1),N(i,"usage-providers",!0),O(e),o("updated").textContent=`Updated ${new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`,w("online"),!0}function I(e){if(e?.isError)throw new Error(e.content?.find(n=>n.type==="text")?.text||"MCP tool failed");if(e?.structuredContent)return e.structuredContent;let t=e?.content?.find(n=>n.type==="text")?.text;if(!t)return e;try{return JSON.parse(t)}catch{return e}}var b=new v({name:"Mac MCP",version:"0.2.1"});b.onhostcontext=e=>{let t=e.safeAreaInsets;if(t)for(let n of["top","right","bottom","left"]){let a=Number(t[n]);Number.isFinite(a)&&a>=0&&document.documentElement.style.setProperty(`--safe-${n}`,`${a}px`)}e.displayMode&&(document.documentElement.dataset.mode=String(e.displayMode))};b.ontoolresult=e=>{try{x(I(e))}catch(t){f(String(t.message||t),!0)}};async function C(e,t={}){let n={mac_mcp_panel_state:"Refresh Mac MCP Control Center status and usage",mac_mcp_panel_setting:"Save Mac MCP default agent from the Control Center"},a=await b.callServerTool({name:e,arguments:n[e]?{...t,description:n[e]}:t});return I(a)}async function D(){if(!(!s.connected||s.busy)){s.busy=!0,u();try{x(await C("mac_mcp_panel_state")),f("")}catch(e){f(`Refresh failed: ${e.message||e}`,!0)}finally{s.busy=!1,u()}}}o("refresh").addEventListener("click",D);var L=(e,t)=>{e.textContent=t?"On":"Off",e.className=`mono ${t?"on":"off"}`};function O(e){let t=e.settings||{},n=t.default_agent||{};o("agent-provider").textContent=n.provider?h[n.provider]||n.provider:"Not set",o("agent-model").textContent=n.model||"Provider default",o("agent-reasoning").textContent=n.reasoning||"Default";let a=!!e.settings_writable&&(t.enabled_providers||[]).length>0;o("agent-edit").hidden=!a||s.editing,o("agent-mode").hidden=a,!a&&s.editing&&E(),L(o("notify-agents"),t.notifications?.agent_completion),L(o("notify-bubble"),t.notifications?.activity_bubble);let i=t.connection||{};o("conn-version").textContent=e.version?`v${e.version}`:"\u2014",o("conn-profile").textContent=i.profile||"\u2014",o("conn-endpoint").textContent=i.public_host?`${i.endpoint_mode} \xB7 ${i.public_host}`:i.endpoint_mode||"local"}function $(){return o("agent-providers").querySelector('[aria-checked="true"]')?.dataset.provider||null}function R(){let e=s.catalog?.models.find(i=>i.id===o("agent-model-input").value.trim()),t=e?e.reasoning:s.catalog?.reasoning||[],n=s.pendingReasoning??o("agent-reasoning-input").value,a=e?.default_reasoning?`Default (${e.default_reasoning})`:"Default";o("agent-reasoning-input").replaceChildren(l("option",null,a),...t.map(i=>{let r=l("option",null,i);return r.value=i,r})),o("agent-reasoning-input").firstChild.value="",o("agent-reasoning-input").value=t.includes(n)?n:"",o("agent-reasoning-input").disabled=t.length===0}async function B(e){s.catalog=null,o("agent-models").replaceChildren(),o("agent-catalog-note").textContent="Loading models\u2026",u();try{let t=await C("mac_mcp_panel_state",{models_for:e});if($()!==e)return;s.catalog=t,o("agent-models").replaceChildren(...t.models.map(n=>{let a=l("option");return a.value=n.id,n.label&&(a.label=n.label),a})),o("agent-catalog-note").textContent=t.models.length?t.truncated?`Showing ${c(t.models.length)} of ${c(t.total)} models \u2014 type an exact id for others.`:`${c(t.models.length)} models discovered.`:"No models discovered; the provider default will be used."}catch(t){o("agent-catalog-note").textContent=`Models unavailable: ${t.message||t}`}R(),s.pendingReasoning=null,u()}function A(e,t=!1){p("#agent-providers button").forEach(n=>n.setAttribute("aria-checked",String(n.dataset.provider===e))),t||(o("agent-model-input").value="",o("agent-reasoning-input").value="",s.pendingReasoning=null),B(e)}function U(){let e=s.data?.settings||{},t=e.enabled_providers||[],n=t.includes(e.default_agent?.provider)?e.default_agent.provider:t[0];o("agent-providers").replaceChildren(...t.map(i=>{let r=l("button",null,h[i]||i);return Object.assign(r,{type:"button"}),r.dataset.provider=i,r.setAttribute("role","radio"),r.addEventListener("click",()=>{$()!==i&&A(i)}),r}));let a=n===e.default_agent?.provider;o("agent-model-input").value=a&&e.default_agent?.model||"",s.pendingReasoning=a&&e.default_agent?.reasoning||"",o("agent-reasoning-input").replaceChildren(),s.editing=!0,o("agent-view").hidden=!0,o("agent-form").hidden=!1,o("agent-edit").hidden=!0,A(n,!0)}function E(){s.editing=!1,s.catalog=null,o("agent-form").hidden=!0,o("agent-view").hidden=!1,s.data&&O(s.data)}o("agent-edit").addEventListener("click",U);o("agent-cancel").addEventListener("click",E);o("agent-model-input").addEventListener("input",R);o("agent-form").addEventListener("submit",async e=>{if(e.preventDefault(),s.busy||!s.connected||!s.catalog)return;let t=$(),n=o("agent-model-input").value.trim();if(n&&!s.catalog.truncated&&!s.catalog.models.some(i=>i.id===n)){f("Pick a model from the discovered list, or leave it empty.",!0);return}let a=o("agent-reasoning-input").value;s.busy=!0,u();try{await C("mac_mcp_panel_setting",{name:"default_agent",value:{provider:t,model:n||null,reasoning:a||null}}),E(),x(await C("mac_mcp_panel_state")),f(`Default agent set to ${h[t]||t}${n?` \xB7 ${n}`:""}.`)}catch(i){f(`Not saved: ${i.message||i}`,!0)}finally{s.busy=!1,u()}});b.connect().then(()=>{w("online"),setTimeout(()=>{s.data||D()},1500)}).catch(e=>{w("offline"),f(`MCP Apps bridge unavailable: ${e.message||e}`,!0)});u();})();
+  <script>(()=>{var C=class{constructor({name:t,version:n}){this.name=t,this.version=n,this.nextId=1,this.pending=new Map,this.ontoolresult=null,this.onhostcontext=null,window.addEventListener("message",i=>{if(i.source!==window.parent)return;let a=i.data;if(!(!a||a.jsonrpc!=="2.0"))if(a.id!==void 0&&this.pending.has(a.id)){let{resolve:s,reject:c,timer:p}=this.pending.get(a.id);this.pending.delete(a.id),clearTimeout(p),a.error?c(new Error(a.error.message||"Host request failed")):s(a.result)}else a.method==="ui/notifications/tool-result"?this.ontoolresult?.(a.params):a.method==="ui/notifications/host-context-changed"&&this.onhostcontext?.(a.params||{})})}request(t,n,i=0){let a=this.nextId++;return new Promise((s,c)=>{let p=i>0?setTimeout(()=>{if(!this.pending.delete(a))return;let b=new Error(`The host did not answer ${t} within ${Math.round(i/1e3)}s`);b.code="timeout",c(b)},i):void 0;this.pending.set(a,{resolve:s,reject:c,timer:p}),window.parent.postMessage({jsonrpc:"2.0",id:a,method:t,params:n},"*")})}notify(t,n={}){window.parent.postMessage({jsonrpc:"2.0",method:t,params:n},"*")}async connect({timeoutMs:t=8e3}={}){let n=await this.request("ui/initialize",{appInfo:{name:this.name,version:this.version},appCapabilities:{},protocolVersion:"2026-01-26"},t);return this.notify("ui/notifications/initialized"),n?.hostContext&&this.onhostcontext?.(n.hostContext),n}callServerTool({name:t,arguments:n},{timeoutMs:i=0}={}){return this.request("tools/call",{name:t,arguments:n??{}},i)}};var o=e=>document.getElementById(e),m=e=>Array.from(document.querySelectorAll(e)),h=e=>e!=null&&e!==""&&Number.isFinite(Number(e)),d=e=>h(e)?new Intl.NumberFormat("en-US").format(Number(e)):"\u2014",x=e=>h(e)?new Intl.NumberFormat("en-US",{notation:"compact",maximumFractionDigits:1}).format(Number(e)):"n/a",N=e=>h(e)?e>=1e3?`${(e/1e3).toFixed(1)}s`:`${Math.round(e)}ms`:"\u2014",v={codex:"Codex",opencode:"OpenCode",claude:"Claude Code",kimi:"Kimi Code",grok:"Grok Build",antigravity:"Antigravity",pi:"pi",cline:"Cline",kilo:"Kilo Code",goose:"Goose",copilot:"GitHub Copilot"},j=new Set(["running","starting"]),B=new Set(["failed","error","cancelled","canceled","timeout","killed"]),r={data:null,connected:!1,busy:!1,editing:!1,catalog:null};function l(e,t,n){let i=document.createElement(e);return t&&(i.className=t),n!=null&&(i.textContent=String(n)),i}function u(e,...t){return t.forEach(n=>e.appendChild(n)),e}function G(e){if(!h(e))return"\u2014";let t=Number(e),n=Math.floor(t/86400),i=Math.floor(t%86400/3600),a=Math.floor(t%3600/60);return n?`${n}d ${i}h`:i?`${i}h ${a}m`:`${a}m`}function y(e){r.connected=e==="online",o("status").classList.toggle("online",e==="online"),o("status").classList.toggle("offline",e==="offline"),o("status-text").textContent={online:"Online",offline:"Offline"}[e]||"Connecting",f()}function f(){o("refresh").disabled=!r.connected||r.busy,o("refresh").classList.toggle("spinning",r.busy),o("agent-save").disabled=!r.connected||r.busy||!r.catalog}function g(e,t=!1,n=null){let i=o("notice");if(i.hidden=!e,i.replaceChildren(l("span",null,e||"")),i.classList.toggle("error",!!t),e&&n){let a=l("button",null,n.label);a.type="button",a.addEventListener("click",n.run),i.appendChild(a)}}function $(e,t=!1){m("[data-panel]").some(n=>n.dataset.panel===e)&&(m("[data-tab]").forEach(n=>{let i=n.dataset.tab===e;n.classList.toggle("selected",i),n.setAttribute("aria-selected",String(i)),n.tabIndex=i?0:-1,i&&t&&n.focus()}),m("[data-panel]").forEach(n=>{n.hidden=n.dataset.panel!==e}))}m("[data-tab]").forEach(e=>e.addEventListener("click",()=>$(e.dataset.tab)));m("[data-goto]").forEach(e=>e.addEventListener("click",()=>$(e.dataset.goto)));o("tabs").addEventListener("keydown",e=>{let t=m("[data-tab]"),n=t.indexOf(document.activeElement);if(n<0)return;let i={ArrowRight:n+1,ArrowLeft:n-1,Home:0,End:t.length-1}[e.key];i!==void 0&&(e.preventDefault(),$(t[(i+t.length)%t.length].dataset.tab,!0))});function A(e,t,n){let i=o(t);if(i.replaceChildren(),!e.length){u(i,l("p","empty","No delegated agents yet."));return}for(let a of e.slice(0,n)){let s=String(a.status||"unknown").toLowerCase(),c=j.has(s)?"active":B.has(s)?"failed":"done",p=u(l("div","row-main"),l("strong",null,a.role||"Agent"),l("small",null,`${v[a.provider]||a.provider||"unknown"} \xB7 ${a.model||"default"}`));u(i,u(l("div","row"),l("i",`dot ${c}`),p,l("span","row-end",s)))}}function P(e,t,n){let i=o(t);if(i.replaceChildren(),!e.length){u(i,l("p","empty","No provider usage reported."));return}let a=Math.max(1,...e.map(s=>Number(s.total_tokens)||0));for(let s of e){let c=h(s.total_tokens)?Number(s.total_tokens):null,p=u(l("div","provider-line"),l("strong",null,v[s.name]||s.name||"Unknown"),l("span","row-end big",x(c))),b=n?`${d(s.turns||0)} turns \xB7 in ${x(s.input_tokens)} \xB7 out ${x(s.output_tokens)}`:`${d(s.turns||0)} turns`,S=u(l("div","bar"),l("i"));S.firstChild.style.width=`${c?Math.max(2,c/a*100):0}%`,u(i,u(l("div","row provider"),u(l("div","row-main"),p,l("small",null,b),S)))}}function E(e){if(!e||e.ok!==!0||!e.stats)return!1;r.data=e;let t=e.stats;o("version").textContent=e.version?`v${e.version}`:"\u2014",o("calls").textContent=d(t.calls),o("active-agents").textContent=d(e.active_agents),o("latency").textContent=N(t.latency_ms),o("errors").textContent=d(t.errors),o("usage-calls").textContent=d(t.calls),o("usage-active").textContent=d(t.active_calls),o("usage-latency").textContent=N(t.latency_ms),o("usage-errors").textContent=d(t.errors),o("usage-uptime").textContent=G(t.uptime_seconds);let n=Number(e.active_agents)||0;o("tab-agents").hidden=n===0,o("tab-agents").textContent=String(n);let i=Array.isArray(e.agents)?e.agents:[],a=Array.isArray(e.providers)?e.providers:[];return A(i,"overview-agents",4),A(i,"agents",20),P(a,"overview-providers",!1),P(a,"usage-providers",!0),R(e),o("updated").textContent=`Updated ${new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`,y("online"),!0}function D(e){if(e?.isError)throw new Error(e.content?.find(n=>n.type==="text")?.text||"MCP tool failed");if(e?.structuredContent)return e.structuredContent;let t=e?.content?.find(n=>n.type==="text")?.text;if(!t)return e;try{return JSON.parse(t)}catch{return e}}var _=new C({name:"Mac MCP",version:"0.2.2"});function k(e){e!=="light"&&e!=="dark"||(document.documentElement.dataset.theme=e)}k(window.openai?.theme);window.addEventListener("openai:set_globals",e=>k(e.detail?.globals?.theme),{passive:!0});_.onhostcontext=e=>{k(e.theme);let t=e.safeAreaInsets;if(t)for(let n of["top","right","bottom","left"]){let i=Number(t[n]);Number.isFinite(i)&&i>=0&&document.documentElement.style.setProperty(`--safe-${n}`,`${i}px`)}e.displayMode&&(document.documentElement.dataset.mode=String(e.displayMode))};_.ontoolresult=e=>{try{E(D(e))}catch(t){g(String(t.message||t),!0)}};async function w(e,t={}){let n={mac_mcp_panel_state:"Refresh Mac MCP Control Center status and usage",mac_mcp_panel_setting:"Save Mac MCP default agent from the Control Center"},i=e==="mac_mcp_panel_setting"?0:6e4,a=await _.callServerTool({name:e,arguments:n[e]?{...t,description:n[e]}:t},{timeoutMs:i});return D(a)}async function O(){if(!(!r.connected||r.busy)){r.busy=!0,f();try{E(await w("mac_mcp_panel_state")),g("")}catch(e){g(`Refresh failed: ${e.message||e}`,!0)}finally{r.busy=!1,f()}}}o("refresh").addEventListener("click",O);var T=(e,t)=>{e.textContent=t?"On":"Off",e.className=`mono ${t?"on":"off"}`};function R(e){let t=e.settings||{},n=t.default_agent||{};o("agent-provider").textContent=n.provider?v[n.provider]||n.provider:"Not set",o("agent-model").textContent=n.model||"Provider default",o("agent-reasoning").textContent=n.reasoning||"Default";let i=!!e.settings_writable&&(t.enabled_providers||[]).length>0;o("agent-edit").hidden=!i||r.editing,o("agent-mode").hidden=i,!i&&r.editing&&L(),T(o("notify-agents"),t.notifications?.agent_completion),T(o("notify-bubble"),t.notifications?.activity_bubble);let a=t.connection||{};o("conn-version").textContent=e.version?`v${e.version}`:"\u2014",o("conn-profile").textContent=a.profile||"\u2014",o("conn-endpoint").textContent=a.public_host?`${a.endpoint_mode} \xB7 ${a.public_host}`:a.endpoint_mode||"local"}function M(){return o("agent-providers").querySelector('[aria-checked="true"]')?.dataset.provider||null}function F(){let e=r.catalog?.models.find(a=>a.id===o("agent-model-input").value.trim()),t=e?e.reasoning:r.catalog?.reasoning||[],n=r.pendingReasoning??o("agent-reasoning-input").value,i=e?.default_reasoning?`Default (${e.default_reasoning})`:"Default";o("agent-reasoning-input").replaceChildren(l("option",null,i),...t.map(a=>{let s=l("option",null,a);return s.value=a,s})),o("agent-reasoning-input").firstChild.value="",o("agent-reasoning-input").value=t.includes(n)?n:"",o("agent-reasoning-input").disabled=t.length===0}async function U(e){r.catalog=null,o("agent-models").replaceChildren(),o("agent-catalog-note").textContent="Loading models\u2026",f();try{let t=await w("mac_mcp_panel_state",{models_for:e});if(M()!==e)return;r.catalog=t,o("agent-models").replaceChildren(...t.models.map(n=>{let i=l("option");return i.value=n.id,n.label&&(i.label=n.label),i})),o("agent-catalog-note").textContent=t.models.length?t.truncated?`Showing ${d(t.models.length)} of ${d(t.total)} models \u2014 type an exact id for others.`:`${d(t.models.length)} models discovered.`:"No models discovered; the provider default will be used."}catch(t){o("agent-catalog-note").textContent=`Models unavailable: ${t.message||t}`}F(),r.pendingReasoning=null,f()}function I(e,t=!1){m("#agent-providers button").forEach(n=>n.setAttribute("aria-checked",String(n.dataset.provider===e))),t||(o("agent-model-input").value="",o("agent-reasoning-input").value="",r.pendingReasoning=null),U(e)}function H(){let e=r.data?.settings||{},t=e.enabled_providers||[],n=t.includes(e.default_agent?.provider)?e.default_agent.provider:t[0];o("agent-providers").replaceChildren(...t.map(a=>{let s=l("button",null,v[a]||a);return Object.assign(s,{type:"button"}),s.dataset.provider=a,s.setAttribute("role","radio"),s.addEventListener("click",()=>{M()!==a&&I(a)}),s}));let i=n===e.default_agent?.provider;o("agent-model-input").value=i&&e.default_agent?.model||"",r.pendingReasoning=i&&e.default_agent?.reasoning||"",o("agent-reasoning-input").replaceChildren(),r.editing=!0,o("agent-view").hidden=!0,o("agent-form").hidden=!1,o("agent-edit").hidden=!0,I(n,!0)}function L(){r.editing=!1,r.catalog=null,o("agent-form").hidden=!0,o("agent-view").hidden=!1,r.data&&R(r.data)}o("agent-edit").addEventListener("click",H);o("agent-cancel").addEventListener("click",L);o("agent-model-input").addEventListener("input",F);o("agent-form").addEventListener("submit",async e=>{if(e.preventDefault(),r.busy||!r.connected||!r.catalog)return;let t=M(),n=o("agent-model-input").value.trim();if(n&&!r.catalog.truncated&&!r.catalog.models.some(a=>a.id===n)){g("Pick a model from the discovered list, or leave it empty.",!0);return}let i=o("agent-reasoning-input").value;r.busy=!0,f();try{await w("mac_mcp_panel_setting",{name:"default_agent",value:{provider:t,model:n||null,reasoning:i||null}}),L(),E(await w("mac_mcp_panel_state")),g(`Default agent set to ${v[t]||t}${n?` \xB7 ${n}`:""}.`)}catch(a){g(`Not saved: ${a.message||a}`,!0)}finally{r.busy=!1,f()}});function q(){y("connecting"),g(""),_.connect({timeoutMs:8e3}).then(()=>{y("online"),setTimeout(()=>{r.data||O()},1500)}).catch(e=>{y("offline");let t=e.code==="timeout"?"ChatGPT did not answer the panel. Try again, or reopen Mac MCP in a new chat.":`MCP Apps bridge unavailable: ${e.message||e}`;g(t,!0,{label:"Try again",run:q})})}q();f();})();
 </script>
 </body>
 </html>

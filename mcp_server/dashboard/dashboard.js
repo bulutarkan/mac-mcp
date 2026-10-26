@@ -234,9 +234,17 @@
   state.focusAgent = initialQuery.get("focus_agent");
   state.focusTeam = initialQuery.get("focus_team");
 
+  // A 401 carries its status, so a panel can tell "sign in again" from "try again".
+  function unauthorized() {
+    markAuthRequired();
+    const error = new Error("401 Unauthorized");
+    error.status = 401;
+    return error;
+  }
+
   async function fetchJSON(url) {
     const response = await fetch(url, {cache: "no-store", headers: authHeaders()});
-    if (response.status === 401) { markAuthRequired(); throw new Error("401 Unauthorized"); }
+    if (response.status === 401) throw unauthorized();
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.json();
   }
@@ -248,7 +256,7 @@
       headers: {...authHeaders(), "Content-Type": "application/json"},
       body: JSON.stringify(payload),
     });
-    if (response.status === 401) { markAuthRequired(); throw new Error("401 Unauthorized"); }
+    if (response.status === 401) throw unauthorized();
     let data = {};
     try { data = await response.json(); } catch {}
     if (!response.ok) {
@@ -307,8 +315,22 @@
       }
     }
     if (els.connectionText.textContent !== text) els.connectionText.textContent = text;
+    renderAuthAlert();
     renderPanelFreshness(els.agentsFreshness, "agents");
     renderPanelFreshness(els.changesFreshness, "changes");
+  }
+
+  // A 401 means this tab's key is missing or out of date; only a fresh signed-in tab fixes it.
+  function renderAuthAlert() {
+    let banner = document.getElementById("authAlert");
+    if (!freshness.authRequired) { if (banner) banner.remove(); return; }
+    if (banner) return;
+    banner = document.createElement("div");
+    banner.id = "authAlert";
+    banner.className = "integrity-alert auth-alert";
+    banner.setAttribute("role", "alert");
+    banner.innerHTML = `<strong>Sign-in needed.</strong> This tab's dashboard key is missing or out of date, so nothing here can load. Choose <strong>Open Dashboard</strong> in the Mac MCP menu, or run <code>mac-mcp dashboard</code> in Terminal, to open a signed-in tab.`;
+    document.querySelector(".content")?.prepend(banner);
   }
 
   async function refreshSummary() {
@@ -987,6 +1009,7 @@
   function showDrawer() {
     els.backdrop.hidden = false;
     els.backdrop.classList.add("is-open");
+    els.drawer.inert = false;
     els.drawer.classList.add("is-open");
     els.drawer.setAttribute("aria-hidden", "false");
     els.drawerClose.focus();
@@ -1090,6 +1113,8 @@
     els.backdrop.classList.remove("is-open");
     els.drawer.classList.remove("is-open");
     els.drawer.setAttribute("aria-hidden", "true");
+    // Closed, the sheet is only slid off screen: inert keeps Tab and screen readers out of it.
+    els.drawer.inert = true;
     window.setTimeout(() => { els.backdrop.hidden = true; }, 240);
     // The row that opened the drawer may have been re-rendered meanwhile.
     const selectedRow = state.selected ? eventRowButton(state.selected.event_id) : null;
@@ -1098,7 +1123,11 @@
       ? els.agentList.querySelector(`[data-agent-activity="${CSS.escape(state.timelineAgent)}"]`) : null;
     // Safari does not focus a clicked button, so the opener can be <body>; then the row or agent button is the target.
     const opener = state.restoreFocus && state.restoreFocus.isConnected && state.restoreFocus !== document.body ? state.restoreFocus : null;
-    const target = opener || selectedRow || agentButton;
+    // Run and catalog lists re-render too; find the same run or pack button again.
+    const lost = state.restoreFocus && !state.restoreFocus.isConnected ? state.restoreFocus.dataset || {} : {};
+    const relisted = lost.run ? els.runList.querySelector(`[data-run="${CSS.escape(lost.run)}"]`)
+      : lost.pack ? els.catalogList.querySelector(`[data-pack="${CSS.escape(lost.pack)}"]`) : null;
+    const target = opener || relisted || selectedRow || agentButton;
     if (target && typeof target.focus === "function") target.focus();
     state.selected = null;
     state.timelineAgent = null;
@@ -1414,9 +1443,33 @@
     if (!els.drawer.classList.contains("is-open")) showDrawer();
   }
 
+  // Loading, empty and failed are separate states; a failed refresh keeps runs already shown.
   async function refreshRuns() {
     let data;
-    try { data = await fetchJSON("/dashboard/api/runs?limit=12"); } catch { els.runCount.textContent = "—"; return; }
+    try { data = await fetchJSON("/dashboard/api/runs?limit=12"); }
+    catch (error) {
+      els.runList.removeAttribute("aria-busy");
+      if (error.status === 401) {
+        state.runsLoaded = false;
+        els.runCount.textContent = "—";
+        els.runList.innerHTML = `<li class="no-agents">Sign in again to see runs: choose Open Dashboard in the Mac MCP menu, or run <code>mac-mcp dashboard</code> in Terminal.</li>`;
+      } else if (state.runsLoaded) {
+        els.runCount.textContent = "Stale";
+        els.runCount.title = `Last refresh failed: ${error.message}`;
+      } else {
+        els.runCount.textContent = "—";
+        els.runList.innerHTML = `<li class="no-agents is-error">Runs could not be loaded (${esc(error.message)}). <button class="inline-retry" type="button" data-runs-retry>Try again</button></li>`;
+        els.runList.querySelector("[data-runs-retry]").addEventListener("click", () => {
+          els.runList.setAttribute("aria-busy", "true");
+          els.runList.innerHTML = `<li class="no-agents">Loading runs…</li>`;
+          refreshRuns();
+        });
+      }
+      return;
+    }
+    state.runsLoaded = true;
+    els.runList.removeAttribute("aria-busy");
+    els.runCount.title = "";
     const runs = data.runs || [];
     els.runCount.textContent = number(runs.length);
     const evidence = data.evidence || {};
@@ -1430,7 +1483,7 @@
         <strong>${esc(run.name || (run.kind === "recipe" ? "Recipe run" : "Plan run"))}</strong>
         <small>${esc(run.kind)} · ${number(run.step_count)} steps${run.evidence_count ? ` · ${number(run.evidence_count)} screenshots` : ""} · ${esc(ago(Date.now() - (run.started_at || 0) * 1000))}</small>
         <span class="status-badge ${run.ok ? "" : "error"}">${run.ok ? "Done" : "Failed"}</span>
-      </button></li>`).join("") : `<li class="no-agents">computer_plan and recipe runs will appear here.</li>`;
+      </button></li>`).join("") : `<li class="no-agents">No runs yet. computer_plan and recipe runs will appear here.</li>`;
     els.runList.querySelectorAll("[data-run]").forEach((button) => button.addEventListener("click", () => openRun(button.dataset.run)));
   }
 

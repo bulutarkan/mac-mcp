@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>Mac MCP</title>
   <style>/* STYLES */</style>
 </head>
@@ -26,17 +26,17 @@
       </div>
     </header>
 
-    <nav class="tabs" id="tabs" aria-label="Sections">
-      <button class="tab selected" data-tab="overview" type="button">Overview</button>
-      <button class="tab" data-tab="agents" type="button">Agents<span class="count mono" id="tab-agents" hidden>0</span></button>
-      <button class="tab" data-tab="usage" type="button">Usage</button>
-      <button class="tab" data-tab="settings" type="button">Settings</button>
-    </nav>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Sections">
+      <button class="tab selected" id="tab-btn-overview" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="panel-overview">Overview</button>
+      <button class="tab" id="tab-btn-agents" data-tab="agents" type="button" role="tab" aria-selected="false" aria-controls="panel-agents" tabindex="-1">Agents<span class="count mono" id="tab-agents" hidden>0</span></button>
+      <button class="tab" id="tab-btn-usage" data-tab="usage" type="button" role="tab" aria-selected="false" aria-controls="panel-usage" tabindex="-1">Usage</button>
+      <button class="tab" id="tab-btn-settings" data-tab="settings" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button>
+    </div>
 
     <main class="body">
       <div class="notice" id="notice" role="status" hidden></div>
 
-      <section data-panel="overview">
+      <section data-panel="overview" id="panel-overview" role="tabpanel" aria-labelledby="tab-btn-overview">
         <div class="stats">
           <div class="stat"><span class="label mono">Tool calls</span><strong id="calls">—</strong><span class="sub mono">24h</span></div>
           <div class="stat"><span class="label mono">Active agents</span><strong id="active-agents">—</strong><span class="sub mono">now</span></div>
@@ -55,14 +55,14 @@
         </div>
       </section>
 
-      <section data-panel="agents" hidden>
+      <section data-panel="agents" id="panel-agents" role="tabpanel" aria-labelledby="tab-btn-agents" hidden>
         <article class="panel">
           <header class="panel-head"><h2>Delegated agents</h2><span class="meta mono">Last 20</span></header>
           <div class="list" id="agents"><p class="empty">No data yet.</p></div>
         </article>
       </section>
 
-      <section data-panel="usage" hidden>
+      <section data-panel="usage" id="panel-usage" role="tabpanel" aria-labelledby="tab-btn-usage" hidden>
         <article class="panel">
           <header class="panel-head"><h2>Provider tokens</h2><span class="meta mono">7d</span></header>
           <div class="list" id="usage-providers"><p class="empty">No data yet.</p></div>
@@ -80,7 +80,7 @@
         </article>
       </section>
 
-      <section data-panel="settings" hidden>
+      <section data-panel="settings" id="panel-settings" role="tabpanel" aria-labelledby="tab-btn-settings" hidden>
         <article class="panel wide">
           <header class="panel-head"><h2>Default agent</h2><button class="link mono" id="agent-edit" type="button" hidden>Edit</button><span class="meta mono" id="agent-mode" hidden>Read-only</span></header>
           <dl class="rows" id="agent-view">

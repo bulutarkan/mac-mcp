@@ -36,22 +36,22 @@
       </div>
 
       <ul class="nav-list">
-        <li><a href="#overview" data-nav="overview" aria-current="true">
+        <li><a href="#overview" data-nav="overview" aria-current="true" aria-label="Overview">
           <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.6"/><rect x="11" y="3" width="6" height="6" rx="1.6"/><rect x="3" y="11" width="6" height="6" rx="1.6"/><rect x="11" y="11" width="6" height="6" rx="1.6"/></svg>
           <span>Overview</span></a></li>
-        <li><a href="#activity" data-nav="activity">
+        <li><a href="#activity" data-nav="activity" aria-label="Activity">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10h3l2-5.5 4 11 2-5.5h4"/></svg>
           <span>Activity</span></a></li>
-        <li><a href="#changes" data-nav="changes">
+        <li><a href="#changes" data-nav="changes" aria-label="Changes">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7.5A6 6 0 0 0 4.6 6.2M4.5 12.5a6 6 0 0 0 10.9 1.3"/><path d="M15.8 3.5v4h-4M4.2 16.5v-4h4"/></svg>
           <span>Changes</span></a></li>
-        <li><a href="#runs" data-nav="runs">
+        <li><a href="#runs" data-nav="runs" aria-label="Runs">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2"/><path d="m8.4 7.1 4.4 2.9-4.4 2.9z"/></svg>
           <span>Runs</span></a></li>
-        <li><a href="#catalog" data-nav="catalog">
+        <li><a href="#catalog" data-nav="catalog" aria-label="Catalog">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2.8 6.4 3.4v7.6L10 17.2l-6.4-3.4V6.2z"/><path d="m3.8 6.3 6.2 3.4 6.2-3.4M10 9.7v7.4"/></svg>
           <span>Catalog</span></a></li>
-        <li><a href="#agents" data-nav="agents">
+        <li><a href="#agents" data-nav="agents" aria-label="Agents">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7.4" cy="7" r="2.7"/><circle cx="13.6" cy="8.2" r="2.1"/><path d="M2.8 16c.5-2.7 2.3-4.2 4.6-4.2s4.1 1.5 4.6 4.2M12.2 12.4c2.3-.4 4.4.8 5 3.4"/></svg>
           <span>Agents</span></a></li>
       </ul>
@@ -300,8 +300,8 @@
                   <select id="runEvidenceRetention" aria-label="Keep run records and screenshots for"></select>
                 </label>
               </div>
-              <ul id="runList" class="run-list" aria-label="Recent runs, newest first">
-                <li class="no-agents">computer_plan and recipe runs will appear here.</li>
+              <ul id="runList" class="run-list" aria-label="Recent runs, newest first" aria-busy="true">
+                <li class="no-agents">Loading runs…</li>
               </ul>
             </section>
 
@@ -355,7 +355,7 @@
   </nav>
 
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
-  <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="drawerTitle">
+  <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="drawerTitle" inert>
     <div class="drawer-head">
       <div>
         <button class="drawer-back" id="drawerBack" type="button" hidden>
