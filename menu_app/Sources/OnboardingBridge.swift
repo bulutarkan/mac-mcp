@@ -20,6 +20,12 @@ enum OnboardingAction: Equatable {
     case openSettings(String)
     case finish(String)
     case setupBrowser(String)
+    /// What any other MCP app needs (`mac-mcp connect --client other --json`); never the key.
+    case connectionInfo
+    /// Mac MCP's key to the clipboard, by the CLI: the page never sees it.
+    case copyKey
+    /// ChatGPT's connector settings in the default browser (a fixed address).
+    case openChatGPT
 }
 
 struct OnboardingMessage: Equatable {
@@ -40,6 +46,8 @@ enum OnboardingBridge {
     static let outcomes: Set<String> = ["completed", "skipped"]
     static let browsers: Set<String> = ["safari", "chrome"]
     static let copyLimit = 4096
+    /// Where ChatGPT's Apps & Connectors settings open; the page cannot name another address.
+    static let chatGPTSettingsURL = URL(string: "https://chatgpt.com/#settings/Connectors")!
 
     static func parse(_ body: Any) -> OnboardingMessage? {
         guard let message = body as? [String: Any],
@@ -66,6 +74,9 @@ enum OnboardingBridge {
         case "openSettings": action = value("section", in: sections).map(OnboardingAction.openSettings)
         case "finish": action = value("outcome", in: outcomes).map(OnboardingAction.finish)
         case "setupBrowser": action = value("browser", in: browsers).map(OnboardingAction.setupBrowser)
+        case "connectionInfo": action = .connectionInfo
+        case "copyKey": action = .copyKey
+        case "openChatGPT": action = .openChatGPT
         case "copy":
             if let text = args["text"] as? String, !text.isEmpty, text.utf8.count <= copyLimit {
                 action = .copy(text)

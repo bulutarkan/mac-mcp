@@ -71,9 +71,11 @@ from .connection_config import (
     ConnectionConfigError,
     DEFAULT_AUTH_ENV,
     DEFAULT_SERVER_NAME,
+    ONE_STEP_CLIENTS,
     SUPPORTED_CLIENTS,
     UNGUIDED_CLIENTS,
     SUPPORTED_ENDPOINTS,
+    guidance as connection_guidance,
     render_connection_config,
 )
 
@@ -1914,7 +1916,8 @@ def stop(args: argparse.Namespace) -> int:
     style.summary("error", "Something did not stop", next_command="mac-mcp stop --force")
     return 1
 
-def _connect_config_endpoint(client: str, selection: str) -> tuple[str, str]:
+def _connect_config_endpoint(client: str, selection: str,
+                             again: str = "mac-mcp connect-config --client chatgpt") -> tuple[str, str]:
     local_endpoint = f"http://127.0.0.1:{_default_port()}/mcp"
     if selection == "local":
         return local_endpoint, "local"
@@ -1926,7 +1929,7 @@ def _connect_config_endpoint(client: str, selection: str) -> tuple[str, str]:
     public = resolve_public_endpoint()
     if not public.endpoint_url:
         if client == "chatgpt":
-            raise ConnectionConfigError(_CHATGPT_NEEDS_PUBLIC)
+            raise ConnectionConfigError(_CHATGPT_NEEDS_PUBLIC.format(again=again))
         raise ConnectionConfigError(
             "no public MCP endpoint is configured; choose --endpoint local or configure "
             "Cloudflare, ngrok, or a custom HTTPS endpoint"
@@ -1941,10 +1944,20 @@ _CHATGPT_NEEDS_PUBLIC = (
     "Next steps:\n"
     "  1. Open Mac MCP Settings > Connections > Public Endpoint and choose Cloudflare, ngrok or Custom HTTPS.\n"
     "  2. Run: mac-mcp status   (the public endpoint should be reported healthy)\n"
-    "  3. Run this command again: mac-mcp connect-config --client chatgpt\n"
+    "  3. Run this command again: {again}\n"
     "Local only already works for AI apps on this Mac: "
-    "mac-mcp connect-config --client claude-code (or codex, opencode)."
+    "mac-mcp connect-config --client claude-code (or codex, opencode, other)."
 )
+
+
+def _installed_bridge_command() -> list[str] | None:
+    """`<mac-mcp> stdio` with the installed CLI's full path, or None when it is not installed."""
+    from . import client_setup
+
+    try:
+        return client_setup.bridge_command()
+    except client_setup.SetupError:
+        return None
 
 
 def _public_endpoint_check(endpoint_url: str) -> str:
@@ -1955,12 +1968,13 @@ def _public_endpoint_check(endpoint_url: str) -> str:
 
 def connect_config(args: argparse.Namespace) -> int:
     style = Style.for_stream()
-    if args.client in UNGUIDED_CLIENTS:
+    other_way = connection_guidance(args.client)
+    if other_way:
         if style is not None:
             from .cli_views import render_error
-            render_error(style, "connect-config", UNGUIDED_CLIENTS[args.client])
+            render_error(style, "connect-config", other_way)
             return 1
-        print(f"mac-mcp connect-config: {UNGUIDED_CLIENTS[args.client]}", file=sys.stderr)
+        print(f"mac-mcp connect-config: {other_way}", file=sys.stderr)
         return 1
     try:
         endpoint_url, endpoint_kind = _connect_config_endpoint(args.client, args.endpoint)
@@ -1976,6 +1990,7 @@ def connect_config(args: argparse.Namespace) -> int:
             auth_required=auth_required,
             server_name=args.name,
             auth_env=args.auth_env,
+            bridge_command=_installed_bridge_command() if args.client == "other" else None,
         )
     except (ConnectionConfigError, PublicEndpointError) as exc:
         if style is not None:
@@ -2007,7 +2022,7 @@ def connect_config(args: argparse.Namespace) -> int:
     print(rendered.snippet)
     if rendered.secret_instruction:
         print()
-        print("Secret setup:")
+        print("Key and URL:" if rendered.client == "other" else "Secret setup:")
         print(rendered.secret_instruction)
     if rendered.verify_instruction:
         print()
@@ -2900,14 +2915,18 @@ def connect_app(args: argparse.Namespace) -> int:
     """One-click setup: add Mac MCP to an AI app (ChatGPT: copy its connector address)."""
     from . import client_setup
 
+    if getattr(args, "copy_key", False) and args.client != "other":
+        print("mac-mcp connect: --copy-key goes with --client other", file=sys.stderr)
+        return 2
+    if args.client == "other" and not args.json and not getattr(args, "copy_key", False):
+        # Another MCP app is set up by hand: the same details connect-config gives.
+        return connect_config(argparse.Namespace(client="other", endpoint="auto", name=DEFAULT_SERVER_NAME,
+                                                 auth_env=DEFAULT_AUTH_ENV))
     style = Style.for_stream(json_output=bool(args.json))
     if style is not None:
         return _connect_app_themed(args, style)
     try:
-        if args.client == "chatgpt":
-            result = _copy_chatgpt_address()
-        else:
-            result = client_setup.connect(args.client)
+        result = _connect_result(args)
     except (client_setup.SetupError, ConnectionConfigError, PublicEndpointError) as exc:
         if args.json:
             print(json.dumps({"ok": False, "client": args.client, "error": str(exc)}))
@@ -2916,9 +2935,21 @@ def connect_app(args: argparse.Namespace) -> int:
         return 1
     if args.json:
         print(json.dumps(result))
+    elif args.client in {"chatgpt", "other"}:
+        print(result["next"])
     else:
         print(f"Mac MCP is added to {result['name']}. {result['next']}")
     return 0
+
+
+def _connect_result(args: argparse.Namespace) -> dict:
+    from . import client_setup
+
+    if args.client == "chatgpt":
+        return _copy_chatgpt_address()
+    if args.client == "other":
+        return _copy_api_key() if getattr(args, "copy_key", False) else _other_app_details()
+    return client_setup.connect(args.client)
 
 
 def _connect_app_themed(args: argparse.Namespace, style) -> int:
@@ -2927,6 +2958,8 @@ def _connect_app_themed(args: argparse.Namespace, style) -> int:
 
     if args.client == "chatgpt":
         done, doing = "Copied ChatGPT's address", "Copy ChatGPT's address"
+    elif args.client == "other":
+        done, doing = "Copied Mac MCP's key", "Copy Mac MCP's key"
     else:
         name = next((app.name for app in client_setup.APPS if app.id == args.client), args.client)
         done, doing = f"Added Mac MCP to {name}", f"Add Mac MCP to {name}"
@@ -2934,21 +2967,32 @@ def _connect_app_themed(args: argparse.Namespace, style) -> int:
     result: dict = {}
     with Steps(style).step(done, failed_label=doing) as state:
         try:
-            result = _copy_chatgpt_address() if args.client == "chatgpt" else client_setup.connect(args.client)
+            result = _connect_result(args)
         except (client_setup.SetupError, ConnectionConfigError, PublicEndpointError) as exc:
             print(str(exc))
             state.ok = False
     if not state.ok:
-        style.summary("error", "Mac MCP was not added", next_command="mac-mcp clients")
+        if args.client == "chatgpt":
+            # The reason above already lists the steps; `mac-mcp clients` does not list ChatGPT.
+            style.summary("error", "The address was not copied", next_command="mac-mcp status")
+        elif args.client == "other":
+            style.summary("error", "The key was not copied", next_command="mac-mcp connect-config --client other")
+        else:
+            style.summary("error", "Mac MCP was not added", next_command="mac-mcp clients")
         return 1
-    style.summary("ok", str(result.get("next") or f"Mac MCP is added to {result.get('name')}."))
+    tone = "warn" if result.get("reachable") is False else "ok"
+    style.summary(tone, str(result.get("next") or f"Mac MCP is added to {result.get('name')}."))
     return 0
+
+
+def _copy_to_clipboard(text: str) -> None:
+    subprocess.run(["/usr/bin/pbcopy"], input=text, text=True, check=True, timeout=5)
 
 
 def _copy_chatgpt_address() -> dict[str, object]:
     """ChatGPT is set up in its own window: put the address, key included, on the clipboard."""
     _load_env()
-    endpoint_url, _ = _connect_config_endpoint("chatgpt", "auto")
+    endpoint_url, _ = _connect_config_endpoint("chatgpt", "auto", again="mac-mcp connect --client chatgpt")
     settings = load_settings()
     address = endpoint_url
     if not settings.allow_no_auth:
@@ -2956,15 +3000,53 @@ def _copy_chatgpt_address() -> dict[str, object]:
             raise ConnectionConfigError("authentication is required but MCP_API_KEY is not configured")
         address = f"{endpoint_url}?{urlencode({'ApiKey': settings.api_key})}"
     # Straight to the clipboard: the key is never printed.
-    subprocess.run(["/usr/bin/pbcopy"], input=address, text=True, check=True, timeout=5)
+    _copy_to_clipboard(address)
+    # ChatGPT reaches this Mac only through the public address: say so now if it does not answer.
+    reachable = _public_endpoint_check(endpoint_url) == "ok"
+    next_step = ("The address is copied. In ChatGPT, open Settings › Apps & Connectors, create a connector "
+                 "named Mac MCP and paste the address as its URL.")
+    if not reachable:
+        next_step = ("The address is copied, but this Mac's public address does not answer right now, so ChatGPT "
+                     "cannot connect yet. Check Settings › Connections › Public Endpoint in Mac MCP, then try again.")
+    return {"ok": True, "client": "chatgpt", "name": "ChatGPT", "copied": True, "reachable": reachable,
+            "next": next_step}
+
+
+def _other_app_details() -> dict[str, object]:
+    """What any other MCP app needs, without the key: the command form, and the URL form."""
+    _load_env()
+    settings = load_settings()
+    command = _installed_bridge_command()
+    if command is None:
+        raise ConnectionConfigError("the mac-mcp command is not installed; run the Mac MCP installer again")
+    public = resolve_public_endpoint()
     return {
         "ok": True,
-        "client": "chatgpt",
-        "name": "ChatGPT",
-        "copied": True,
-        "next": "The address is copied. In ChatGPT, open Settings › Apps & Connectors, create a connector "
-                "named Mac MCP and paste the address as its URL.",
+        "client": "other",
+        "name": "Another AI app",
+        "command": command[0],
+        "args": command[1:],
+        "config": json.dumps({"mcpServers": {DEFAULT_SERVER_NAME: {"command": command[0], "args": command[1:]}}},
+                             indent=2),
+        "url": f"http://127.0.0.1:{_default_port()}/mcp",
+        "public_url": public.endpoint_url or None,
+        "auth_required": not settings.allow_no_auth,
+        "next": "Add Mac MCP in your AI app's MCP settings, restart the app, then ask it something about your Mac.",
     }
+
+
+def _copy_api_key() -> dict[str, object]:
+    """For an app that only takes a URL: the key goes to the clipboard, never to the screen."""
+    _load_env()
+    settings = load_settings()
+    if settings.allow_no_auth:
+        raise ConnectionConfigError("this Mac does not ask AI apps for a key, so there is nothing to copy")
+    if not settings.api_key:
+        raise ConnectionConfigError("authentication is required but MCP_API_KEY is not configured")
+    _copy_to_clipboard(settings.api_key)
+    return {"ok": True, "client": "other", "copied": True,
+            "next": "Mac MCP's key is copied. In your AI app, add the header Authorization with the value "
+                    "Bearer, a space, then the key."}
 
 
 def clients(args: argparse.Namespace) -> int:
@@ -3825,12 +3907,13 @@ def build_parser() -> argparse.ArgumentParser:
         "connect-config",
         help="Generate a secret-safe MCP connection snippet for a supported client.",
     )
-    p_connect.add_argument("--client", required=True, choices=SUPPORTED_CLIENTS + tuple(UNGUIDED_CLIENTS))
+    p_connect.add_argument("--client", required=True,
+                           choices=SUPPORTED_CLIENTS + tuple(UNGUIDED_CLIENTS) + tuple(ONE_STEP_CLIENTS))
     p_connect.add_argument(
         "--endpoint",
         choices=SUPPORTED_ENDPOINTS,
         default="auto",
-        help="Endpoint choice. auto uses public for ChatGPT and local for Codex, OpenCode and Claude Code.",
+        help="Endpoint choice. auto uses public for ChatGPT and local for the others.",
     )
     p_connect.add_argument(
         "--name",
@@ -3850,8 +3933,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_connect_app.add_argument("--client", required=True, choices=("claude-code", "codex", "claude-desktop",
                                                                    "opencode", "kimi", "grok", "antigravity", "pi",
-                                                                   "cline", "kilo", "goose", "copilot", "chatgpt"))
+                                                                   "cline", "kilo", "goose", "copilot", "chatgpt",
+                                                                   "other"))
     p_connect_app.add_argument("--json", action="store_true", help="Print the outcome as JSON.")
+    p_connect_app.add_argument("--copy-key", action="store_true",
+                               help="With --client other: copy Mac MCP's key to the clipboard (never printed).")
     p_connect_app.set_defaults(func=connect_app)
 
     p_clients = sub.add_parser("clients", help="List the AI apps on this Mac and whether Mac MCP is added.")

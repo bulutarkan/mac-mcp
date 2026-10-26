@@ -158,6 +158,26 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
                 throw AppState.OnboardingFailure(message: object["error"] as? String ?? "Mac MCP could not set up this app.")
             }
             return object
+        case .connectionInfo:
+            let result = await state.runCLICommand(["connect", "--client", "other", "--json"])
+            guard let object = OnboardingBridge.jsonResult(result.output) else {
+                throw AppState.OnboardingFailure(message: "Mac MCP could not read this Mac's setup.")
+            }
+            if object["ok"] as? Bool != true {
+                throw AppState.OnboardingFailure(message: object["error"] as? String ?? "Mac MCP could not read this Mac's setup.")
+            }
+            return object
+        case .copyKey:
+            // The CLI puts the key on the clipboard itself; it never passes through this page.
+            let result = await state.runCLICommand(["connect", "--client", "other", "--copy-key", "--json"])
+            guard let object = OnboardingBridge.jsonResult(result.output), object["ok"] as? Bool == true else {
+                let reason = OnboardingBridge.jsonResult(result.output)?["error"] as? String
+                throw AppState.OnboardingFailure(message: reason ?? "Mac MCP could not copy its key.")
+            }
+            return true
+        case .openChatGPT:
+            NSWorkspace.shared.open(OnboardingBridge.chatGPTSettingsURL)
+            return true
         case .copy(let text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)

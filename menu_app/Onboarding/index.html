@@ -13,15 +13,20 @@
 <body>
   <div class="window" id="app">
     <header class="titlebar">
-      <button class="quiet" id="skip" type="button">Skip tour</button>
+      <button class="quiet" id="skip" type="button" hidden>Skip tour</button>
     </header>
 
     <main class="screens">
-      <!-- Tour -->
+      <!-- Welcome: setup is the main path; the tour is a detour from here -->
       <section class="screen" data-screen="welcome" aria-labelledby="h-welcome">
         <div class="copy">
           <h1 id="h-welcome">Let your AI use your Mac.</h1>
           <p>Mac MCP connects AI apps like Claude, ChatGPT and Codex to the apps, files and browser on this Mac. You decide what they may do.</p>
+          <ol class="plan" aria-label="Setup">
+            <li><b>1</b>Start Mac MCP</li>
+            <li><b>2</b>Connect your AI app</li>
+            <li><b>3</b>Try one request</li>
+          </ol>
         </div>
         <div class="stage desk" aria-hidden="true">
           <div class="wallpaper"></div>
@@ -103,10 +108,10 @@
       <section class="screen" data-screen="connect" aria-labelledby="h-connect">
         <div class="copy">
           <h1 id="h-connect">Connect your AI app.</h1>
-          <p>Choose the app you use. Apps on this Mac get Mac MCP added for them, with nothing to copy or paste. ChatGPT runs in the cloud, so it first needs a public address for this Mac, which you then paste into ChatGPT.</p>
+          <p>Choose the app you use. Apps on this Mac are set up for you, with nothing to copy. ChatGPT and other apps take a few steps, shown one at a time.</p>
           <div class="status-card" data-live="connect-state" role="status">
             <span class="status-icon" aria-hidden="true"><i class="pulse"></i></span>
-            <div><strong>Waiting for your AI app</strong><span>Open it and ask something about your Mac, like “Which macOS am I on?”</span></div>
+            <div><strong>Waiting for your AI app</strong><span>Set it up here, then open it. It checks in with Mac MCP when it starts.</span></div>
           </div>
           <p class="note">Prefer to set it up by hand? <button type="button" class="link" data-action="manual-setup">Open the manual setup</button></p>
         </div>
@@ -117,8 +122,13 @@
               <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton tall"></div>
             </div>
             <div class="group">
-              <div class="group-head"><h2 id="h-apps">Your AI apps</h2><span class="count" data-live="apps-count"></span></div>
-              <ul class="apps" data-live="apps" aria-labelledby="h-apps"></ul>
+              <div class="group-head"><h2 id="h-your-apps">Your AI apps</h2><span class="count" data-live="apps-count"></span></div>
+              <ul class="apps" data-live="apps" aria-labelledby="h-your-apps"></ul>
+              <button type="button" class="other-app" data-action="other-app">
+                <span class="other-mark" aria-hidden="true">+</span>
+                <span class="strip-text"><strong>Another AI app</strong><span>Any app that supports MCP, like Cursor</span></span>
+                <span class="go">Set up ›</span>
+              </button>
             </div>
             <div class="group agents" data-live="agents-block" hidden>
               <div class="group-head"><h2 id="h-agents">Agents Mac MCP can hand work to</h2><span class="count" data-live="agents-count"></span></div>
@@ -139,6 +149,55 @@
         </div>
       </section>
 
+      <section class="screen" data-screen="chatgpt" aria-labelledby="h-chatgpt">
+        <div class="copy">
+          <h1 id="h-chatgpt">Connect ChatGPT.</h1>
+          <p>ChatGPT runs on OpenAI’s servers, so it reaches this Mac through a public address. Mac MCP checks that it really connected.</p>
+          <div class="status-card" data-live="chatgpt-state" role="status">
+            <span class="status-icon" aria-hidden="true"><i class="pulse"></i></span>
+            <div><strong>Not connected yet</strong><span>Follow the steps. This turns green when ChatGPT checks in.</span></div>
+          </div>
+          <div class="help" data-live="chatgpt-help" hidden>
+            <strong>Not connecting?</strong>
+            <ul></ul>
+          </div>
+          <p class="note" data-live="chatgpt-ask"><button type="button" class="link" data-action="chatgpt-help">Not connecting?</button></p>
+        </div>
+        <div class="stage plain steps-card">
+          <ol class="steps" data-live="chatgpt-steps" aria-label="Steps"></ol>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="other" aria-labelledby="h-other">
+        <div class="copy">
+          <h1 id="h-other">Connect another AI app.</h1>
+          <p>Most AI apps that support MCP can use Mac MCP. In the app’s MCP, tools or connectors settings, add a server with these details, then restart the app.</p>
+          <div class="status-card" data-live="other-state" role="status">
+            <span class="status-icon" aria-hidden="true"><i class="pulse"></i></span>
+            <div><strong>Waiting for your AI app</strong><span>It checks in with Mac MCP when it starts.</span></div>
+          </div>
+        </div>
+        <div class="stage plain details-card" data-loading aria-busy="true">
+          <div class="card-loading" role="status">
+            <div class="loading-head"><span class="spinner" aria-hidden="true"></span><span>Reading this Mac’s setup…</span></div>
+            <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+          </div>
+          <div class="group" data-live="other-command">
+            <div class="group-head"><h2 id="h-other-command">If the app asks for a command</h2><span class="count">most apps</span></div>
+            <ul class="fields" aria-labelledby="h-other-command"></ul>
+            <p class="note">No key to copy: Mac MCP adds it for the app.</p>
+          </div>
+          <div class="group" data-live="other-url">
+            <div class="group-head"><h2 id="h-other-url">If the app asks for a URL</h2></div>
+            <ul class="fields" aria-labelledby="h-other-url"></ul>
+            <p class="note" data-live="other-key-note">The key is copied, never shown. Use HTTP (streamable) if the app asks for a transport.</p>
+          </div>
+          <div class="group" data-live="other-problem" hidden>
+            <ul class="apps"><li class="app" data-state="problem"><div><strong>Could not read this Mac’s setup</strong><span data-live="other-problem-text"></span></div><button type="button" data-action="other-retry">Try again</button></li></ul>
+          </div>
+        </div>
+      </section>
+
       <section class="screen" data-screen="request" aria-labelledby="h-request">
         <div class="copy">
           <h1 id="h-request">Try your first request.</h1>
@@ -147,6 +206,12 @@
             <span class="status-icon" aria-hidden="true"><i class="pulse"></i></span>
             <div><strong>Waiting for the request</strong><span>Paste it into your AI app and send it.</span></div>
           </div>
+          <div class="help" data-live="request-help" hidden>
+            <strong></strong>
+            <ul></ul>
+            <button type="button" class="link" data-live="request-help-action" hidden></button>
+          </div>
+          <p class="note" data-live="request-ask"><button type="button" class="link" data-action="request-help">Not working?</button></p>
         </div>
         <div class="stage plain">
           <div class="prompt">
@@ -238,6 +303,7 @@
       <ol class="rail" aria-label="Progress"></ol>
       <div class="actions">
         <button type="button" class="quiet" id="back">Back</button>
+        <button type="button" id="secondary" hidden>Take the tour first</button>
         <button type="button" class="primary" id="primary">Continue</button>
       </div>
     </footer>

@@ -127,7 +127,7 @@ private enum ConnectionsTab: String, SettingsTab {
 /// Clients `mac-mcp connect-config` knows; the CLI renders the setup, so the app never builds a snippet itself.
 private let connectClients: [(id: String, title: String)] = [
     ("chatgpt", "ChatGPT"), ("claude-code", "Claude Code"), ("codex", "Codex"),
-    ("opencode", "OpenCode"), ("claude-desktop", "Claude Desktop"),
+    ("opencode", "OpenCode"), ("claude-desktop", "Claude Desktop"), ("other", "Another AI app"),
 ]
 
 private enum UsageAggregation: String, CaseIterable, Identifiable {
@@ -346,7 +346,7 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    Button("Open the Tour") { state.showTour() }
+                    Button("Open Setup & Tour") { state.showTour() }
                     Spacer()
                     if !checklist.isComplete {
                         Button(settings.onboardingDismissed ? "Show Get Started in the Menu" : "Hide Get Started") {

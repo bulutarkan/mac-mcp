@@ -372,5 +372,96 @@ class ConnectionConfigCLITests(unittest.TestCase):
             self.assertTrue(error.startswith("mac-mcp connect-config:"))
 
 
+class OtherAppTests(unittest.TestCase):
+    """#126: any MCP app not in the list gets a setup, and the one-step apps get pointed to `connect`."""
+
+    BRIDGE = ["/Users/someone/.local/bin/mac-mcp", "stdio"]
+    public_health = "ok"
+    _run = ConnectionConfigCLITests._run
+
+    def test_other_prints_the_command_form_and_the_url_form_without_the_key(self) -> None:
+        secret = "other-app-secret-never-print"
+        settings = SimpleNamespace(allow_no_auth=False, api_key=secret)
+        with patch("mcp_server.cli._installed_bridge_command", return_value=self.BRIDGE):
+            code, output, error = self._run(["connect-config", "--client", "other"], settings=settings)
+        self.assertEqual(0, code, error)
+        self.assertIn('"command": "/Users/someone/.local/bin/mac-mcp"', output)
+        self.assertIn('"stdio"', output)
+        self.assertIn("http://127.0.0.1:8765/mcp", output)
+        self.assertIn("Authorization: Bearer <API_KEY>", output)
+        self.assertIn("mac-mcp connect --client other --copy-key", output)
+        self.assertIn("Key and URL:", output)
+        self.assertNotIn(secret, output + error)
+
+    def test_one_step_apps_are_pointed_to_connect(self) -> None:
+        settings = SimpleNamespace(allow_no_auth=False, api_key="hidden")
+        for client in ("kimi", "goose", "copilot"):
+            with self.subTest(client=client):
+                code, output, error = self._run(["connect-config", "--client", client], settings=settings)
+                self.assertEqual(1, code)
+                self.assertEqual("", output)
+                self.assertIn(f"mac-mcp connect --client {client}", error)
+                self.assertIn("mac-mcp connect-config --client other", error)
+
+    def test_connect_other_json_gives_the_details_but_no_key(self) -> None:
+        secret = "json-secret-never-print"
+        settings = SimpleNamespace(allow_no_auth=False, api_key=secret)
+        with patch("mcp_server.cli._installed_bridge_command", return_value=self.BRIDGE), \
+                patch("mcp_server.cli._load_env"), patch("mcp_server.cli._copy_to_clipboard") as clip:
+            code, output, error = self._run(["connect", "--client", "other", "--json"], settings=settings,
+                                            public="https://mac.example.com/mcp")
+        self.assertEqual(0, code, error)
+        clip.assert_not_called()
+        body = json.loads(output)
+        self.assertEqual(self.BRIDGE[0], body["command"])
+        self.assertEqual(["stdio"], body["args"])
+        self.assertEqual("http://127.0.0.1:8765/mcp", body["url"])
+        self.assertEqual("https://mac.example.com/mcp", body["public_url"])
+        self.assertTrue(body["auth_required"])
+        self.assertNotIn(secret, output + error)
+
+    def test_copy_key_goes_to_the_clipboard_only(self) -> None:
+        secret = "clipboard-only-secret"
+        settings = SimpleNamespace(allow_no_auth=False, api_key=secret)
+        with patch("mcp_server.cli._load_env"), patch("mcp_server.cli._copy_to_clipboard") as clip:
+            code, output, error = self._run(["connect", "--client", "other", "--copy-key", "--json"], settings=settings)
+        self.assertEqual(0, code, error)
+        clip.assert_called_once_with(secret)
+        self.assertTrue(json.loads(output)["copied"])
+        self.assertNotIn(secret, output + error)
+        with patch("mcp_server.cli._load_env"), patch("mcp_server.cli._copy_to_clipboard") as clip:
+            code, output, _ = self._run(["connect", "--client", "other", "--copy-key", "--json"],
+                                        settings=SimpleNamespace(allow_no_auth=True, api_key=""))
+        self.assertEqual(1, code)
+        clip.assert_not_called()
+        self.assertIn("does not ask AI apps for a key", json.loads(output)["error"])
+        code, _, error = self._run(["connect", "--client", "codex", "--copy-key"], settings=settings)
+        self.assertEqual(2, code)
+        self.assertIn("--copy-key goes with --client other", error)
+
+    def test_chatgpt_copy_says_when_the_public_address_does_not_answer(self) -> None:
+        settings = SimpleNamespace(allow_no_auth=False, api_key="hidden-key")
+        for health, reachable in (("ok", True), ("unreachable", False)):
+            self.public_health = health
+            with self.subTest(health=health), patch("mcp_server.cli._load_env"), \
+                    patch("mcp_server.cli._copy_to_clipboard") as clip:
+                code, output, error = self._run(["connect", "--client", "chatgpt", "--json"], settings=settings,
+                                                public="https://mac.example.com/mcp")
+                self.assertEqual(0, code, error)
+                self.assertEqual("https://mac.example.com/mcp?ApiKey=hidden-key", clip.call_args.args[0])
+                body = json.loads(output)
+                self.assertIs(reachable, body["reachable"])
+                self.assertNotIn("hidden-key", output)
+                self.assertEqual(not reachable, "does not answer" in body["next"])
+
+    def test_chatgpt_on_local_only_names_the_command_that_was_run(self) -> None:
+        settings = SimpleNamespace(allow_no_auth=False, api_key="hidden")
+        with patch("mcp_server.cli._load_env"):
+            code, output, _ = self._run(["connect", "--client", "chatgpt", "--json"], settings=settings, public="")
+        self.assertEqual(1, code)
+        error = json.loads(output)["error"]
+        self.assertIn("Run this command again: mac-mcp connect --client chatgpt", error)
+
+
 if __name__ == "__main__":
     unittest.main()

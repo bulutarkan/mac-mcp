@@ -565,8 +565,11 @@ class ClientsScreen(ThemedTestCase):
     def test_no_app_on_this_mac(self) -> None:
         code, text = self.run_clients([a for a in PHASE2_APPS if not a["installed"]])
         self.assertEqual(0, code)
-        self.assertIn("ℹ No AI app Mac MCP knows is on this Mac.", text)
-        self.assertNotIn("try:", text)
+        flat = " ".join(text.split())
+        self.assertIn("ℹ No AI app Mac MCP knows is on this Mac.", flat)
+        # Not a dead end (#126): ChatGPT and any other MCP app are set up by hand.
+        self.assertIn("ChatGPT: mac-mcp connect --client chatgpt", flat)
+        self.assertIn("try: mac-mcp connect-config --client other", flat)
 
     def test_json_stays_json(self) -> None:
         from mcp_server import client_setup
@@ -599,6 +602,26 @@ class ConnectScreen(ThemedTestCase):
         self.assertIn("✗ Add Mac MCP to Kimi Code", text)
         self.assertIn("Kimi Code is not installed on this Mac.", text)
         self.assertIn("✗ Mac MCP was not added — try: mac-mcp clients", " ".join(text.split()))
+
+    def test_a_chatgpt_failure_does_not_point_to_the_app_list(self) -> None:
+        from mcp_server.connection_config import ConnectionConfigError
+        out = FakeTTY()
+        with patch.object(cli, "_copy_chatgpt_address", side_effect=ConnectionConfigError("needs a public HTTPS address")), \
+                redirect_stdout(out):
+            code = cli.connect_app(argparse.Namespace(client="chatgpt", json=False))
+        text = " ".join(visible(out.getvalue()).split())
+        self.assertEqual(1, code)
+        self.assertIn("✗ The address was not copied — try: mac-mcp status", text)
+        self.assertNotIn("mac-mcp clients", text)
+
+    def test_an_unreachable_public_address_is_a_warning(self) -> None:
+        out = FakeTTY()
+        result = {"ok": True, "client": "chatgpt", "name": "ChatGPT", "copied": True, "reachable": False,
+                  "next": "The address is copied, but this Mac's public address does not answer right now."}
+        with patch.object(cli, "_copy_chatgpt_address", return_value=result), redirect_stdout(out):
+            code = cli.connect_app(argparse.Namespace(client="chatgpt", json=False))
+        self.assertEqual(0, code)
+        self.assertIn("⚠ The address is copied, but", " ".join(visible(out.getvalue()).split()))
 
     def test_chatgpt_never_prints_the_address(self) -> None:
         out = FakeTTY()

@@ -16,6 +16,8 @@ class InstallerCompletionTests(unittest.TestCase):
     def run_bash(self, body: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         merged = os.environ.copy()
         merged["MAC_MCP_INSTALLER_LIBRARY_ONLY"] = "1"
+        # The technical summary these tests read is printed on request (#126); the short form is tested below.
+        merged["MAC_MCP_INSTALL_DETAILS"] = "1"
         for name in ("MAC_MCP_HOST", "MAC_MCP_PORT", "MCP_ALLOW_NO_AUTH", "MCP_API_KEY"):
             merged.pop(name, None)
         if env:
@@ -203,6 +205,40 @@ class InstallerCompletionTests(unittest.TestCase):
         self.assertNotIn('API_KEY="$api_key"', source)
         self.assertIn("API key: stored locally (present, not printed)", source)
         self.assertIn("ChatGPT / header-limited client URL:", source)
+
+
+class ShortCompletionTests(unittest.TestCase):
+    """#126: the installer ends with one next step; the technical detail is optional."""
+
+    run_bash = InstallerCompletionTests.run_bash
+    fixture = InstallerCompletionTests.fixture
+    completion_body = InstallerCompletionTests.completion_body
+
+    def test_the_default_end_is_one_step_and_no_technical_block(self) -> None:
+        secret = "short-completion-secret"
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-short-") as td:
+            state, runtime = self.fixture(Path(td), env_text=f"MCP_API_KEY={secret}\nMCP_ALLOW_NO_AUTH=false\n")
+            app = runtime / "Applications" / "Mac MCP.app"
+            app.mkdir(parents=True)
+            proc = self.run_bash(self.completion_body(state, runtime), {"MAC_MCP_INSTALL_DETAILS": "0", "MAC_MCP_SKIP_MENU_APP": "0", "MAC_MCP_SKIP_MENU_APP_INSTALL": "0"})
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        output = proc.stdout + proc.stderr
+        self.assertIn("Mac MCP 2.1.6 is installed from a verified release.", output)
+        self.assertEqual(1, output.count("Next step:") + output.count("Next command:"), output)
+        self.assertIn("Next step: in the Welcome to Mac MCP window, choose Set up now.", output)
+        self.assertIn("Details: mac-mcp status", output)
+        for technical in ("Source:", "Server bind:", "Authorization: Bearer", "Chrome Background Companion",
+                          "Subagents", "ApiKey="):
+            self.assertNotIn(technical, output)
+        self.assertNotIn(secret, output)
+
+    def test_details_on_request_keep_the_full_summary_and_one_step(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-details-") as td:
+            state, runtime = self.fixture(Path(td), env_text="MCP_API_KEY=x-secret\nMCP_ALLOW_NO_AUTH=false\n")
+            proc = self.run_bash(self.completion_body(state, runtime))
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("Source:", proc.stdout)
+        self.assertEqual(1, proc.stdout.count("Next step:") + proc.stdout.count("Next command:"), proc.stdout)
 
 
 if __name__ == "__main__":

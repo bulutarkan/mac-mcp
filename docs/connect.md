@@ -53,7 +53,10 @@ mac-mcp connect-config --client chatgpt
 mac-mcp connect-config --client codex
 mac-mcp connect-config --client opencode
 mac-mcp connect-config --client claude-code
+mac-mcp connect-config --client other      # any other MCP app
 ```
+
+`--client other` covers every MCP app not in the list: it prints the `mcpServers` entry that runs `mac-mcp stdio` (the form most apps take, with no key in the app's config) and, for apps that only take a URL, the local address with the header `Authorization: Bearer <API_KEY>`. `mac-mcp connect --client other --copy-key` puts the key on the clipboard without printing it. Apps that `mac-mcp connect` sets up in one step (Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code, Goose, GitHub Copilot) get pointed there instead of a snippet.
 
 The command never prints the configured API-key value. Codex, OpenCode and Claude Code snippets reference a client-side environment variable (`MAC_MCP_API_KEY` by default); set that variable in the client process to the same secret value configured as Mac MCP's `MCP_API_KEY`. ChatGPT uses the existing header-limited query-key compatibility form and prints only `?ApiKey=<API_KEY>` as a placeholder.
 

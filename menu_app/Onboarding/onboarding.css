@@ -455,7 +455,7 @@ button[disabled] { opacity: 0.5; cursor: default; }
 .app[data-state="missing"] { opacity: 0.45; padding-block: 6px; }
 .app.is-working button { opacity: 0.6; }
 
-.prompt { max-width: 420px; padding: 26px; border-radius: 16px; background: rgba(10, 14, 28, 0.4); box-shadow: inset 0 0 0 1px var(--glass-edge); }
+.prompt { max-width: 420px; padding: 26px; border-radius: 16px; background: var(--well); box-shadow: inset 0 0 0 1px var(--glass-edge); }
 .prompt p { font: 500 21px/1.4 var(--serif); margin: 0 0 18px; user-select: text; -webkit-user-select: text; }
 .burst { position: absolute; inset: 0; pointer-events: none; }
 .burst i { position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; border-radius: 2px; background: var(--ember); opacity: 0; }
@@ -486,3 +486,83 @@ button[disabled] { opacity: 0.5; cursor: default; }
   .pulse, .ring.is-starting .arc { animation: none !important; }
   .burst { display: none; }
 }
+
+/* ---------- #126: setup first, ChatGPT and other apps step by step ---------- */
+/* The welcome names the three steps setup takes. */
+.plan { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
+.plan li { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--paper); }
+.plan b {
+  display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  font: 600 12px/1 var(--sans); color: var(--ember); box-shadow: inset 0 0 0 1.5px var(--ember);
+}
+/* Before setup starts no step is current: the rail is a preview of what comes. */
+.rail.is-preview li { opacity: 0.45; }
+
+/* Another AI app: under the list, a row of its own, quieter than an app. */
+.other-app {
+  display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 10px; border-radius: 12px; text-align: left; font: inherit; color: inherit;
+  background: transparent; box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.other-app:hover { background: var(--well); }
+.other-mark {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px;
+  font: 500 18px/1 var(--sans); color: var(--haze); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.other-app strong { display: block; font-size: 14px; }
+.other-app .strip-text span { display: block; font-size: 12px; line-height: 1.4; color: var(--haze); }
+.other-app .go { color: var(--ember); font-size: 13px; font-weight: 600; white-space: nowrap; }
+
+/* A status card can also say something went wrong. */
+.status-card.is-problem { box-shadow: inset 0 0 0 1px rgba(255, 180, 94, 0.45); }
+.status-card.is-problem .status-icon { background: var(--ember); color: var(--ember-ink); font: 700 15px/1 var(--sans); }
+
+/* What to try when nothing arrives: short, under the status it explains. */
+.help {
+  max-width: 34ch; margin: -6px 0 14px; padding: 12px 14px; border-radius: 12px;
+  background: rgba(255, 180, 94, 0.07); box-shadow: inset 0 0 0 1px rgba(255, 180, 94, 0.25);
+}
+.help[hidden] { display: none; }
+.help strong { display: block; font-size: 13px; margin-bottom: 6px; }
+.help ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
+.help li { font-size: 12.5px; line-height: 1.45; color: var(--haze); }
+.help .link { margin-top: 8px; }
+.copy .note[hidden] { display: none; }
+
+/* ChatGPT: four numbered steps, each with its one button. */
+.steps-card { place-items: stretch; align-content: center; padding: 18px 20px; height: auto; min-height: 380px; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; width: 100%; }
+.step {
+  display: grid; grid-template-columns: 26px 1fr auto; align-items: start; gap: 12px;
+  padding: 11px 12px; border-radius: 12px; background: var(--well); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.step-mark {
+  display: grid; place-items: center; width: 24px; height: 24px; margin-top: 1px; border-radius: 50%;
+  font: 600 12px/1 var(--sans); color: var(--ember); box-shadow: inset 0 0 0 1.5px var(--ember);
+}
+.step strong { display: block; font-size: 14px; }
+.step div span { display: block; font-size: 12px; line-height: 1.45; color: var(--haze); }
+.step button { padding: 7px 12px; font-size: 13px; white-space: nowrap; align-self: center; }
+.step:not(.is-done) button:not([disabled]) { background: var(--ember); color: var(--ember-ink); box-shadow: none; }
+.step.is-done { box-shadow: inset 0 0 0 1px rgba(94, 211, 160, 0.45); }
+.step.is-done .step-mark { background: var(--ok); color: #0d2a1e; box-shadow: none; }
+.step.is-warn { box-shadow: inset 0 0 0 1px rgba(255, 180, 94, 0.5); }
+.step.is-warn .step-mark { background: var(--ember); color: var(--ember-ink); box-shadow: none; }
+
+/* Another AI app: the values the app asks for, each with a copy button. */
+.details-card { width: 100%; max-width: 470px; justify-self: center; place-items: stretch; align-content: center; gap: 16px; padding: 18px 20px; height: auto; min-height: 380px; }
+.details-card[data-loading] .card-loading { display: grid; }
+.details-card[data-loading] .group { display: none; }
+.details-card.is-revealed .group { animation: reveal 0.45s var(--ease) both; }
+.fields { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.field-row {
+  display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 7px 8px 7px 12px; border-radius: 10px; background: var(--well); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.field-label { font-size: 12px; color: var(--haze); }
+.field-row code {
+  font: 12.5px/1.4 var(--mono); color: var(--paper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  user-select: text; -webkit-user-select: text;
+}
+.field-row button { padding: 6px 11px; font-size: 12.5px; white-space: nowrap; }
+.field-row button.is-copied { color: var(--ok-ink); }

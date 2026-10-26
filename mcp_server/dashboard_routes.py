@@ -382,6 +382,9 @@ def create_dashboard_routes(
         return JSONResponse({
             "ok": True,
             **calls,
+            # The AI apps that checked in since the server started (#126): "ChatGPT is connected"
+            # comes from ChatGPT's own check-in, not from a copy of its address.
+            "clients_seen": telemetry.client_checkins(),
             "accessibility": permissions["accessibility"],
             "screen_recording": permissions["screen_recording"],
             "permission_restart_needed": permissions["restart_needed"],

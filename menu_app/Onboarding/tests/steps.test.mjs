@@ -4,14 +4,37 @@ import { existsSync, readFileSync } from 'node:fs';
 import steps from '../steps.js';
 
 const {
-  SCREENS, CLIENTS, AGENTS, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients,
-  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT, startView,
+  SCREENS, RAIL, CLIENTS, AGENTS, evaluate, primaryAction, secondaryAction, indexOf, nextScreen, appRow, agentRow,
+  orderedClients, agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT, startView, connectStatus,
+  requestStatus, requestHelp, chatgptView, otherRows, HELP_AFTER_MS, CHATGPT_HELP_AFTER_MS, shortError,
 } = steps;
 
-test('the tour comes first, then the setup in order', () => {
+test('the screens, with the tour as a detour and two connect branches', () => {
   assert.deepEqual(SCREENS.map((s) => s.id),
-    ['welcome', 'apps', 'browser', 'safety', 'start', 'connect', 'request', 'permissions', 'browsers', 'done']);
-  assert.equal(indexOf('start'), 4);
+    ['welcome', 'apps', 'browser', 'safety', 'start', 'connect', 'chatgpt', 'other', 'request', 'permissions', 'browsers', 'done']);
+  assert.deepEqual(RAIL, ['Start', 'Connect', 'First request', 'Optional', 'Done']);
+  for (const id of ['welcome', 'apps', 'browser', 'safety']) assert.equal(SCREENS[indexOf(id)].rail, null);
+});
+
+test('set up now is the main path: the welcome skips the tour (#126)', () => {
+  const stopped = evaluate({ server_running: false });
+  const running = evaluate({ server_running: true });
+  assert.deepEqual(primaryAction('welcome', stopped), { label: 'Set up now', action: 'next' });
+  assert.deepEqual(secondaryAction('welcome'), { label: 'Take the tour first', action: 'tour' });
+  assert.equal(nextScreen('welcome', stopped), 'start');
+  // A server that already runs needs no Start screen.
+  assert.equal(nextScreen('welcome', running), 'connect');
+  // The tour's end leads into setup the same way.
+  assert.equal(nextScreen('safety', stopped), 'start');
+  assert.equal(nextScreen('apps', stopped), 'browser');
+  // The branches return to the path; the path never walks into a branch.
+  assert.equal(nextScreen('connect', running), 'request');
+  assert.equal(nextScreen('chatgpt', running), 'request');
+  assert.equal(nextScreen('other', running), 'request');
+  assert.equal(nextScreen('start', running), 'connect');
+  assert.equal(nextScreen('request', running), 'permissions');
+  assert.equal(nextScreen('done', running), 'done');
+  for (const id of SCREENS.map((s) => s.id)) assert.equal(secondaryAction(id) !== null, id === 'welcome', id);
 });
 
 test('permissions come after the first request and are optional (#247)', () => {
@@ -52,12 +75,16 @@ test('live status marks each step', () => {
 
 test('the primary button says what happens', () => {
   const idle = evaluate({ server_running: false });
-  assert.deepEqual(primaryAction('welcome', idle), { label: 'Show me how it works', action: 'next' });
+  assert.deepEqual(primaryAction('welcome', idle), { label: 'Set up now', action: 'next' });
   assert.deepEqual(primaryAction('start', idle), { label: 'Start Mac MCP', action: 'startServer' });
   const running = evaluate({ server_running: true, accessibility: 'granted', screen_recording: 'granted' });
   assert.deepEqual(primaryAction('start', running), { label: 'Continue', action: 'next' });
   assert.deepEqual(primaryAction('permissions', running), { label: 'Continue', action: 'next' });
-  assert.deepEqual(primaryAction('connect', running), { label: 'Skip for now', action: 'next' });
+  // Connected or not, the request screen comes next: it says what to try when nothing arrives.
+  assert.deepEqual(primaryAction('connect', running), { label: 'Continue', action: 'next' });
+  assert.deepEqual(primaryAction('chatgpt', running), { label: 'Skip for now', action: 'next' });
+  const chatgpt = evaluate({ server_running: true, clients_seen: [{ name: 'ChatGPT', seen_at: 1 }] });
+  assert.deepEqual(primaryAction('chatgpt', chatgpt), { label: 'Continue', action: 'next' });
   assert.deepEqual(primaryAction('done', running), { label: 'Finish', action: 'finish' });
 });
 
@@ -86,8 +113,10 @@ test('each AI app row says what one click will do', () => {
   assert.equal(appRow(code, { installed: true, added: true, keyless: true }, false).state, 'added');
   assert.equal(appRow(code, { installed: false, added: false }, false).action, null);
   assert.equal(appRow(code, undefined, false).state, 'missing');
-  assert.equal(appRow(chatgpt, undefined, false).action, 'settings');
-  assert.equal(appRow(chatgpt, undefined, true).button, 'Copy address');
+  // ChatGPT opens its own steps, with or without a public address yet.
+  assert.deepEqual([appRow(chatgpt, undefined, false).action, appRow(chatgpt, undefined, false).button], ['chatgpt', 'Set up']);
+  assert.equal(appRow(chatgpt, undefined, true).action, 'chatgpt');
+  assert.equal(appRow(chatgpt, undefined, true, true).state, 'added');
 });
 
 test('apps on this Mac are listed first', () => {
@@ -151,9 +180,11 @@ test('the apps card shows what needs a click, then one row for the apps already 
     { id: 'opencode', installed: false, added: false },
   ];
   const groups = appGroups(apps, false);
-  assert.deepEqual(groups.action.map(({ client }) => client.id), ['claude-desktop', 'chatgpt']);
+  // ChatGPT has a row of its own, always in view; the local apps are counted.
+  assert.deepEqual(groups.action.map(({ client }) => client.id), ['claude-desktop']);
+  assert.equal(groups.chatgpt.client.id, 'chatgpt');
   assert.deepEqual(groups.added.map(({ client }) => client.id), ['claude-code', 'codex']);
-  assert.equal(groups.present, 4);
+  assert.equal(groups.present, 3);
   assert.equal(groups.all.length, CLIENTS.length);
   // Apps not on this Mac come last, in list order.
   assert.deepEqual(groups.all.slice(-9).map(({ client }) => client.id),
@@ -229,4 +260,106 @@ test('the Start screen says what the start-at-login setting does (#22)', () => {
   const unknown = startView(evaluate({ server_running: false }));
   assert.doesNotMatch(unknown.text, /starts again when you log in/);
   assert.match(unknown.text, /Settings › General/);
+});
+
+test('the page has no duplicate ids', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(ids.filter((id, i) => ids.indexOf(id) !== i), []);
+});
+
+test('a status the bridge could not read is unavailable, not stopped (#126)', () => {
+  const script = readFileSync(new URL('../onboarding.js', import.meta.url), 'utf8');
+  assert.match(script, /catch \{\s*\/\/[^\n]*\n\s*status = \{ server_running: false, server_state: 'unavailable' \};/);
+});
+
+test('connected is an app checking in; it worked is a successful request (#126)', () => {
+  const seen = evaluate({ server_running: true, clients_seen: [{ name: 'ChatGPT', seen_at: 1 }] });
+  assert.equal(seen.connect, true);
+  assert.equal(seen.request, false);
+  assert.deepEqual(seen.connected, ['ChatGPT']);
+  assert.deepEqual(seen.chatgpt, { connected: true, worked: false });
+  assert.deepEqual(connectStatus(seen), { done: true, title: 'ChatGPT is connected', line: 'Next, try one request.' });
+  assert.equal(requestStatus(seen).state, 'waiting');
+  assert.equal(requestStatus(seen).title, 'ChatGPT is connected');
+  const worked = evaluate({ server_running: true, clients_seen: [{ name: 'Claude', seen_at: 1, first_success_at: 2 }] });
+  assert.equal(worked.request, true);
+  assert.equal(requestStatus(worked).state, 'done');
+  // A stopped server shows nothing as connected, whatever it saw before.
+  assert.equal(evaluate({ server_running: false, clients_seen: [{ name: 'ChatGPT' }] }).connect, false);
+  assert.equal(connectStatus(evaluate({ server_running: true })).done, false);
+  assert.equal(connectStatus(evaluate({ server_running: false })).title, 'Mac MCP is not running');
+  const two = evaluate({ server_running: true, clients_seen: [{ name: 'Claude' }, { name: 'Codex' }] });
+  assert.equal(connectStatus(two).title, 'Claude and Codex are connected');
+});
+
+test('the first-request screen offers help that fits what Mac MCP saw (#126)', () => {
+  const none = evaluate({ server_running: true });
+  assert.equal(requestHelp(none, 1000), null);
+  const early = requestHelp(none, 1000, true);
+  assert.equal(early.title, 'Your AI app has not reached Mac MCP yet');
+  assert.equal(early.action.action, 'connect');
+  assert.equal(requestHelp(none, HELP_AFTER_MS).title, early.title);
+  const connected = requestHelp(evaluate({ server_running: true, clients_seen: [{ name: 'ChatGPT' }] }), HELP_AFTER_MS);
+  assert.equal(connected.title, 'Not working yet?');
+  assert.ok(connected.tips.some((tip) => /new chat/.test(tip)));
+  assert.ok(connected.tips[0].startsWith('ChatGPT is connected but has not used Mac MCP yet'));
+  const denied = evaluate({ server_running: true, first_call: { tool: 'read_file', status: 'denied' } });
+  assert.equal(requestStatus(denied).state, 'problem');
+  assert.equal(requestHelp(denied, 0).action.action, 'openPermissions');
+  const failed = evaluate({ server_running: true, first_call: { tool: 'read_file', status: 'error' } });
+  assert.equal(requestHelp(failed, 0).title, 'The request did not work');
+  assert.equal(requestHelp(evaluate({ server_running: false }), 0).action.action, 'startServer');
+  assert.equal(requestHelp(evaluate({ server_running: true, first_success: { tool: 'x' } }), HELP_AFTER_MS, true), null);
+});
+
+test('ChatGPT: numbered steps, a copy confirmation and a real check (#126)', () => {
+  const local = evaluate({ server_running: true, public_endpoint_mode: 'none' });
+  let view = chatgptView(local, {});
+  assert.deepEqual(view.steps.map((step) => step.id), ['remote', 'copy', 'add', 'chat']);
+  assert.equal(view.steps[0].action, 'openConnections');
+  assert.equal(view.steps[1].disabled, true);
+  assert.equal(view.steps[2].action, 'openChatGPT');
+  assert.equal(view.status.title, 'Not connected yet');
+  const remote = evaluate({ server_running: true, public_endpoint_mode: 'cloudflare' });
+  view = chatgptView(remote, {});
+  assert.equal(view.steps[0].done, true);
+  assert.equal(view.steps[1].disabled, false);
+  view = chatgptView(remote, { copied: true, reachable: true, copiedAt: 1000 }, 2000);
+  assert.equal(view.steps[1].done, true);
+  assert.match(view.steps[1].detail, /^Copied\./);
+  assert.equal(view.status.title, 'Waiting for ChatGPT');
+  assert.equal(view.help, null);
+  assert.ok(chatgptView(remote, { copied: true, reachable: true, copiedAt: 1000 }, 1000 + CHATGPT_HELP_AFTER_MS).help);
+  assert.ok(chatgptView(remote, { askedHelp: true }).help);
+  // A public address that does not answer is said at once.
+  view = chatgptView(remote, { copied: true, reachable: false, copiedAt: 1000 }, 1000);
+  assert.equal(view.steps[1].warn, true);
+  assert.match(view.help[0], /does not answer/);
+  // Only ChatGPT's own check-in makes it connected.
+  const seen = evaluate({ server_running: true, public_endpoint_mode: 'cloudflare', clients_seen: [{ name: 'ChatGPT', seen_at: 1 }] });
+  view = chatgptView(seen, {});
+  assert.equal(view.status.done, true);
+  assert.equal(view.status.title, 'ChatGPT is connected');
+  assert.equal(view.steps[2].done, true);
+  const other = evaluate({ server_running: true, public_endpoint_mode: 'cloudflare', clients_seen: [{ name: 'Claude', seen_at: 1 }] });
+  assert.equal(chatgptView(other, { copied: true }).status.done, false);
+});
+
+test('another AI app: the command form, the URL form, and the key only by copy (#126)', () => {
+  assert.equal(otherRows(null), null);
+  const rows = otherRows({ command: '/Users/x/.local/bin/mac-mcp', args: ['stdio'], config: '{"mcpServers":{}}',
+    url: 'http://127.0.0.1:8765/mcp', public_url: 'https://mac.example.com/mcp', auth_required: true });
+  assert.deepEqual(rows.command.map((row) => row.id), ['command', 'args', 'json']);
+  assert.equal(rows.command[1].copy, 'stdio');
+  assert.deepEqual(rows.url.map((row) => row.id), ['url', 'key', 'public']);
+  assert.equal(rows.url[1].copyKey, true);
+  assert.equal(rows.url[1].copy, undefined);
+  const open = otherRows({ command: '/x/mac-mcp', args: ['stdio'], url: 'http://127.0.0.1:8000/mcp', auth_required: false });
+  assert.deepEqual(open.url.map((row) => row.id), ['url']);
+});
+
+test('a CLI error shows its first line only', () => {
+  assert.equal(shortError('chatGPT needs a public address.\nNext steps:\n  1. Open', 'x'), 'ChatGPT needs a public address.');
+  assert.equal(shortError('', 'Fallback'), 'Fallback');
 });

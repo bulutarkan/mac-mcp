@@ -31,6 +31,8 @@ GIT_BIN=""
 PYTHON_BIN=""
 RUNTIME_SETTINGS_BROKEN=0
 PUBLIC_ENDPOINT_MODE="none"
+# local | chatgpt | later: the AI app the owner starts with (#126). Only ChatGPT needs a public address.
+FIRST_AI_APP="local"
 PUBLIC_ENDPOINT_URL=""
 PUBLIC_ENDPOINT_CONFIGURED=0
 PUBLIC_PROVIDER_AVAILABLE=1
@@ -210,12 +212,59 @@ read_secret() {
   printf '\n' >&3
 }
 
+choose_first_ai_app() {
+  local requested="${MAC_MCP_INSTALL_CLIENT:-}"
+  local reply=""
+  section "Your AI app"
+  info "Which AI app will you use with Mac MCP first? You can add others later."
+
+  while true; do
+    if [[ -n "$requested" ]]; then
+      reply="$(lowercase "$requested")"
+    else
+      if [[ "$TTY_AVAILABLE" -ne 1 ]]; then
+        FIRST_AI_APP="local"
+        info "No interactive terminal is available; setting up for AI apps on this Mac."
+        return 0
+      fi
+      printf '  1) An AI app on this Mac: Claude, Codex, Cursor and others (default)\n' >&3
+      printf '  2) ChatGPT\n' >&3
+      printf '  3) Not sure yet\n' >&3
+      printf '%sSelect your AI app [1]:%s ' "$C_BOLD" "$C_RESET" >&3
+      IFS= read -r reply <&3 || fail "Could not read the AI app selection from /dev/tty."
+      [[ -n "$reply" ]] || reply="1"
+    fi
+
+    case "$reply" in
+      1|local|mac|this-mac|claude|codex|other) FIRST_AI_APP="local"; return 0 ;;
+      2|chatgpt) FIRST_AI_APP="chatgpt"; return 0 ;;
+      3|later|unsure|not-sure) FIRST_AI_APP="later"; return 0 ;;
+      *)
+        if [[ -n "$requested" ]]; then
+          fail "Invalid MAC_MCP_INSTALL_CLIENT: '$requested'. Use local, chatgpt, or later."
+        fi
+        warn "Choose 1, 2, or 3."
+        ;;
+    esac
+  done
+}
+
+# Only ChatGPT reaches this Mac from the internet; an explicit MAC_MCP_INSTALL_PUBLIC_MODE still decides.
+choose_public_endpoint_if_needed() {
+  if [[ "$FIRST_AI_APP" == "chatgpt" || -n "${MAC_MCP_INSTALL_PUBLIC_MODE:-}" ]]; then
+    choose_public_endpoint_mode
+    return 0
+  fi
+  PUBLIC_ENDPOINT_MODE="none"
+  info "Remote access stays off: AI apps on this Mac do not need it. ChatGPT can be added later in Settings › Connections."
+}
+
 choose_public_endpoint_mode() {
   local requested="${MAC_MCP_INSTALL_PUBLIC_MODE:-}"
   local reply=""
-  section "Public endpoint"
-  info "Choose how Mac MCP should be reachable. Local only is the safest default and can be changed later in Settings."
-  info "Local only works for AI apps on this Mac (Claude Code, Codex, OpenCode). ChatGPT connects from OpenAI's servers and needs a public HTTPS endpoint: Cloudflare Tunnel, ngrok or Custom HTTPS."
+  section "Public address for ChatGPT"
+  info "ChatGPT connects from OpenAI's servers, so it needs a public HTTPS address for this Mac: Cloudflare Tunnel, ngrok or Custom HTTPS."
+  info "Local only is the safest default; you can set up the public address later in Settings › Connections."
 
   while true; do
     if [[ -n "$requested" ]]; then
@@ -1181,12 +1230,27 @@ optionally_start_server() {
   fi
 }
 
+menu_app_installed() {
+  [[ "${MAC_MCP_SKIP_MENU_APP_INSTALL:-0}" != "1" && "${MAC_MCP_SKIP_MENU_APP:-0}" != "1" && -d "$APP_PATH" ]]
+}
+
+# The one thing to do after the install (#66, #126): the app's setup when it is there, else a command.
 next_step_line() {
-  case "$START_OUTCOME" in
-    started) printf '%sNext step:%s add Mac MCP to your AI app: mac-mcp clients (or Get Started in the Mac MCP menu)\n' "$C_BOLD" "$C_RESET" ;;
-    failed) printf '%sNext command:%s mac-mcp doctor (it says why the server did not start)\n' "$C_BOLD" "$C_RESET" ;;
-    *) printf '%sNext command:%s mac-mcp start\n' "$C_BOLD" "$C_RESET" ;;
-  esac
+  if [[ "$START_OUTCOME" == "failed" ]]; then
+    printf '%sNext command:%s mac-mcp doctor (it says why the server did not start)\n' "$C_BOLD" "$C_RESET"
+    return 0
+  fi
+  if menu_app_installed; then
+    printf '%sNext step:%s in the Welcome to Mac MCP window, choose Set up now. Closed it? Click the Mac MCP icon in the menu bar, then More › Set Up & Tour…\n' "$C_BOLD" "$C_RESET"
+    return 0
+  fi
+  if [[ "$START_OUTCOME" != "started" ]]; then
+    printf '%sNext command:%s mac-mcp start\n' "$C_BOLD" "$C_RESET"
+  elif [[ "$FIRST_AI_APP" == "chatgpt" ]]; then
+    printf '%sNext step:%s copy ChatGPT'"'"'s address: mac-mcp connect --client chatgpt\n' "$C_BOLD" "$C_RESET"
+  else
+    printf '%sNext step:%s add Mac MCP to your AI app: mac-mcp clients\n' "$C_BOLD" "$C_RESET"
+  fi
 }
 
 completion_runtime_summary() {
@@ -1301,6 +1365,31 @@ print_completion() {
   fi
 
   section "Installation complete"
+  ok "Mac MCP ${VERIFIED_RELEASE_VERSION:+$VERIFIED_RELEASE_VERSION }is installed from a verified release."
+  if [[ "$auth_mode" == "missing" ]]; then
+    warn "Mac MCP has no API key yet, so it will not start. Run: mac-mcp doctor"
+  fi
+  if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    info "Open a new Terminal window (or reload your shell profile) before running 'mac-mcp' by name."
+  fi
+  if [[ "${MAC_MCP_INSTALL_DETAILS:-0}" != "1" ]]; then
+    printf '\n'
+    next_step_line
+    printf '%sDetails:%s mac-mcp status (address and health) · mac-mcp connect-config --client other (manual setup)\n\n' "$C_DIM" "$C_RESET"
+    return 0
+  fi
+  print_completion_details "$local_endpoint" "$server_bind" "$auth_mode" "$api_key_state" "$connector_endpoint"
+}
+
+# The full technical summary, with MAC_MCP_INSTALL_DETAILS=1.
+print_completion_details() {
+  local local_endpoint="$1"
+  local server_bind="$2"
+  local auth_mode="$3"
+  local api_key_state="$4"
+  local connector_endpoint="$5"
+
+  printf '\n'
   printf '  Source:             %s\n' "$SOURCE_DIR"
   printf '  Runtime:            %s\n' "$RUNTIME_DIR"
   printf '  CLI:                %s\n' "$CLI_PATH"
@@ -1371,10 +1460,7 @@ print_completion() {
   printf '  OpenCode, Codex and Claude Code are not installed by Mac MCP.\n'
   printf '  If you plan to use Subagents, install at least one of them separately.\n'
 
-  if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    printf '\n'
-    info "Open a new Terminal window (or reload your shell profile) before running 'mac-mcp' by name."
-  fi
+  printf '\n'
   next_step_line
   printf '\n'
 }
@@ -1390,7 +1476,8 @@ main() {
   # Read-only preflight: refuse an existing install before any optional
   # provider/helper prompt can install packages.
   check_install_targets
-  choose_public_endpoint_mode
+  choose_first_ai_app
+  choose_public_endpoint_if_needed
   install_selected_public_provider
   handle_optional_helpers
   clone_source_and_runtime

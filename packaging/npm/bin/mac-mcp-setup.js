@@ -12,7 +12,7 @@ const path = require("node:path");
 
 const PACKAGE = require("../package.json");
 const INSTALLER = path.join(__dirname, "..", "install.sh");
-const PASSED_THROUGH = new Set(["update", "status", "start", "stop", "restart", "doctor", "logs", "connect", "clients",
+const PASSED_THROUGH = new Set(["update", "status", "start", "stop", "restart", "doctor", "logs", "connect", "connect-config", "clients",
   "repair", "uninstall"]);
 
 function cliPath() {
@@ -38,8 +38,8 @@ Usage:
   npx @bulutarkan/mac-mcp install     Install Mac MCP (server, CLI and menu bar app)
   npx @bulutarkan/mac-mcp update      Update an existing install (verified stable releases only)
   npx @bulutarkan/mac-mcp status      Show whether Mac MCP is running
-  npx @bulutarkan/mac-mcp <command>   start, stop, restart, doctor, logs, connect, clients, repair
-                                      and uninstall also work
+  npx @bulutarkan/mac-mcp <command>   start, stop, restart, doctor, logs, connect, connect-config,
+                                      clients, repair and uninstall also work
 
 The installer checks the signed Mac MCP release before installing, never overwrites an existing
 install, settings or keys, and asks before optional extras. Once installed, the 'mac-mcp' command

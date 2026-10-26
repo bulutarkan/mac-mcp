@@ -3,8 +3,9 @@
 (function () {
 'use strict';
 const {
-  SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow,
-  agentsSummary, appGroups, callSentence, stackParts, browserRow, startView,
+  SCREENS, RAIL, AGENTS, FIRST_REQUEST, evaluate, primaryAction, secondaryAction, indexOf, nextScreen,
+  agentsSummary, appGroups, stackParts, browserRow, startView, connectStatus, requestStatus, requestHelp,
+  chatgptView, otherRows, shortError,
 } = window.OnboardingSteps;
 
 // ---------- bridge ----------
@@ -38,8 +39,8 @@ const params = new URLSearchParams(location.search);
 const demoStatus = {
   fresh: { server_running: false },
   running: { server_running: true, accessibility: 'not_determined', screen_recording: 'not_determined', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', browsers: { safari: 'off', chrome: 'not_connected' } },
-  connected: { server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', first_call: { tool: 'read_file' } },
-  done: { server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', first_call: { tool: 'system_info' }, first_success: { tool: 'system_info' } },
+  connected: { server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', clients_seen: [{ name: 'Claude', seen_at: 1 }] },
+  done: { server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', first_call: { tool: 'system_info', status: 'success' }, first_success: { tool: 'system_info' } },
 }[params.get('demo') || 'running'];
 
 const demoApps = [
@@ -56,10 +57,12 @@ function demo(action, args) {
     status: () => demoStatus,
     apps: () => demoApps.map((app) => ({ ...app })),
     connectApp: () => {
+      if (args.client === 'chatgpt') return { ok: true, copied: true, reachable: true, next: 'The address is copied.' };
       const app = demoApps.find((item) => item.id === args.client);
       if (app) app.added = true;
       return { ok: true, next: 'Quit Claude and open it again, then ask it something about your Mac.' };
     },
+    connectionInfo: () => ({ ok: true, command: '/Users/you/.local/bin/mac-mcp', args: ['stdio'], config: '{}', url: 'http://127.0.0.1:8765/mcp', public_url: null, auth_required: true }),
     agents: () => JSON.parse(JSON.stringify(demoAgents)),
     setupBrowser: () => {
       if (demoStatus.browsers) demoStatus.browsers[args.browser] = args.browser === 'safari' ? 'on' : 'connected';
@@ -76,7 +79,7 @@ function demo(action, args) {
   };
   const reply = replies[action] ? replies[action]() : { ok: true };
   // ?delay=ms makes the slow lookups as slow as on a real Mac, to see the loader.
-  const delay = ['apps', 'agents'].includes(action) ? Number(params.get('delay')) || 0 : 0;
+  const delay = ['apps', 'agents', 'connectionInfo'].includes(action) ? Number(params.get('delay')) || 0 : 0;
   return new Promise((resolve) => setTimeout(() => resolve(reply), delay));
 }
 
@@ -84,6 +87,8 @@ function demo(action, args) {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 let current = Math.max(0, indexOf(params.get('screen') || 'welcome'));
+// Where Back goes: the screens this window showed, in order.
+const history = [];
 let status = null;
 let evaluation = evaluate(null);
 let apps = null;
@@ -95,15 +100,23 @@ let popupReturn = null;
 // Stacks whose +N was clicked stay open when the card redraws.
 const openStacks = new Set();
 const appNotes = {};
-let appsRemote = null;
+let appsKey = null;
 let pollTimer = null;
 let celebrated = false;
 let restarting = false;
 let restartedFor = '';
+// The ChatGPT screen's own progress: the copy happens here, the check comes from the server.
+const chatgptLocal = { copied: false, reachable: null, copyError: null, copiedAt: 0, askedHelp: false };
+// The first-request screen offers help after a while, or at once when asked.
+let requestShownAt = 0;
+let requestAsked = false;
+let otherInfo = null;
+let otherLoading = false;
 
 const screens = $$('.screen');
 const rail = $('.rail');
 const primary = $('#primary');
+const secondary = $('#secondary');
 const back = $('#back');
 const skip = $('#skip');
 
@@ -119,16 +132,17 @@ async function copy(text, done) {
   try {
     await call('copy', { text });
     toast(done);
+    return true;
   } catch (error) {
     toast(error.message);
+    return false;
   }
 }
 
 // ---------- rendering ----------
 function buildRail() {
-  const steps = [...new Set(SCREENS.map((screen) => screen.rail))];
   rail.innerHTML = '';
-  for (const name of steps) {
+  for (const name of RAIL) {
     const item = document.createElement('li');
     item.textContent = name;
     item.dataset.rail = name;
@@ -138,12 +152,13 @@ function buildRail() {
 
 function renderRail() {
   const screen = SCREENS[current];
-  const order = [...new Set(SCREENS.map((s) => s.rail))];
-  const at = order.indexOf(screen.rail);
+  // Before setup (the welcome and the tour) no step is current yet.
+  const at = screen.rail ? RAIL.indexOf(screen.rail) : -1;
+  rail.classList.toggle('is-preview', at < 0);
   for (const item of $$('li', rail)) {
-    const index = order.indexOf(item.dataset.rail);
+    const index = RAIL.indexOf(item.dataset.rail);
     item.classList.toggle('is-current', index === at);
-    item.classList.toggle('is-done', index < at);
+    item.classList.toggle('is-done', at >= 0 && index < at);
     item.setAttribute('aria-current', index === at ? 'step' : 'false');
   }
 }
@@ -186,29 +201,108 @@ function renderLive() {
       button.setAttribute('aria-label', `${view.button}: ${view.detail}`);
     }
   }
-  // Connect
-  setStatus($('[data-live="connect-state"]'), e.connect,
-    e.connect
-      ? ['Mac MCP is connected', callSentence(e.firstTool)]
-      : ['Waiting for your AI app', 'Open it and ask something about your Mac, like “Which macOS am I on?”']);
-  if (apps && appsRemote !== e.remote) renderApps();
-  // First request
-  setStatus($('[data-live="request-state"]'), e.request,
-    e.request ? ['It worked', 'Your AI app can use your Mac.'] : ['Waiting for the request', 'Paste it into your AI app and send it.']);
+  // Connect, and the "another app" screen: connected means the app checked in.
+  const connect = connectStatus(e);
+  setStatus($('[data-live="connect-state"]'), connect.done ? 'done' : 'waiting', [connect.title, connect.line]);
+  setStatus($('[data-live="other-state"]'), connect.done ? 'done' : 'waiting', connect.done
+    ? [connect.title, 'Next, try one request.']
+    : ['Waiting for your AI app', 'It checks in with Mac MCP when it starts.']);
+  const key = `${e.remote}|${e.chatgpt.connected}`;
+  if (apps && appsKey !== key) renderApps();
+  renderChatGPT();
+  renderRequest();
+  renderPrimary();
+}
+
+function renderRequest() {
+  const e = evaluation;
+  const view = requestStatus(e);
+  setStatus($('[data-live="request-state"]'), view.state, [view.title, view.line]);
   if (e.request && SCREENS[current].id === 'request' && !celebrated) {
     celebrated = true;
     $('.burst').classList.add('is-on');
   }
-  renderPrimary();
+  const waited = requestShownAt ? Date.now() - requestShownAt : 0;
+  const help = requestHelp(e, waited, requestAsked);
+  const box = $('[data-live="request-help"]');
+  box.hidden = !help;
+  $('[data-live="request-ask"]').hidden = Boolean(help) || e.request;
+  if (!help) return;
+  $('strong', box).textContent = help.title;
+  fillTips($('ul', box), help.tips);
+  const action = $('[data-live="request-help-action"]');
+  action.hidden = !help.action;
+  if (help.action) {
+    action.textContent = help.action.label;
+    action.dataset.helpAction = help.action.action;
+  }
+}
+
+function renderChatGPT() {
+  const view = chatgptView(evaluation, chatgptLocal);
+  const done = view.status.done;
+  setStatus($('[data-live="chatgpt-state"]'), done ? 'done' : 'waiting', [view.status.title, view.status.line]);
+  const box = $('[data-live="chatgpt-help"]');
+  box.hidden = !view.help;
+  $('[data-live="chatgpt-ask"]').hidden = Boolean(view.help) || done || !evaluation.start;
+  if (view.help) fillTips($('ul', box), view.help);
+  const list = $('[data-live="chatgpt-steps"]');
+  // Rebuilt only when something it shows changed, so a press is never lost to a redraw.
+  const signature = JSON.stringify(view.steps);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature;
+  list.textContent = '';
+  view.steps.forEach((step, index) => {
+    const item = document.createElement('li');
+    item.className = 'step';
+    item.dataset.step = step.id;
+    item.classList.toggle('is-done', step.done);
+    item.classList.toggle('is-warn', Boolean(step.warn));
+    const mark = document.createElement('span');
+    mark.className = 'step-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = step.done ? '✓' : step.warn ? '!' : String(index + 1);
+    const text = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = step.title;
+    const detail = document.createElement('span');
+    detail.textContent = step.detail;
+    text.append(title, detail);
+    item.append(mark, text);
+    if (step.button) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = step.button;
+      button.disabled = Boolean(step.disabled);
+      button.setAttribute('aria-label', `${step.button}: ${step.title}`);
+      button.addEventListener('click', () => chatgptAction(step.action, button));
+      item.append(button);
+    }
+    list.append(item);
+  });
+}
+
+function fillTips(list, tips) {
+  list.textContent = '';
+  for (const tip of tips) {
+    const item = document.createElement('li');
+    item.textContent = tip;
+    list.append(item);
+  }
 }
 
 function renderPrimary() {
-  const { label } = primaryAction(SCREENS[current].id, evaluation);
-  primary.textContent = label;
+  const id = SCREENS[current].id;
+  primary.textContent = primaryAction(id, evaluation).label;
+  const second = secondaryAction(id);
+  secondary.hidden = !second;
+  if (second) secondary.textContent = second.label;
 }
 
-function show(index) {
-  current = Math.max(0, Math.min(SCREENS.length - 1, index));
+function show(index, { remember = true } = {}) {
+  const target = Math.max(0, Math.min(SCREENS.length - 1, index));
+  if (remember && target !== current) history.push(current);
+  current = target;
   screens.forEach((element, i) => {
     element.classList.toggle('is-active', i === current);
     element.classList.toggle('is-before', i < current);
@@ -216,15 +310,28 @@ function show(index) {
     element.inert = i !== current;
   });
   const screen = SCREENS[current];
-  back.hidden = current === 0;
+  back.hidden = history.length === 0;
+  // The tour can be left for the setup; setup screens can close the window; the welcome has neither.
+  skip.hidden = screen.kind === 'intro';
   skip.textContent = screen.kind === 'tour' ? 'Skip tour' : 'Close';
   renderRail();
   renderPrimary();
   if (screen.id === 'connect' && !apps) loadApps();
-  if (screen.kind !== 'tour') startPolling();
+  if (screen.id === 'other' && !otherInfo) loadOther();
+  if (screen.id === 'request' && !requestShownAt) requestShownAt = Date.now();
+  if (screen.kind === 'setup' || screen.kind === 'finish') startPolling();
   else stopPolling();
   const heading = $('h1', screens[current]);
   if (heading) heading.focus({ preventScroll: true });
+}
+
+function go(id) {
+  show(indexOf(id));
+}
+
+function goBack() {
+  if (!history.length) return;
+  show(history.pop(), { remember: false });
 }
 
 // ---------- live status ----------
@@ -232,7 +339,8 @@ async function refresh() {
   try {
     status = await call('status');
   } catch {
-    status = null;
+    // Not hearing back is not a stopped server: say the status is unavailable (#18).
+    status = { server_running: false, server_state: 'unavailable' };
   }
   evaluation = evaluate(status);
   renderLive();
@@ -270,24 +378,32 @@ function stopPolling() {
 }
 
 // ---------- actions ----------
+async function startServer() {
+  primary.disabled = true;
+  $('.ring').classList.add('is-starting');
+  try {
+    await call('startServer');
+  } catch (error) {
+    toast(error.message);
+  }
+  $('.ring').classList.remove('is-starting');
+  primary.disabled = false;
+  refresh();
+}
+
 async function runPrimary() {
-  const { action } = primaryAction(SCREENS[current].id, evaluation);
-  if (action === 'next') return show(current + 1);
+  const id = SCREENS[current].id;
+  const { action } = primaryAction(id, evaluation);
+  if (action === 'next') return go(nextScreen(id, evaluation));
   if (action === 'finish') return call('finish', { outcome: 'completed' });
   if (action === 'refresh') return refresh();
-  if (action === 'startServer') {
-    primary.disabled = true;
-    $('.ring').classList.add('is-starting');
-    try {
-      await call('startServer');
-    } catch (error) {
-      toast(error.message);
-    }
-    $('.ring').classList.remove('is-starting');
-    primary.disabled = false;
-    refresh();
-  }
+  if (action === 'startServer') return startServer();
   return undefined;
+}
+
+function runSecondary() {
+  const second = secondaryAction(SCREENS[current].id);
+  if (second && second.action === 'tour') go('apps');
 }
 
 async function requestPermission(name) {
@@ -303,13 +419,33 @@ async function requestPermission(name) {
   refresh();
 }
 
+async function chatgptAction(action, button) {
+  if (action === 'openConnections') return call('openSettings', { section: 'connections' }).catch((error) => toast(error.message));
+  if (action === 'openChatGPT') return call('openChatGPT').catch((error) => toast(error.message));
+  if (action !== 'copyAddress') return undefined;
+  button.disabled = true;
+  button.textContent = 'Copying…';
+  try {
+    const result = await call('connectApp', { client: 'chatgpt' });
+    Object.assign(chatgptLocal, {
+      copied: true, copyError: null, copiedAt: Date.now(),
+      reachable: result && typeof result.reachable === 'boolean' ? result.reachable : null,
+    });
+    toast(chatgptLocal.reachable === false ? 'Copied, but the public address does not answer.' : 'Copied. Paste it into ChatGPT.');
+  } catch (error) {
+    chatgptLocal.copyError = shortError(error.message, 'Mac MCP could not copy the address.');
+  }
+  renderChatGPT();
+  return undefined;
+}
+
 // The AI apps on this Mac, each with one button: Mac MCP does the setup itself.
 // Both lookups run together; the card shows a loader until both answered, then fades in
 // whole instead of filling in row by row.
 async function loadApps() {
   if (appsLoading) return;
   appsLoading = true;
-  setCardLoading(true);
+  setCardLoading($('.connect-card'), true);
   const [found, agents] = await Promise.allSettled([call('apps'), call('agents')]);
   if (found.status === 'fulfilled') {
     apps = found.value;
@@ -322,11 +458,82 @@ async function loadApps() {
   agentsState = agents.status === 'fulfilled' ? agents.value : null;
   appsLoading = false;
   renderApps();
-  setCardLoading(false);
+  setCardLoading($('.connect-card'), false);
 }
 
-function setCardLoading(loading) {
-  const card = $('.connect-card');
+// What any other MCP app needs, read from the CLI (the key itself never reaches this page).
+async function loadOther() {
+  if (otherLoading) return;
+  otherLoading = true;
+  const card = $('.details-card');
+  setCardLoading(card, true);
+  let problem = null;
+  try {
+    otherInfo = await call('connectionInfo');
+  } catch (error) {
+    otherInfo = null;
+    problem = shortError(error.message, 'Mac MCP could not read this Mac’s setup.');
+  }
+  otherLoading = false;
+  renderOther(problem);
+  setCardLoading(card, false);
+}
+
+function renderOther(problem) {
+  const rows = otherRows(otherInfo);
+  $('[data-live="other-problem"]').hidden = Boolean(rows);
+  $('[data-live="other-command"]').hidden = !rows;
+  $('[data-live="other-url"]').hidden = !rows;
+  if (!rows) {
+    $('[data-live="other-problem-text"]').textContent = problem || 'Mac MCP could not read this Mac’s setup.';
+    return;
+  }
+  fillFields($('[data-live="other-command"] .fields'), rows.command);
+  fillFields($('[data-live="other-url"] .fields'), rows.url);
+  $('[data-live="other-key-note"]').hidden = !otherInfo.auth_required;
+}
+
+function fillFields(list, rows) {
+  list.textContent = '';
+  for (const row of rows) {
+    const item = document.createElement('li');
+    item.className = 'field-row';
+    item.dataset.field = row.id;
+    const label = document.createElement('span');
+    label.className = 'field-label';
+    label.textContent = row.label;
+    const value = document.createElement('code');
+    value.textContent = row.value;
+    if (row.title) value.title = row.title;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = row.copyKey ? 'Copy key' : 'Copy';
+    button.setAttribute('aria-label', `${button.textContent}: ${row.label}`);
+    button.addEventListener('click', async () => {
+      let ok = false;
+      if (row.copyKey) {
+        try {
+          await call('copyKey');
+          toast('Key copied. Put “Bearer ” and the key in the Authorization header.');
+          ok = true;
+        } catch (error) {
+          toast(shortError(error.message, 'Mac MCP could not copy the key.'));
+        }
+      } else {
+        ok = await copy(row.copy, `${row.label} copied.`);
+      }
+      if (ok) {
+        button.textContent = 'Copied';
+        button.classList.add('is-copied');
+        setTimeout(() => { button.textContent = row.copyKey ? 'Copy key' : 'Copy'; button.classList.remove('is-copied'); }, 1800);
+      }
+    });
+    item.append(label, value, button);
+    list.append(item);
+  }
+}
+
+function setCardLoading(card, loading) {
   card.toggleAttribute('data-loading', loading);
   card.setAttribute('aria-busy', String(loading));
   card.classList.remove('is-revealed');
@@ -336,10 +543,17 @@ function setCardLoading(loading) {
   }
 }
 
-/** A status card: a pulse while waiting, a tick when done, a title and one line. */
-function setStatus(card, done, [title, line]) {
-  card.classList.toggle('is-done', done);
-  $('.status-icon', card).innerHTML = done ? '✓' : '<i class="pulse"></i>';
+/** A status card: a pulse while waiting, a tick when done, a mark for a problem; a title and one line. */
+function setStatus(card, state, [title, line]) {
+  card.classList.toggle('is-done', state === 'done');
+  card.classList.toggle('is-problem', state === 'problem');
+  const icon = $('.status-icon', card);
+  const mark = state === 'done' ? '✓' : state === 'problem' ? '!' : '';
+  if (icon.dataset.mark !== mark) {
+    icon.dataset.mark = mark;
+    icon.innerHTML = mark ? '' : '<i class="pulse"></i>';
+    if (mark) icon.textContent = mark;
+  }
   $(':scope > div > strong', card).textContent = title;
   $(':scope > div > span', card).textContent = line;
 }
@@ -370,9 +584,14 @@ function appElement(item, row) {
     button.type = 'button';
     button.textContent = row.button;
     button.setAttribute('aria-label', `${row.button}: ${item.name}`);
-    button.addEventListener('click', () => (row.action === 'settings'
-      ? call('openSettings', { section: 'connections' })
-      : connectApp(item, element)));
+    button.addEventListener('click', () => {
+      if (row.action === 'chatgpt') {
+        closePopup();
+        go('chatgpt');
+      } else {
+        connectApp(item, element);
+      }
+    });
     element.append(button);
   }
   return element;
@@ -410,7 +629,7 @@ function fillStack(stack, items, key) {
 }
 
 function renderApps() {
-  appsRemote = evaluation.remote;
+  appsKey = `${evaluation.remote}|${evaluation.chatgpt.connected}`;
   const list = $('[data-live="apps"]');
   list.textContent = '';
   if (appsProblem) {
@@ -433,12 +652,13 @@ function renderApps() {
     renderAgents();
     return;
   }
-  // Rows that need a click first; the apps Mac MCP is already added to share one row.
-  const groups = appGroups(apps, evaluation.remote);
+  // Rows that need a click first, ChatGPT always in view; the apps Mac MCP is already added to share one row.
+  const groups = appGroups(apps, evaluation.remote, evaluation.chatgpt.connected);
   $('[data-live="apps-count"]').textContent = groups.present ? `${groups.added.length} of ${groups.present} added` : '';
   const shown = groups.action.slice(0, 2);
   const hidden = groups.action.length - shown.length;
   for (const { client, row } of shown) list.append(appElement(client, row));
+  if (groups.chatgpt) list.append(appElement(groups.chatgpt.client, groups.chatgpt.row));
   const element = document.createElement('li');
   element.className = 'app summary';
   if (groups.added.length) {
@@ -457,9 +677,9 @@ function renderApps() {
     element.dataset.state = 'more';
     const text = document.createElement('div');
     const name = document.createElement('strong');
-    name.textContent = hidden ? `${hidden} more ${hidden === 1 ? 'app' : 'apps'} to set up` : 'Other AI apps';
+    name.textContent = hidden ? `${hidden} more ${hidden === 1 ? 'app' : 'apps'} to set up` : 'Apps Mac MCP knows';
     const detail = document.createElement('span');
-    detail.textContent = 'See every app Mac MCP can be added to';
+    detail.textContent = 'Every app Mac MCP can set up for you';
     text.append(name, detail);
     element.append(text);
   }
@@ -510,8 +730,8 @@ function renderPopup() {
   list.textContent = '';
   if (popupKind === 'apps') {
     $('[data-live="popup-title"]').textContent = 'All AI apps';
-    $('[data-live="popup-note"]').textContent = 'Apps that are not on this Mac are listed at the end.';
-    for (const { client, row } of appGroups(apps, evaluation.remote).all) list.append(appElement(client, row));
+    $('[data-live="popup-note"]').textContent = 'Apps that are not on this Mac are listed at the end. Another app? Use “Another AI app” on the card.';
+    for (const { client, row } of appGroups(apps, evaluation.remote, evaluation.chatgpt.connected).all) list.append(appElement(client, row));
     return;
   }
   $('[data-live="popup-title"]').textContent = 'Agents Mac MCP can hand work to';
@@ -557,20 +777,28 @@ async function connectApp(item, element) {
   try {
     const result = await call('connectApp', { client: item.id });
     appNotes[item.id] = result.next;
-    toast(item.needsRemote ? 'Address copied. Paste it in ChatGPT.' : `Mac MCP is added to ${item.name}.`);
+    toast(`Mac MCP is added to ${item.name}.`);
     apps = await call('apps').catch(() => apps);
   } catch (error) {
-    appNotes[item.id] = error.message;
+    appNotes[item.id] = shortError(error.message, `Mac MCP could not set up ${item.name}.`);
   }
   renderApps();
+}
+
+function runHelpAction(action) {
+  if (action === 'connect') return go('connect');
+  if (action === 'startServer') return startServer();
+  if (action === 'openPermissions') return call('openSettings', { section: 'permissions' }).catch((error) => toast(error.message));
+  return undefined;
 }
 
 // ---------- wiring ----------
 function wire() {
   primary.addEventListener('click', runPrimary);
-  back.addEventListener('click', () => show(current - 1));
+  secondary.addEventListener('click', runSecondary);
+  back.addEventListener('click', goBack);
   skip.addEventListener('click', () => {
-    if (SCREENS[current].kind === 'tour') show(indexOf('start'));
+    if (SCREENS[current].kind === 'tour') go(nextScreen('safety', evaluation));
     else call('finish', { outcome: 'skipped' });
   });
   for (const row of $$('.perm[data-perm]')) {
@@ -590,6 +818,11 @@ function wire() {
     link.addEventListener('click', () => call('openSystemSettings', { permission: link.dataset.permission }));
   }
   $('[data-action="manual-setup"]').addEventListener('click', () => call('openSettings', { section: 'connections' }));
+  $('[data-action="other-app"]').addEventListener('click', () => go('other'));
+  $('[data-action="other-retry"]').addEventListener('click', () => { otherInfo = null; loadOther(); });
+  $('[data-action="chatgpt-help"]').addEventListener('click', () => { chatgptLocal.askedHelp = true; renderChatGPT(); });
+  $('[data-action="request-help"]').addEventListener('click', () => { requestAsked = true; renderRequest(); });
+  $('[data-live="request-help-action"]').addEventListener('click', (event) => runHelpAction(event.currentTarget.dataset.helpAction));
   const strip = $('[data-action="open-agents"]');
   strip.addEventListener('click', () => openPopup('agents', strip));
   $('[data-action="close-popup"]').addEventListener('click', closePopup);
@@ -602,8 +835,9 @@ function wire() {
       return;
     }
     if (event.target.closest && event.target.closest('pre')) return;
-    if (event.key === 'ArrowRight' && SCREENS[current].kind === 'tour') show(current + 1);
-    else if (event.key === 'ArrowLeft') show(current - 1);
+    const screen = SCREENS[current];
+    if (event.key === 'ArrowRight' && screen.kind === 'tour') show(current + 1);
+    else if (event.key === 'ArrowLeft') goBack();
     else if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) runPrimary();
   });
   for (const heading of $$('h1')) heading.tabIndex = -1;
@@ -612,5 +846,5 @@ function wire() {
 $('[data-live="prompt"]').textContent = `“${FIRST_REQUEST}”`;
 buildRail();
 wire();
-show(current);
+show(current, { remember: false });
 })();

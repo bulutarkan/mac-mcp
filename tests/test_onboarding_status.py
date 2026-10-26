@@ -40,6 +40,66 @@ class FirstClientCallTests(unittest.TestCase):
         self.assertEqual({"at", "tool", "source", "status"}, set(found["first_call"]))
 
 
+class ClientCheckinTests(unittest.TestCase):
+    """#126: an AI app that checks in (lists the tools) is "connected" before its first request works."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp(prefix="mac-mcp-checkin-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.telemetry = TelemetryManager(db_path=self.dir / "telemetry.sqlite3")
+
+    def call(self, client: str | None, *, error: str | None = None, agent_id: str | None = None,
+             source: str = "mcp") -> None:
+        metadata = {k: v for k, v in {"client": client, "agent_id": agent_id}.items() if v}
+        event_id = self.telemetry.start_call(source, "system_info", {}, metadata=metadata)
+        self.telemetry.finish_call(event_id, result=None if error else {"ok": True}, error=error)
+
+    def test_listing_the_tools_is_connected_but_no_request_yet(self) -> None:
+        self.telemetry.note_client("ChatGPT")
+        [seen] = self.telemetry.client_checkins()
+        self.assertEqual("ChatGPT", seen["name"])
+        self.assertIsNotNone(seen["seen_at"])
+        self.assertIsNone(seen["first_call_at"])
+        self.assertIsNone(seen["first_success_at"])
+
+    def test_a_failed_call_then_a_working_one(self) -> None:
+        self.call("ChatGPT", error="denied")
+        self.call("ChatGPT")
+        [seen] = self.telemetry.client_checkins()
+        self.assertEqual("error", seen["first_call_status"])
+        self.assertIsNotNone(seen["first_success_at"])
+
+    def test_agents_unknown_apps_and_the_dashboard_do_not_count(self) -> None:
+        self.call("Codex", agent_id="agt_0123abcd")
+        self.call(None)
+        self.call("Claude Code", source="dashboard")
+        self.telemetry.note_client("Mac MCP agent")
+        self.telemetry.note_client("  ")
+        self.assertEqual([], self.telemetry.client_checkins())
+
+    def test_the_list_is_bounded(self) -> None:
+        for index in range(40):
+            self.telemetry.note_client(f"App {index}")
+        names = [entry["name"] for entry in self.telemetry.client_checkins()]
+        self.assertEqual(16, len(names))
+        self.assertEqual("App 39", names[-1])
+
+    def test_listing_tools_over_mcp_checks_the_app_in(self) -> None:
+        import asyncio
+
+        from mcp_server.observability import ObservedFastMCP
+
+        mcp = ObservedFastMCP(name="checkin-test", telemetry=self.telemetry)
+
+        @mcp.tool(name="get_volume")
+        def get_volume() -> dict:
+            return {"ok": True}
+
+        with patch.object(ObservedFastMCP, "client_label", lambda self, context=None: "ChatGPT"):
+            asyncio.run(mcp.list_tools())
+        self.assertEqual(["ChatGPT"], [entry["name"] for entry in self.telemetry.client_checkins()])
+
+
 class OnboardingRouteTests(unittest.TestCase):
     TOKEN = "onboarding-route-token"
 
@@ -66,10 +126,15 @@ class OnboardingRouteTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertIsNone(body["first_call"])
         self.assertIsNone(body["first_success"])
+        self.assertEqual([], body["clients_seen"])
         self.assertEqual("granted", body["accessibility"])
         self.assertEqual("not_determined", body["screen_recording"])
         self.assertEqual("cloudflare", body["public_endpoint_mode"])
         self.assertTrue(body["permission_restart_needed"])
+        self.telemetry.note_client("ChatGPT")
+        with patch("mcp_server.dashboard_routes.permission_status", return_value=perms):
+            body = client.get("/dashboard/api/onboarding", headers={"authorization": f"Bearer {self.TOKEN}"}).json()
+        self.assertEqual(["ChatGPT"], [entry["name"] for entry in body["clients_seen"]])
 
 
 class PermissionsViewTests(OnboardingRouteTests):

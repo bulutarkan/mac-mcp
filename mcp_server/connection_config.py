@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
-SUPPORTED_CLIENTS = ("chatgpt", "codex", "opencode", "claude-code")
+SUPPORTED_CLIENTS = ("chatgpt", "codex", "opencode", "claude-code", "other")
 # Clients set up another way; they get guidance, not a snippet.
 UNGUIDED_CLIENTS = {
     "claude-desktop": (
@@ -18,6 +18,26 @@ UNGUIDED_CLIENTS = {
         "session is set up again after a server restart or an idle timeout. Restart Claude Desktop afterwards."
     ),
 }
+# Apps `mac-mcp connect` sets up in one step; connect-config points there instead of a snippet.
+ONE_STEP_CLIENTS = {
+    "kimi": "Kimi Code", "grok": "Grok Build", "antigravity": "Antigravity", "pi": "pi", "cline": "Cline",
+    "kilo": "Kilo Code", "goose": "Goose", "copilot": "GitHub Copilot",
+}
+
+
+def guidance(client: str) -> str | None:
+    """What connect-config says instead of a snippet for an app set up another way, else None."""
+    if client in UNGUIDED_CLIENTS:
+        return UNGUIDED_CLIENTS[client]
+    if client in ONE_STEP_CLIENTS:
+        return (
+            f"{ONE_STEP_CLIENTS[client]} is set up in one step instead: mac-mcp connect --client {client}. "
+            "It adds Mac MCP as a command, `mac-mcp stdio`, so no address or key goes into its config. "
+            "To set it up by hand: mac-mcp connect-config --client other"
+        )
+    return None
+
+
 SUPPORTED_ENDPOINTS = ("auto", "local", "public")
 DEFAULT_SERVER_NAME = "mac-mcp"
 DEFAULT_AUTH_ENV = "MAC_MCP_API_KEY"
@@ -84,10 +104,11 @@ def render_connection_config(
     auth_required: bool,
     server_name: str = DEFAULT_SERVER_NAME,
     auth_env: str = DEFAULT_AUTH_ENV,
+    bridge_command: list[str] | None = None,
 ) -> RenderedConnectionConfig:
     selected = str(client or "").strip().lower()
-    if selected in UNGUIDED_CLIENTS:
-        raise ConnectionConfigError(UNGUIDED_CLIENTS[selected])
+    if guidance(selected):
+        raise ConnectionConfigError(guidance(selected))
     if selected not in SUPPORTED_CLIENTS:
         raise ConnectionConfigError(f"unsupported client: {selected or '<empty>'}")
 
@@ -162,6 +183,9 @@ def render_connection_config(
             verify_instruction=f"Run: claude mcp get {name}  (expect Status: Connected)",
         )
 
+    if selected == "other":
+        return _render_other(endpoint, auth_required, name, bridge_command)
+
     chatgpt_url = _chatgpt_url(endpoint, auth_required)
     secret_instruction = None
     if auth_required:
@@ -174,4 +198,28 @@ def render_connection_config(
         target="ChatGPT remote MCP app/connector URL field",
         snippet=chatgpt_url,
         secret_instruction=secret_instruction,
+    )
+
+
+def _render_other(endpoint: str, auth_required: bool, name: str, bridge_command: list[str] | None) -> RenderedConnectionConfig:
+    """Any other MCP app: the command form most apps take, and the URL form for those that only take a URL."""
+    command = list(bridge_command or ["/Users/YOU/.local/bin/mac-mcp", "stdio"])
+    payload = {"mcpServers": {name: {"command": command[0], "args": command[1:]}}}
+    url_form = f"Apps that only take a URL: use {endpoint} (Streamable HTTP)"
+    if auth_required:
+        url_form += (
+            " with the header Authorization: Bearer <API_KEY>, where <API_KEY> is Mac MCP's MCP_API_KEY. "
+            "mac-mcp connect --client other --copy-key puts the key on the clipboard without printing it."
+        )
+    else:
+        url_form += "; this Mac does not ask for a key."
+    return RenderedConnectionConfig(
+        client="other",
+        target="your AI app's MCP settings (mcpServers JSON, or a command with its arguments)",
+        snippet=json.dumps(payload, indent=2),
+        secret_instruction=(
+            "The command form needs no key: `mac-mcp stdio` adds it from Mac MCP's own settings. "
+            + url_form
+        ),
+        verify_instruction="Restart the app, then ask it something about your Mac.",
     )

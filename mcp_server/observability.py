@@ -81,6 +81,7 @@ DEFAULT_TELEMETRY_DIR = Path.home() / ".mac-mcp" / "dashboard"
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_MAX_EVENTS = 20_000
 RECENT_MEMORY_EVENTS = 250
+CLIENT_CHECKIN_LIMIT = 16
 # The whole security chain is re-walked at least this often; checks in between cover new events (#254).
 CHAIN_FULL_VERIFY_S = 600.0
 # A summary is reused while nothing was written for SUMMARY_FRESH_S, and in any case for
@@ -425,6 +426,8 @@ class TelemetryManager:
         self._summary_cache: "OrderedDict[float, tuple[float, int, Dict[str, Any]]]" = OrderedDict()
         self._chain_lock = threading.Lock()
         self._chain_verified: Optional[Dict[str, Any]] = None
+        # AI apps that checked in since the server started (#126), by the name people know them by.
+        self._client_checkins: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
         self._init_db()
         # Explicit db_path is primarily used by tests/isolated callers. Keep their
         # lifecycle deterministic unless usage collection is explicitly requested.
@@ -809,6 +812,9 @@ class TelemetryManager:
             except Exception:
                 # Usage is observability only; never fail a tool because metering failed.
                 pass
+        client = started_event.get("client")
+        if client and not str(event.get("agent_id") or "").strip() and str(event.get("source") or "") in {"mcp", "rest"}:
+            self.note_client(str(client), status=str(event.get("status") or "error"))
         with self._lock:
             self._recent.append(event)
         self._publish(event)
@@ -1047,6 +1053,35 @@ class TelemetryManager:
         with closing(self._connect()) as conn, conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_event(row) for row in rows]
+
+    def note_client(self, name: Optional[str], *, status: Optional[str] = None) -> None:
+        """An AI app checked in: it listed the tools (status None) or a call of its finished (#126).
+
+        Memory only, like the live activity's app name: the setup screens use it to tell "ChatGPT
+        is connected" from "a request worked", and nothing about it is stored.
+        """
+        label = str(name or "").strip()[:40]
+        if not label or label == "Mac MCP agent":
+            return
+        now = time.time()
+        with self._lock:
+            entry = self._client_checkins.get(label)
+            if entry is None:
+                entry = {"name": label, "seen_at": now, "first_call_at": None, "first_success_at": None}
+                self._client_checkins[label] = entry
+                while len(self._client_checkins) > CLIENT_CHECKIN_LIMIT:
+                    self._client_checkins.popitem(last=False)
+            entry["last_seen_at"] = now
+            if status is not None and entry["first_call_at"] is None:
+                entry["first_call_at"] = now
+                entry["first_call_status"] = str(status)
+            if status == "success" and entry["first_success_at"] is None:
+                entry["first_success_at"] = now
+
+    def client_checkins(self) -> List[Dict[str, Any]]:
+        """The AI apps that checked in since the server started, first one first."""
+        with self._lock:
+            return [dict(entry) for entry in self._client_checkins.values()]
 
     def first_client_calls(self) -> Dict[str, Optional[Dict[str, Any]]]:
         """The first call an AI app made over MCP or REST, and its first successful one (#59).
@@ -1423,7 +1458,16 @@ class ObservedFastMCP(FastMCP):
         return compact_tools
 
     async def list_tools(self):
-        return await self.list_available_tools(compact=True)
+        tools = await self.list_available_tools(compact=True)
+        # An AI app lists the tools when it connects (ChatGPT when its connector is created): the
+        # setup screens show it as connected before its first request (#126).
+        try:
+            context = self._policy_context_provider()
+            if not getattr(context, "agent_id", None):
+                self.telemetry.note_client(self.client_label(context))
+        except Exception:  # observability only; listing the tools never fails because of it
+            logging.getLogger(__name__).debug("client check-in not recorded", exc_info=True)
+        return tools
 
     async def list_resources(self):
         resources = await super().list_resources()

@@ -42,6 +42,37 @@ class InstallerPublicEndpointTests(unittest.TestCase):
                 self.assertEqual(0, proc.returncode, proc.stderr)
                 self.assertEqual(canonical, proc.stdout)
 
+    def test_the_public_address_is_asked_only_for_chatgpt(self) -> None:
+        # #126: an AI app on this Mac never meets the public endpoint question.
+        cases = {
+            ("local", ""): ("local", "none", False),
+            ("later", ""): ("later", "none", False),
+            ("chatgpt", ""): ("chatgpt", "none", True),
+            ("chatgpt", "cloudflare"): ("chatgpt", "cloudflare", True),
+            # An explicit scripted choice still decides, whatever the app.
+            ("local", "ngrok"): ("local", "ngrok", True),
+        }
+        for (client, mode), (first, canonical, asked) in cases.items():
+            with self.subTest(client=client, mode=mode):
+                env = {"MAC_MCP_INSTALL_CLIENT": client}
+                if mode:
+                    env["MAC_MCP_INSTALL_PUBLIC_MODE"] = mode
+                proc = self.run_bash(
+                    'TTY_AVAILABLE=0; choose_first_ai_app >/dev/null; choose_public_endpoint_if_needed; '
+                    'printf "|%s|%s" "$FIRST_AI_APP" "$PUBLIC_ENDPOINT_MODE"',
+                    env,
+                )
+                self.assertEqual(0, proc.returncode, proc.stderr)
+                self.assertTrue(proc.stdout.endswith(f"|{first}|{canonical}"), proc.stdout)
+                self.assertEqual(asked, "Public address for ChatGPT" in proc.stdout, proc.stdout)
+
+    def test_without_a_terminal_the_first_app_is_local(self) -> None:
+        proc = self.run_bash('TTY_AVAILABLE=0; choose_first_ai_app >/dev/null; printf "%s" "$FIRST_AI_APP"', {})
+        self.assertEqual((0, "local"), (proc.returncode, proc.stdout))
+        bad = self.run_bash("TTY_AVAILABLE=0; choose_first_ai_app", {"MAC_MCP_INSTALL_CLIENT": "netscape"})
+        self.assertNotEqual(0, bad.returncode)
+        self.assertIn("Invalid MAC_MCP_INSTALL_CLIENT", bad.stderr)
+
     def test_existing_cloudflared_is_accepted_without_package_install(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-bin-") as td:
             fake = Path(td) / "cloudflared"
@@ -262,7 +293,7 @@ class InstallerTargetPreflightTests(unittest.TestCase):
         stubs = "; ".join(
             f'{name}() {{ echo "CALLED {name}"; }}'
             for name in (
-                "print_header", "ensure_required_tools", "choose_public_endpoint_mode",
+                "print_header", "ensure_required_tools", "choose_first_ai_app", "choose_public_endpoint_mode",
                 "install_selected_public_provider", "handle_optional_helpers",
                 "clone_source_and_runtime",
             )
@@ -293,6 +324,6 @@ class InstallerTargetPreflightTests(unittest.TestCase):
                     self.assertNotEqual(0, proc.returncode)
                     self.assertIn("CALLED ensure_required_tools", output)
                     self.assertIn("already exists", output)
-                    for later in ("choose_public_endpoint_mode", "install_selected_public_provider",
+                    for later in ("choose_first_ai_app", "choose_public_endpoint_mode", "install_selected_public_provider",
                                   "handle_optional_helpers", "clone_source_and_runtime"):
                         self.assertNotIn(f"CALLED {later}", output)

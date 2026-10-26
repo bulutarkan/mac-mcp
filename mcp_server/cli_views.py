@@ -284,7 +284,13 @@ def render_clients(style: Style, apps: list) -> None:
         for line in textwrap.wrap(text, style.width - len(INDENT)):
             style.write(f"{INDENT}{style.paint(line, dim=True)}")
     if not present:
-        style.summary("info", "No AI app Mac MCP knows is on this Mac.")
+        # Not the end of the road: ChatGPT and any other MCP app are set up by hand.
+        style.write()
+        for line in textwrap.wrap("ChatGPT: mac-mcp connect --client chatgpt (it needs a public address first)",
+                                  style.width - len(INDENT)):
+            style.write(f"{INDENT}{line}")
+        style.summary("info", "No AI app Mac MCP knows is on this Mac. Set up another MCP app by hand",
+                      next_command="mac-mcp connect-config --client other")
         return
     added = sum(1 for app in present if app.get("added"))
     old = next((app for app in present if app.get("added") and app.get("keyless") is False), None)
@@ -322,7 +328,8 @@ def render_connect_config(style: Style, rendered, endpoint_kind: str, endpoint_u
     style.write()
     # Raw, so a copy from the terminal pastes into the app's config unchanged.
     style.stream.write(rendered.snippet.rstrip("\n") + "\n")
-    for title, text in (("Secret setup", rendered.secret_instruction), ("Verify", rendered.verify_instruction)):
+    secret_title = "Key and URL" if rendered.client == "other" else "Secret setup"
+    for title, text in ((secret_title, rendered.secret_instruction), ("Verify", rendered.verify_instruction)):
         if text:
             style.write()
             _wrapped_note(style, title, text)

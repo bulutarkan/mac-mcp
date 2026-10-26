@@ -107,6 +107,13 @@ class WrapperBehaviourTests(unittest.TestCase):
         ran = self.run_cli("update", "--check")
         self.assertEqual(("cli update --check", 0), (ran.stdout.strip(), ran.returncode))
 
+    def test_connect_config_is_passed_through(self) -> None:
+        # #126: the README's manual setup (connect-config) works through npx as well.
+        self.fake_cli()
+        ran = self.run_cli("connect-config", "--client", "other")
+        self.assertEqual(("cli connect-config --client other", 0), (ran.stdout.strip(), ran.returncode))
+        self.assertIn("connect-config", self.run_cli("--help").stdout)
+
     def test_a_cli_that_points_back_to_the_package_is_refused(self) -> None:
         cli = self.home / ".local" / "bin" / "mac-mcp"
         cli.parent.mkdir(parents=True)
