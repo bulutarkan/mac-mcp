@@ -65,6 +65,11 @@ def validate_action(index: int, action: Any) -> Dict[str, Any]:
         raise ValueError(f"actions[{index}] has unsupported type {action.get('type')!r}; use one of: {', '.join(_ACT_TYPES)}")
     if typ == "post" and not str(action.get("text") or "").strip():
         raise ValueError(f"actions[{index}] (post) needs text: the comment or reply to post")
+    if typ == "autocomplete_many":
+        from .tools_browser_agent import _autocomplete_values_problem
+        problem = _autocomplete_values_problem(action.get("values"))
+        if problem or not str(action.get("selector") or "").strip() or not str(action.get("selected_selector") or "").strip():
+            raise ValueError(f"actions[{index}] autocomplete_many requires selector and valid values: {problem or 'selector/selected_selector missing'}")
     if typ == "fill":
         problem = _fill_values_problem(action.get("values"))
         if problem:
@@ -133,6 +138,10 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
                   "selected; false appends. No partial edits."},
         "handoff_id": _str("context_handoff id instead of text."),
         "option": _str("select: option label or value."),
+        "values": {"type": "array", "minItems": 1, "maxItems": 10, "items": {"type": "string"}, "description": "autocomplete_many: exact labels to select in sequence."},
+        "option_selector": _str("autocomplete_many: CSS selector for suggestion options."),
+        "selected_selector": _str("autocomplete_many: CSS selector for committed chips/tags; required for positive verification."),
+        "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 5000},
         "key": _str("key/keyboard/shortcut: Enter, Escape, Tab, ArrowDown or one character."),
         "modifiers": {"type": "array", "items": {"type": "string"}},
         "input_mode": {"type": "string", "enum": ["auto", "dom", "trusted"]},
@@ -182,6 +191,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
          "then": {"anyOf": [{"required": ["text"]}, {"required": ["handoff_id"]}]}},
         {"if": {"properties": {"type": {"enum": list(_KEY_TYPES)}}}, "then": {"required": ["key"]}},
         {"if": {"properties": {"type": {"enum": ["dialog"]}}}, "then": {"required": ["decision"]}},
+        {"if": {"properties": {"type": {"enum": ["autocomplete_many"]}}}, "then": {"required": ["selector", "values", "selected_selector"]}},
         {"if": {"properties": {"type": {"enum": ["extract"]}}}, "then": {"required": ["fields"]}},
     ],
 }
