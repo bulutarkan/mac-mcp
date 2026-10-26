@@ -159,6 +159,23 @@ def load_env_file(path: Path) -> None:
         )
 
 
+# Credentials the server itself holds (#117). Shell commands and jobs it starts get the
+# user's normal environment without them. Kept narrow on purpose: keys the user exports for
+# their own tools (OPENROUTER_API_KEY, GROQ_API_KEY, ...) stay visible to their commands.
+SERVER_ONLY_ENV_KEYS = frozenset({
+    "MCP_API_KEY",
+    "MAC_MCP_CHROME_BRIDGE_TOKEN",
+    "MAC_MCP_CLAUDE_CODE_OAUTH_TOKEN",
+    "MAC_MCP_DECISIONS_OPENAI_API_KEY",
+    "MAC_MCP_VOICE_GROQ_API_KEY",
+})
+
+
+def child_process_env() -> Dict[str, str]:
+    """A copy of os.environ for a child process, without SERVER_ONLY_ENV_KEYS."""
+    return {name: value for name, value in os.environ.items() if name not in SERVER_ONLY_ENV_KEYS}
+
+
 def load_settings() -> Settings:
     load_env_file(BASE_DIR / ".env")
     workdir_env = os.getenv("WORKDIR", "").strip()

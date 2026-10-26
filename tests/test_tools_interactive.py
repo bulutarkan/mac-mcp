@@ -13,8 +13,10 @@ class FakeProcess:
         self.output = output
         self.timeout = timeout
         self.wait_calls = 0
+        self.stdin_text = None
 
-    def communicate(self, timeout=None):
+    def communicate(self, input=None, timeout=None):
+        self.stdin_text = input
         if self.timeout:
             raise subprocess.TimeoutExpired("osascript", timeout)
         return self.output, ""
@@ -37,7 +39,9 @@ class InteractiveToolTests(unittest.TestCase):
 
         self.assertTrue(result["confirmed"])
         self.assertEqual("confirmed", result["decision"])
-        script = popen.call_args.args[0][2]
+        # The dialog script goes on stdin; the process list shows only "osascript -".
+        self.assertEqual(["osascript", "-"], popen.call_args.args[0])
+        script = process.stdin_text
         self.assertIn('buttons {"No", "Yes"}', script)
         self.assertIn('default button "No"', script)
 

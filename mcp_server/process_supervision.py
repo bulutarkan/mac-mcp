@@ -74,16 +74,18 @@ def run_osascript(
     """Run one AppleScript in its own process group.
 
     The script goes on stdin by default (process arguments are visible to other
-    processes); `args` are passed after "--" so data stays out of the script source.
-    A timeout stops the group and returns timed_out=True. A cancelled tool call, or any
-    other failure while waiting, stops the group and re-raises. Errors starting
-    osascript itself propagate unchanged.
+    processes); `args` reach the script's run handler as argv, so data stays out of the
+    script source. A timeout stops the group and returns timed_out=True. A cancelled tool
+    call, or any other failure while waiting, stops the group and re-raises. Errors
+    starting osascript itself propagate unchanged.
     """
     command = ["osascript", "-" if script_on_stdin else "-e"]
     if not script_on_stdin:
         command.append(script)
     if args is not None:
-        command.extend(["--", *[str(value) for value in args]])
+        # After "-" osascript parses no more options and would hand a "--" to the script
+        # as its first argument; after -e <script>, "--" ends option parsing.
+        command.extend([*([] if script_on_stdin else ["--"]), *[str(value) for value in args]])
     cancellation_checkpoint()
     proc = subprocess.Popen(
         command,

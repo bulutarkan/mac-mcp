@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
-from .security import BASE_DIR, Settings, require_shell_enabled, truncate
+from .security import BASE_DIR, Settings, child_process_env, require_shell_enabled, truncate
 from . import result_pages
 from .data_guard import mask_command_credentials
 from .workspace_sandbox import shell_execution_plan
@@ -124,7 +124,7 @@ def _fsync_dir(folder: Path) -> None:
 
 
 def _base_env(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    env = os.environ.copy()
+    env = child_process_env()  # the user's environment, not the server's credentials (#117)
     env.update({
         "HOME": str(Path.home()),
         "USER": os.getenv("USER", Path.home().name),

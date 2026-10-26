@@ -95,8 +95,9 @@ def _run_native_script(script: str, total_timeout: int) -> Dict[str, Any]:
 
     try:
         try:
-            # A dialog gets a longer grace period, and is reaped after SIGKILL.
-            result = run_osascript(script, total_timeout + 5, script_on_stdin=False, grace_s=1.0, reap_s=1.0)
+            # A dialog gets a longer grace period, and is reaped after SIGKILL. The script, with
+            # the question in it, goes on stdin rather than into the process list (#117).
+            result = run_osascript(script, total_timeout + 5, grace_s=1.0, reap_s=1.0)
         except FileNotFoundError:
             return {"ok": False, "error": "osascript is not available on this Mac"}
         except ToolCancelledError:

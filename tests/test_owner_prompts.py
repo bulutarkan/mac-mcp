@@ -189,7 +189,7 @@ class OwnerPromptTests(unittest.TestCase):
         class Done:
             pid, returncode = 1, 0
 
-            def communicate(self, timeout=None):
+            def communicate(self, input=None, timeout=None):
                 return "typed\n", ""
 
             def poll(self):

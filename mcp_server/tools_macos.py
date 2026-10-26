@@ -20,9 +20,9 @@ def _run_apple(
 ) -> Dict[str, Any]:
     timeout = max(1, min(int(timeout), 120))
     try:
-        # Semantic data goes in as osascript arguments after "--": out of the AppleScript
-        # source and out of osascript option parsing.
-        result = run_osascript(script, timeout, args=args, script_on_stdin=False)
+        # The script goes on stdin, out of the process list (#117). Semantic data goes in as
+        # osascript arguments after "-": out of the AppleScript source and out of option parsing.
+        result = run_osascript(script, timeout, args=args)
     except ToolCancelledError:
         raise
     except Exception as e:

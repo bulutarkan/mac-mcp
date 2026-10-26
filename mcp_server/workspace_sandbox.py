@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 
 from .policy import current_policy_context
 from .policy_scope import AccessMode, path_is_within
+from .security import child_process_env
 
 _SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 _DEFAULT_STATE_ROOT = Path.home() / ".mac-mcp" / "state" / "shell-sandboxes"
@@ -194,7 +195,7 @@ def _scoped_env(roots: tuple[str, ...], cwd: Path, scratch: Path, extra_env: Opt
 
 
 def _normal_env(extra_env: Optional[Mapping[str, str]]) -> dict[str, str]:
-    env = os.environ.copy()
+    env = child_process_env()  # the user's environment, not the server's credentials (#117)
     env.update({
         "HOME": str(Path.home()),
         "USER": os.getenv("USER", Path.home().name),
