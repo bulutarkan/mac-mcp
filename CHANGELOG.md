@@ -7,12 +7,11 @@
 - npm publishes only from a tag that is the signed stable checkpoint itself, packed from that exact commit, with a digest-checked npm in a job of its own that alone can request the publishing token.
 - Mobile pairing keeps a bounded record of attempts (200 per minute across all addresses), and the unauthenticated development mode accepts only Mac MCP's own Chrome companion as a browser extension.
 
-### Settings: search, Decisions, Voice, Automation and Devices (roadmap #125)
-- Search Settings finds the labels you see: every row and group title is read from the panes themselves (`scripts/settings_search_labels.py`; a test fails when it is out of date), plus a short list of other names ("login", "max active agents", "browser activity"). It opens the best match on the right tab, and the open pane stays while it matches as well.
-- Advanced › OpenAI Decisions: choose where it is used (Off, Browser, Mac apps, Both). The status follows the choice, and Off never says it is in use; Privacy › Where your data can go lists OpenAI only when a scope other than Off is on.
-- Voice: the voice name and rate are saved when you press Return or leave the field, not on every keystroke, with their format shown (tr-TR-AhmetNeural, -5% or +10%); a value Microsoft's text-to-speech would refuse is not saved and says why.
-- Automation (Scheduled Tasks, Recipes) and Devices (Macs, iPhone) in the Usage tabs' look: one list box with hairlines, the same type, status dots instead of coloured pills; every action stays.
-- Connections › Browser says what you get: "Agents in Safari and Chrome".
+### Batch 2
+- Chat (#120): permission choices use ⌘1, ⌘2 and so on, never Return; repeated image pastes stay separate, failed sends keep newer text, lost connections say so, and images sent as file links explain why.
+- Menu (#123): connecting and stopped have their own states; Ready stays plain, waiting questions name the agent, ⌘R refreshes, disclosures announce their state, and failed calls have a separate filter. Conversation retention lives in Settings and applies live.
+- Settings (#125): search finds visible labels and opens the right tab; Decisions has Off, Browser, Mac apps and Both; voice fields save on Return or leaving the field and explain invalid values. Automation and Devices follow the Usage tabs, and Browser says “Agents in Safari and Chrome”.
+- Dashboard and ChatGPT panel (#127): the closed dashboard drawer stays out of the Tab order, closing restores focus, and expired access shows Sign-in needed. Panel tabs work with arrow keys and follow ChatGPT’s light or dark theme.
 
 ## [2.3.1] - 2026-10-26
 
