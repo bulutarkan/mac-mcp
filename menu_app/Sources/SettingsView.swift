@@ -1169,9 +1169,9 @@ struct SettingsView: View {
 
     /// Recording, retention and memory: settings people change rarely, on their own tab.
     private var usageStorageTab: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            GroupBox { usageDataSettings.padding(.vertical, 2) }
-            GroupBox { memorySettings.padding(.vertical, 2) }
+        VStack(alignment: .leading, spacing: 0) {
+            usageDataSettings
+            memorySettings.padding(.top, 28)
         }
         .task { await state.refreshMemory() }
         .confirmationDialog("Delete all stored usage data?", isPresented: $confirmClearUsage) {
@@ -1193,99 +1193,151 @@ struct SettingsView: View {
         }
     }
 
+    /// Tool and provider usage history: whether it is kept, for how long, and clearing it.
     private var usageDataSettings: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("Usage").font(.subheadline.weight(.semibold))
-            HStack(spacing: 16) {
-                Toggle(
-                    "Record usage",
-                    isOn: Binding(
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Usage history").font(.system(size: 13, weight: .semibold))
+            VStack(spacing: 0) {
+                UsageSettingRow(title: "Record usage",
+                                note: usageRecordingNote) {
+                    Toggle("Record usage", isOn: Binding(
                         get: { usageMeteringEnabled },
                         set: { value in Task { await state.updateUsagePrivacy(enabled: value) } }
-                    )
-                )
-                Picker(
-                    "Keep for",
-                    selection: Binding(
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                }
+                Divider()
+                UsageSettingRow(title: "Keep for",
+                                note: "Older days are removed on their own.") {
+                    Picker("Keep for", selection: Binding(
                         get: { usageRetentionDays },
                         set: { value in Task { await state.updateUsagePrivacy(retentionDays: value) } }
-                    )
-                ) {
-                    Text("30 days").tag(30)
-                    Text("90 days").tag(90)
-                    Text("365 days").tag(365)
+                    )) {
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                        Text("365 days").tag(365)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .frame(width: 190)
-                Spacer(minLength: 8)
-                Button("Clear Usage Data…", role: .destructive) { confirmClearUsage = true }
+                Divider()
+                UsageSettingRow(title: "Clear usage data",
+                                note: "Removes the tool and provider usage history from this Mac.") {
+                    Button("Clear Usage Data…", role: .destructive) { confirmClearUsage = true }
+                }
             }
-            Text("Only daily per-tool counts, sizes and latency buckets are kept, never prompts, arguments or results. Older days are removed automatically.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .usageListBox()
+            Text("Only daily per-tool counts, sizes and latency buckets are kept, never prompts, arguments or results.")
+                .font(.system(size: 12)).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             if let notice = state.usageDataNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(notice).font(.system(size: 12)).foregroundStyle(.secondary)
             }
         }
     }
 
+    /// "Recording since Oct 4." while it records; what turning it on would do while it does not.
+    private var usageRecordingNote: String {
+        guard usageMeteringEnabled else { return "Off: no new usage is kept. What is already here stays until it expires." }
+        if let since = state.usageSummary?.availableSince.flatMap(usageDayDate) {
+            return "Recording since \(since.formatted(.dateTime.month(.abbreviated).day().year()))."
+        }
+        return "Recording."
+    }
+
+    /// The memories agents keep: how many and how much, how long they stay, and reviewing, exporting or
+    /// deleting them.
     private var memorySettings: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("Memory").font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Memory").font(.system(size: 13, weight: .semibold))
             if let memory = state.memoryOverview {
-                Text(memory.count == 0
-                     ? "No memories are stored."
-                     : "\(memory.count) memories (\(memory.importantCount) high or critical), \(memory.oldest ?? "?") to \(memory.newest ?? "?"), \(ByteCountFormatter.string(fromByteCount: Int64(memory.bytesOnDisk), countStyle: .file)) on disk.")
-                    .font(.caption)
+                if memory.count == 0 {
+                    Text("No memories are stored.").font(.system(size: 13)).foregroundStyle(.secondary)
+                        .padding(.bottom, 4)
+                } else {
+                    UsageFactsRow(facts: [
+                        UsageFact(value: UsageFormat.exact(memory.count), title: memory.count == 1 ? "Memory" : "Memories",
+                                  note: "\(UsageFormat.exact(memory.importantCount)) high or critical."),
+                        UsageFact(value: memorySpan(memory), title: "Saved between",
+                                  note: "The oldest and the newest memory."),
+                        UsageFact(value: UsageFormat.bytes(memory.bytesOnDisk), title: "On disk",
+                                  note: "Markdown day files and a search index, owner-only."),
+                    ])
+                    .padding(.bottom, 6)
+                }
             }
-            HStack(spacing: 16) {
-                Picker(
-                    "Keep for",
-                    selection: Binding(
+            VStack(spacing: 0) {
+                UsageSettingRow(title: "Keep for",
+                                note: "Memories older than this are removed on their own.") {
+                    Picker("Keep for", selection: Binding(
                         get: { state.memoryOverview?.retentionDays ?? 0 },
                         set: { value in Task { await state.updateMemoryRetention(days: value) } }
-                    )
-                ) {
-                    Text("Until deleted").tag(0)
-                    Text("90 days").tag(90)
-                    Text("180 days").tag(180)
-                    Text("1 year").tag(365)
-                    Text("2 years").tag(730)
+                    )) {
+                        Text("Until deleted").tag(0)
+                        Text("90 days").tag(90)
+                        Text("180 days").tag(180)
+                        Text("1 year").tag(365)
+                        Text("2 years").tag(730)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .frame(width: 210)
-                Toggle(
-                    "Keep high and critical",
-                    isOn: Binding(
+                Divider()
+                UsageSettingRow(title: "Keep high and critical",
+                                note: (state.memoryOverview?.retentionDays ?? 0) == 0
+                                    ? "Applies once memories expire; now they stay until deleted."
+                                    : "Important memories stay past the time above.") {
+                    Toggle("Keep high and critical", isOn: Binding(
                         get: { state.memoryOverview?.keepImportant ?? true },
                         set: { value in Task { await state.updateMemoryRetention(keepImportant: value) } }
-                    )
-                )
-                .disabled((state.memoryOverview?.retentionDays ?? 0) == 0)
-                Spacer(minLength: 8)
-            }
-            HStack(spacing: 8) {
-                // Read, fix or delete one memory or lesson at a time (#60).
-                Button("Review Memories and Lessons…") { reviewingMemory = true }
-                Button("Export Memories…") { exportMemories() }
-                Button("Delete All Memories…", role: .destructive) {
-                    Task { memoryClearPreview = await state.clearMemory(confirm: false) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled((state.memoryOverview?.retentionDays ?? 0) == 0)
                 }
-                .disabled((state.memoryOverview?.count ?? 0) == 0)
-                Spacer()
+                Divider()
+                // Read, fix or delete one memory or lesson at a time (#60).
+                UsageSettingRow(title: "Review memories and lessons",
+                                note: "Read, fix or delete them one at a time.") {
+                    Button("Review Memories and Lessons…") { reviewingMemory = true }
+                }
+                Divider()
+                UsageSettingRow(title: "Export memories", note: "Saves them all as one JSON file.") {
+                    Button("Export Memories…") { exportMemories() }
+                }
+                Divider()
+                UsageSettingRow(title: "Delete all memories", note: "Asks first, and says how many will go.") {
+                    Button("Delete All Memories…", role: .destructive) {
+                        Task { memoryClearPreview = await state.clearMemory(confirm: false) }
+                    }
+                    .disabled((state.memoryOverview?.count ?? 0) == 0)
+                }
             }
-            Text("Agents save memories as Markdown day files plus a local search index; both are owner-only. Deleting removes the text from both, which is not a forensic disk wipe.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .usageListBox()
+            Text("Deleting removes the text from the day files and the search index; it is not a forensic disk wipe.")
+                .font(.system(size: 12)).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             if let notice = state.memoryNotice {
-                Text(notice).font(.caption).foregroundStyle(.secondary)
+                Text(notice).font(.system(size: 12)).foregroundStyle(.secondary)
             }
         }
         .sheet(isPresented: $reviewingMemory, onDismiss: { Task { await state.refreshMemory() } }) {
             MemoryReviewView().environmentObject(state)
         }
+    }
+
+    /// "Sep 7 – Oct 22" (with the years when they differ from this one).
+    private func memorySpan(_ memory: MemoryOverview) -> String {
+        let dates = [memory.oldest, memory.newest].map { $0.flatMap { usageDayDate(String($0.prefix(10))) } }
+        guard let first = dates[0], let last = dates[1] else { return "\(memory.oldest ?? "?") – \(memory.newest ?? "?")" }
+        let thisYear = Calendar.current.component(.year, from: Date())
+        func short(_ date: Date) -> String {
+            Calendar.current.component(.year, from: date) == thisYear
+                ? date.formatted(.dateTime.month(.abbreviated).day())
+                : date.formatted(.dateTime.month(.abbreviated).day().year())
+        }
+        return Calendar.current.isDate(first, inSameDayAs: last) ? short(first) : "\(short(first)) – \(short(last))"
     }
 
     private func exportMemories() {

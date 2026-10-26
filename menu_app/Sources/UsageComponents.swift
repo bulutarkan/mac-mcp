@@ -463,3 +463,32 @@ struct UsageRow<Icon: View, Detail: View>: View {
                 .contentShape(Rectangle())
     }
 }
+
+/// A setting as System Settings lists it: its name and one sentence on the left, its control on the right.
+struct UsageSettingRow<Control: View>: View {
+    let title: String
+    var note: String?
+    let control: Control
+
+    init(title: String, note: String? = nil, @ViewBuilder control: () -> Control) {
+        self.title = title
+        self.note = note
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13))
+                if let note {
+                    Text(note).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 12)
+            control
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .accessibilityElement(children: .contain)
+    }
+}
