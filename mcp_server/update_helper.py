@@ -1047,8 +1047,8 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
             pid_file.unlink(missing_ok=True)
             old_pid = None
             break
-        if current.status == "unverifiable":
-            raise UpdateError("Mac MCP process identity became unverifiable while stopping it.")
+        # "unverifiable": a server on its way out stays alive for a moment with no readable metadata
+        # (`mac-mcp stop` waits that out too). Never signal it again; wait for it to disappear.
         time.sleep(0.2)
 
     if old_pid is not None:
@@ -1058,7 +1058,7 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
             port=int(port),
             project_root=runtime,
         )
-        if current.valid:
+        if current.valid or current.status == "unverifiable":
             raise UpdateError("Verified Mac MCP process did not stop within 8 seconds; refusing unsafe restart.")
         pid_file.unlink(missing_ok=True)
 

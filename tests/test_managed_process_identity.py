@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from mcp_server import cli, diagnostics, managed_process, update_helper
 from mcp_server.managed_process import (
@@ -503,6 +503,49 @@ class SafeLifecycleTests(unittest.TestCase):
                 with self.assertRaises(update_helper.UpdateError):
                     update_helper._restart_cli(runtime, "127.0.0.1", 8765)
             kill.assert_not_called()
+
+    def _restart_with_stop_states(self, states: list[str]) -> tuple[MagicMock, MagicMock, BaseException]:
+        """Run the updater's restart while the old server passes through `states` as it stops."""
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-update-stop-") as td:
+            root = Path(td)
+            state = root / ".mac-mcp"
+            state.mkdir()
+            (state / "mac-mcp.pid").write_text("{}\n", encoding="utf-8")
+            runtime = root / "runtime"
+            runtime.mkdir()
+            seen = iter(["valid", *states])
+            last = {"status": "valid"}
+
+            def validate(*_args, **_kwargs):
+                last["status"] = next(seen, last["status"])
+                return ProcessValidation(last["status"], 9090, "server", "json", "test")
+
+            clock = iter(range(0, 10_000))
+            with patch.object(update_helper.Path, "home", return_value=root), \
+                 patch.object(update_helper, "validate_process_record", side_effect=validate), \
+                 patch.object(update_helper.os, "kill") as kill, \
+                 patch.object(update_helper.time, "time", side_effect=lambda: next(clock) * 0.2), \
+                 patch.object(update_helper.time, "sleep"), \
+                 patch.object(update_helper, "_start_under_server_helper",
+                              side_effect=RuntimeError("new server started")) as start:
+                with self.assertRaises(BaseException) as raised:
+                    update_helper._restart_cli(runtime, "127.0.0.1", 8765)
+        return kill, start, raised.exception
+
+    def test_updater_waits_while_an_exiting_server_is_briefly_unreadable(self) -> None:
+        # A server on its way out stays alive for a moment with no readable metadata; `mac-mcp stop`
+        # waits that out, and so must the updater instead of failing the promote.
+        kill, start, error = self._restart_with_stop_states(["unverifiable", "unverifiable", "dead"])
+        self.assertEqual("new server started", str(error))
+        kill.assert_called_once()
+        start.assert_called_once()
+
+    def test_updater_refuses_to_start_beside_a_server_that_never_stops(self) -> None:
+        kill, start, error = self._restart_with_stop_states(["unverifiable"])
+        self.assertIsInstance(error, update_helper.UpdateError)
+        self.assertIn("did not stop", str(error))
+        kill.assert_called_once()
+        start.assert_not_called()
 
     def test_doctor_reports_foreign_listener_as_failure(self) -> None:
         with patch("mcp_server.diagnostics.validate_process_record") as validate,              patch("mcp_server.diagnostics._launchctl_pid", return_value=None),              patch("mcp_server.diagnostics.listener_pids", return_value=[5151]),              patch("mcp_server.diagnostics.process_snapshot", return_value=ProcessSnapshot(
