@@ -16,6 +16,19 @@ let socket = null;
 let reconnectTimer = null;
 let pingTimer = null;
 let failedAttempts = 0;
+// When the server last answered on the current socket, and when that socket was opened. A socket that
+// stays OPEN or CONNECTING on this side after the server lost it would otherwise block every reconnect.
+let lastHeardAt = 0;
+let socketStartedAt = 0;
+const STALE_MS = 30000;
+const CONNECTING_MS = 10000;
+
+function socketAlive() {
+  if (!socket) return false;
+  if (socket.readyState === WebSocket.OPEN) return Date.now() - lastHeardAt < STALE_MS;
+  if (socket.readyState === WebSocket.CONNECTING) return Date.now() - socketStartedAt < CONNECTING_MS;
+  return false;
+}
 
 // Lifecycle notes that survive worker restarts and ride along with hello, so the server log shows
 // why the companion went quiet (woken or not, attempts skipped, close codes).
@@ -627,8 +640,16 @@ function connect(trigger) {
   const why = typeof trigger === 'string' ? trigger : 'event';
   if (!PORT || !TOKEN) { note('skip', {why, r: 'no_config'}); return; }
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-    if (why !== 'alarm') note('skip', {why, r: socket.readyState === WebSocket.OPEN ? 'open' : 'connecting'});
-    return;
+    if (socketAlive()) {
+      if (why !== 'alarm') note('skip', {why, r: socket.readyState === WebSocket.OPEN ? 'open' : 'connecting'});
+      return;
+    }
+    // Open on this side, silent on the other: drop it and connect again now.
+    note('stale', {why, state: socket.readyState});
+    const old = socket;
+    socket = null;
+    clearTimers();
+    try { old.close(); } catch (_) {}
   }
   // An alarm or page wake during a backoff wait leaves the retry to the pending timer.
   if (trigger !== 'timer' && reconnectTimer) note('skip', {why, r: 'backoff'});
@@ -638,17 +659,21 @@ function connect(trigger) {
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}/chrome-background-bridge`);
   let accepted = false;
   socket = ws;
+  socketStartedAt = Date.now();
   ws.addEventListener('open', () => {
+    lastHeardAt = Date.now();
     send({type: 'hello', token: TOKEN, features: FEATURES, version: chrome.runtime.getManifest().version});
     void recentNotes().then((notes) => { if (notes.length) send({type: 'diag', notes}); });
     // Chrome stops an idle extension worker even while this socket is open; an extension API call
     // every 20 seconds counts as activity and keeps the bridge alive between requests.
     pingTimer = setInterval(() => {
+      if (!socketAlive()) { connect('stale'); return; }
       send({type: 'ping'});
       try { chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError); } catch (_) {}
     }, 20000);
   });
   ws.addEventListener('message', (event) => {
+    if (socket === ws) lastHeardAt = Date.now();
     let message = null;
     try { message = JSON.parse(String(event.data || '')); } catch (_) { return; }
     // Only a server that accepted the token resets the backoff.
@@ -664,7 +689,9 @@ function connect(trigger) {
   });
   ws.addEventListener('close', (event) => {
     note('close', {code: event.code, clean: event.wasClean, accepted});
-    if (socket === ws) socket = null;
+    // A socket already replaced (dropped as stale) must not stop its successor's timers.
+    if (socket !== ws) return;
+    socket = null;
     if (!accepted) failedAttempts += 1;
     clearTimers();
     scheduleReconnect();
