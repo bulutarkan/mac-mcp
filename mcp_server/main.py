@@ -2480,7 +2480,14 @@ def create_app():
             errors = []
             scans: List[Dict[str, Any]] = []
             read: Optional[Dict[str, Any]] = None
+            pdf: Optional[Dict[str, Any]] = None
+            network: Optional[Dict[str, Any]] = None
             for item in result.get("actions") or []:
+                if item.get("type") == "pdf" and item.get("ok") is not False:
+                    pdf = {key: item[key] for key in (
+                        "path", "artifact_id", "sha256", "size", "method", "chrome_print_error") if key in item}
+                if item.get("type") == "network" and item.get("ok") is not False:
+                    network = {key: value for key, value in item.items() if key not in {"ok", "type"}}
                 if item.get("type") == "read" and item.get("ok") is not False:
                     read = {key: item[key] for key in (
                         "text", "offset", "returned_chars", "total_chars", "next_offset", "complete", "headings",
@@ -2518,6 +2525,10 @@ def create_app():
             compact.update(extraction_meta)
             if read is not None:
                 compact["read"] = read
+            if pdf is not None:
+                compact["pdf"] = pdf
+            if network is not None:
+                compact["network"] = network
             if len(scans) == 1:
                 compact["scan"] = scans[0]
             elif scans:

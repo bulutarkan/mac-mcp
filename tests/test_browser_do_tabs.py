@@ -59,6 +59,22 @@ class BrowserDoTabsTests(unittest.TestCase):
         self.assertEqual(("t-held", "tab_owned_by_other_agent", "another_agent"), (held["tab_handle"], held["error"], held["owner"]))
         self.assertEqual({"h1": "t-b"}, last["data"])
 
+    def test_pdf_and_network_results_reach_the_caller(self) -> None:
+        def fake_act(_settings, **kwargs):
+            return {"ok": True, "actions": [
+                {"type": "pdf", "ok": True, "method": "chrome_print", "path": "/tmp/x.pdf", "artifact_id": "art_1",
+                 "sha256": "ab", "size": 10, "url": "https://a.test/", "title": "A"},
+                {"type": "network", "ok": True, "requests": [{"seq": 1, "url": "https://a.test/api"}], "next_since": 1},
+            ]}
+
+        with patch.object(main, "browser_act", side_effect=fake_act):
+            out = self._call({"tabs": ["t-a"], "actions": [{"type": "pdf"}, {"type": "network"}]})
+        page = out["tabs"][0]
+        self.assertEqual({"path": "/tmp/x.pdf", "artifact_id": "art_1", "sha256": "ab", "size": 10,
+                          "method": "chrome_print"}, page["pdf"])
+        self.assertEqual(1, page["network"]["next_since"])
+        self.assertEqual("https://a.test/api", page["network"]["requests"][0]["url"])
+
     def test_tabs_refuse_page_changing_actions_and_url_before_anything_runs(self) -> None:
         cases = [
             {"tabs": ["t-a"], "actions": [{"type": "click", "query": "Buy"}]},
