@@ -236,8 +236,12 @@ struct SettingsView: View {
         }
         .frame(minWidth: 820, idealWidth: 920, minHeight: 560, idealHeight: 640)
         .background(.regularMaterial)
-        .onAppear { applyNavigationRequest() }
+        .onAppear {
+            navigation.lastSection = selection
+            applyNavigationRequest()
+        }
         .onChange(of: navigation.requestedSection) { _ in applyNavigationRequest() }
+        .onChange(of: selection) { section in navigation.lastSection = section }
         .task {
             audio.refresh()
             state.refreshCloudflareCredentialState()

@@ -97,7 +97,12 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
     def test_settings_can_open_on_a_requested_pane(self) -> None:
         self.assertIn("func show(state: AppState, settings: SettingsStore, section: SettingsSection? = nil)", self.window)
         self.assertIn("SettingsNavigation.shared.requestedSection = section", self.window)
-        self.assertIn("initialSection: section ?? .general", self.window)
+        self.assertIn("initialSection: section ?? SettingsNavigation.shared.lastSection ?? .general", self.window)
+        # A closed window is rebuilt on the pane a link asks for, never reopened on the last one (first link lost).
+        self.assertIn("func windowWillClose(_ notification: Notification)", self.window)
+        self.assertIn("windowController = nil", self.window)
+        self.assertIn("window.delegate = self", self.window)
+        self.assertIn(".onChange(of: selection) { section in navigation.lastSection = section }", self.view)
         self.assertIn("_selection = MacMCPState(initialValue: initialSection)", self.view)
         self.assertIn(".onChange(of: navigation.requestedSection)", self.view)
 

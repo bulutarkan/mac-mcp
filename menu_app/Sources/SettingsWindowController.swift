@@ -6,6 +6,8 @@ import SwiftUI
 final class SettingsNavigation: ObservableObject {
     static let shared = SettingsNavigation()
     @Published var requestedSection: SettingsSection?
+    /// The pane shown last, so Settings reopened without a link comes back to it.
+    var lastSection: SettingsSection?
 }
 
 @MainActor
@@ -28,8 +30,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             return
         }
 
+        // A new window opens on the requested pane itself; an older request must not override it.
+        SettingsNavigation.shared.requestedSection = nil
         let hostingController = NSHostingController(
-            rootView: SettingsView(state: state, settings: settings, initialSection: section ?? .general)
+            rootView: SettingsView(state: state, settings: settings,
+                                   initialSection: section ?? SettingsNavigation.shared.lastSection ?? .general)
         )
         let window = NSWindow(contentViewController: hostingController)
         // Named for the Window menu, Mission Control and VoiceOver, not shown: the sidebar already says Settings.
@@ -50,6 +55,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let controller = NSWindowController(window: window)
         windowController = controller
         present(window: window, transientWindows: transientWindows)
+    }
+
+    /// A closed Settings window is let go, so the next show builds it again on the pane asked for. A link
+    /// to a closed window that was kept used to open on the pane shown last: its view never saw the request
+    /// made while it was hidden, and only a second link got through (macmcp://settings/teams).
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow, closing === windowController?.window else { return }
+        windowController = nil
     }
 
     private func present(window: NSWindow, transientWindows: [NSWindow]) {
