@@ -47,7 +47,7 @@ from .workflow_checkpoints import (
     resume_prompt as durable_resume_prompt, rollback_resumed_agent, update_provider_state,
     workflow_for_agent, workflow_input_hash,
 )
-from . import browser_tabs
+from . import browser_tabs, paths
 from .agent_worktrees import (
     GIT_ISOLATION_MODES, AgentWorktreeError, apply_worktree, cleanup_worktree,
     inspect_worktree, prepare_worktree, remapped_roots, resolve_git_base, reuse_worktree, seed_worktree,
@@ -73,11 +73,14 @@ from .security_context import current_delegated_provenance
 from .provider_usage import (
     SOURCE_REPORT as PROVIDER_USAGE_SOURCE_REPORT,
     UsageRecord as ProviderUsageRecord,
+    finish_team_agent as finish_team_usage_agent,
     get_store as get_provider_usage_store,
     normalize_claude_usage,
     normalize_codex_usage,
     normalize_grok_usage,
     normalize_opencode_usage,
+    record_team_agent as record_team_usage_agent,
+    team_summary as team_usage_store_summary,
 )
 
 AGENTS_DIR = BASE_DIR / "agents"
@@ -1525,6 +1528,7 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
         task_map = _team_task_map(team)
         reviewer_map = _team_reviewer_map(team)
         changed = False
+        ended: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
 
         # Reconcile agent terminal states back into graph nodes.
         for task in tasks:
@@ -1543,6 +1547,7 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
                     task["state"] = "running"
                     if agent_id not in team.setdefault("agent_ids", []):
                         team["agent_ids"].append(agent_id)
+                    _record_team_usage(team, task, agent_id)
                     changed = True
             if not agent_id:
                 _release_task_admission(task)
@@ -1566,6 +1571,7 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
             _release_task_admission(task)
             task["active_agent_id"] = None
             changed = True
+            ended.append((agent_id, agent_meta, task))
             if agent_status == "cancelled":
                 # A stopped task is cancelled, not failed; say who stopped it.
                 requested_by = (agent_meta.get("cancellation") or {}).get("requested_by")
@@ -1627,6 +1633,9 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
             target["failure_reason"] = None
             task["state"] = "blocked"
             task["failure_reason"] = None
+
+        for agent_id, agent_meta, task in ended:
+            _finish_team_usage(agent_id, agent_meta, task.get("gate_result") if task.get("review_of") else None)
 
         task_map = _team_task_map(team)
         reviewer_map = _team_reviewer_map(team)
@@ -1775,6 +1784,7 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
                 changed = spawn_failed = True
                 continue
             agent_id = str(item["agent_id"])
+            _record_team_usage(team, task, agent_id, chosen)
             task.setdefault("agent_ids", []).append(agent_id)
             task["active_agent_id"] = agent_id
             task["latest_agent_id"] = agent_id
@@ -2275,6 +2285,108 @@ def _history_preset(value: Any) -> Optional[Dict[str, str]]:
     if not isinstance(value, dict) or not value.get("id"):
         return None
     return {"id": str(value["id"])[:16], "name": _history_label(value.get("name"), 60)}
+
+
+# Usage › Teams: each team agent is remembered in the provider usage store with the team, saved team and
+# member it ran as, so its tokens stay attributable after the team's files are cleaned up. Labels only.
+
+def _team_usage_kept() -> bool:
+    """Agents kept in a scratch agents dir (a test run) are not this install's: they stay out of its usage
+    store, unless the state dir is set apart as well."""
+    return AGENTS_DIR == paths.agents_dir() or bool(os.getenv("MAC_MCP_STATE_DIR", "").strip())
+
+
+def _record_team_usage(team: Dict[str, Any], task: Dict[str, Any], agent_id: str,
+                       chosen: Optional[Dict[str, Any]] = None, started_at: Optional[float] = None) -> None:
+    if not _team_usage_kept():
+        return
+    try:
+        preset = team.get("team_preset") if isinstance(team.get("team_preset"), dict) else {}
+        member = task.get("preset_member") if isinstance(task.get("preset_member"), dict) else {}
+        selection = chosen or _task_selection(team, task)
+        record_team_usage_agent({
+            "agent_id": agent_id, "team_id": team.get("team_id"),
+            "team_title": _history_label(team.get("title"), 120),
+            "preset_id": preset.get("id"), "preset_name": _history_label(preset.get("name"), 60),
+            "member_id": member.get("id"), "member_name": _history_label(member.get("name"), 60),
+            "provider": selection.get("provider"), "model": selection.get("model"),
+            "reasoning": selection.get("reasoning"), "role": task.get("role"),
+            "task_id": task.get("id"), "task_title": _history_label(task.get("title"), 120),
+            "started_at": started_at or _now(),
+        })
+    except Exception:  # usage bookkeeping never stops a team
+        pass
+
+
+def _finish_team_usage(agent_id: str, meta: Dict[str, Any], gate: Optional[str] = None) -> None:
+    if not _team_usage_kept():
+        return
+    try:
+        finish_team_usage_agent(agent_id, started_at=meta.get("started_at"), ended_at=meta.get("ended_at") or _now(),
+                                status=meta.get("status"), gate=gate)
+    except Exception:
+        pass
+
+
+def _backfill_team_usage() -> None:
+    """Teams still on disk fill in what the store missed: a run from before it kept teams, or a server stop
+    between an agent's start and its record or between its end and the team's next tick."""
+    if not _team_usage_kept():
+        return
+    try:
+        known = get_provider_usage_store().team_agent_states()
+    except Exception:
+        return
+    if not TEAMS_DIR.exists():
+        return
+    presets = {preset["id"]: preset for preset in _team_presets()[0]}
+    for path in TEAMS_DIR.glob("*/meta.json"):
+        try:
+            team = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(team, dict) or not team.get("team_id"):
+            continue
+        record = team.get("team_preset") if isinstance(team.get("team_preset"), dict) else {}
+        preset = presets.get(str(record.get("id") or ""))
+        by_name = {member["name"].casefold(): member for member in (preset or {}).get("members", [])}
+        for task in team.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            agent_ids = [str(agent_id) for agent_id in task.get("agent_ids") or [] if not known.get(str(agent_id))]
+            if not agent_ids:
+                continue
+            if record and not isinstance(task.get("preset_member"), dict):
+                # Teams from before tasks kept their member: a member's task is titled with its name.
+                member = by_name.get(str(task.get("title") or "").strip().casefold())
+                if member:
+                    task = {**task, "preset_member": {"id": member["id"], "name": member["name"]}}
+            for agent_id in agent_ids:
+                try:
+                    meta = _read_meta(agent_id)
+                except HTTPException:
+                    continue
+                if agent_id not in known:
+                    _record_team_usage(team, task, agent_id,
+                                       {key: meta.get(key) for key in ("provider", "model", "reasoning")},
+                                       started_at=meta.get("started_at") or meta.get("spawn_requested_at"))
+                if str(meta.get("status") or "") in TERMINAL_STATUSES:
+                    latest_review = task.get("review_of") and agent_id == str(task.get("latest_agent_id") or "")
+                    _finish_team_usage(agent_id, meta, task.get("gate_result") if latest_review else None)
+
+
+def team_usage_summary(days: int = 365) -> Dict[str, Any]:
+    """Settings › Usage › Teams: tokens by saved team, member, day and run (provider_usage.team_summary)."""
+    _backfill_team_usage()
+    presets, problems = _team_presets()
+    # Saved teams that cannot be read are not deleted ones: then no team is shown as deleted.
+    unreadable = not presets and any("no team presets read" in problem for problem in problems)
+    return team_usage_store_summary(
+        days=days, presets=None if unreadable else {
+            preset["id"]: {"name": preset["name"], "member_ids": [member["id"] for member in preset["members"]]}
+            for preset in presets
+        },
+    )
 
 
 def _history_agent(agent_id: str, label: str, usage_rows: Dict[str, Dict[str, Optional[int]]]) -> Optional[Dict[str, Any]]:
@@ -6337,6 +6449,14 @@ def spawn_agents(
                 raise HTTPException(exc.status_code, f"{where}: {exc.detail}") from exc
             selection_problems.append(f"{where}: {exc.detail}")
     _raise_input_problems(selection_problems)
+    # The saved member each task runs as stays on the task, for Usage › Teams; a retry passes it back.
+    for index, task in enumerate(normalized):
+        member = preset_members[index] if index < len(preset_members) else None
+        kept = tasks[index].get("preset_member") if team_preset_record and not preset_ref else None
+        if member is None and isinstance(kept, dict) and kept.get("id"):
+            member = kept
+        if member is not None:
+            task["preset_member"] = {"id": str(member["id"])[:64], "name": str(member.get("name") or "")[:60]}
 
     persisted_tasks = [_persisted_team_task(task, team_scope, workdir, access_mode) for task in normalized]
 
@@ -7386,6 +7506,8 @@ def agent_action(
                     "review_of": task.get("review_of"),
                     "max_revisions": int(task["max_revisions"] if task.get("max_revisions") is not None else (team.get("max_revisions") or 0)),
                     **{key: task[key] for key in ("provider", "model", "reasoning") if task.get(key)},
+                    # The saved member it ran as, so Usage › Teams keeps naming it.
+                    **({"preset_member": task["preset_member"]} if task.get("preset_member") else {}),
                 })
             return spawn_agents(
                 settings=settings, tasks=tasks, provider=team["provider"], model=team.get("model"),

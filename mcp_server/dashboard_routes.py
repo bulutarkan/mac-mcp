@@ -65,7 +65,7 @@ from .steering import (
 )
 from .tools_agents import (
     agent_action, agent_catalog, dashboard_team_summary, list_agents, provider_overview, team_history,
-    team_message_history,
+    team_message_history, team_usage_summary,
 )
 from .tools_browser import browser_activate_tab
 from .workspace_arbitration import owner_action, owner_takeover_snapshot
@@ -1698,6 +1698,19 @@ def create_dashboard_routes(
             )
         return JSONResponse(payload)
 
+    async def team_usage(request: Request) -> Response:
+        """Settings › Usage › Teams: tokens by saved team, member, day and run over `days`."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        days = max(1, min(_int_query(request, "days", 365), 400))
+        try:
+            payload = await asyncio.to_thread(team_usage_summary, days)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "days": days, "teams": [], "error": str(sanitize_value(exc))},
+                                status_code=500)
+        return JSONResponse(payload)
+
     async def events(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -2167,6 +2180,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/catalog/install", catalog_install, methods=["POST"]),
         Route("/dashboard/api/catalog/enable-script", catalog_enable_script, methods=["POST"]),
         Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),
+        Route("/dashboard/api/team-usage", team_usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/transactions", transactions, methods=["GET"]),
         Route("/dashboard/api/transactions/undo", undo_transaction_route, methods=["POST"]),
