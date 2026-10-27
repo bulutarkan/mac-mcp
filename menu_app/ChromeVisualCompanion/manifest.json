@@ -26,6 +26,7 @@
   ],
   "permissions": [
     "debugger",
-    "alarms"
+    "alarms",
+    "storage"
   ]
 }

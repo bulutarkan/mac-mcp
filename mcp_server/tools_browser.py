@@ -590,12 +590,25 @@ def _open_chrome_cold_background(url: str) -> tuple[Dict[str, Any], Dict[str, An
 
 
 def _chrome_window_id(window_index: int) -> int:
-    """Chrome's own id for the window at this AppleScript index (the companion's chrome.windows id)."""
+    """Chrome's own id for the window at this index (the companion's chrome.windows id).
+
+    Counts browser windows only: a DevTools window is a Chrome window to AppleScript, but the companion
+    cannot open a tab in it, so window 1 is the frontmost window that shows web pages.
+    """
     try:
-        return int(str(_run_osascript(
-            f'tell application "Google Chrome" to get id of window {int(window_index)}', timeout_s=10,
-        )).strip())
-    except (HTTPException, ValueError) as exc:
+        listing = str(_run_osascript(
+            'tell application "Google Chrome"\n'
+            '  set out to ""\n'
+            '  repeat with w in windows\n'
+            '    set out to out & (id of w as text) & (character id 9) & (URL of active tab of w) & linefeed\n'
+            '  end repeat\n'
+            '  return out\n'
+            'end tell', timeout_s=10,
+        ))
+        ids = [int(line.split("\t", 1)[0]) for line in listing.splitlines()
+               if line.strip() and not line.split("\t", 1)[-1].startswith("devtools://")]
+        return ids[int(window_index) - 1]
+    except (HTTPException, ValueError, IndexError) as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "ok": False, "error": "browser_window_not_found", "window_index": int(window_index),
             "message": f"Google Chrome has no window {int(window_index)}; nothing was opened.",

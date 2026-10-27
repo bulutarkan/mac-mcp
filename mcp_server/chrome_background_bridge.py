@@ -396,6 +396,19 @@ class ChromeBackgroundBridge:
 chrome_background_bridge = ChromeBackgroundBridge()
 
 
+def _diag_line(diag: Any) -> str:
+    """The companion's recent lifecycle notes as one short log line: when it woke, what it skipped, close codes."""
+    parts = []
+    for entry in (diag if isinstance(diag, list) else [])[-16:]:
+        if not isinstance(entry, dict):
+            continue
+        stamp = time.strftime("%H:%M:%S", time.localtime(float(entry.get("t") or 0) / 1000.0))
+        detail = ",".join(f"{key}={str(value)[:16]}" for key, value in entry.items()
+                          if key in {"why", "r", "code", "clean", "accepted", "state"})
+        parts.append(f"{stamp} {str(entry.get('e') or '?')[:16]}" + (f"({detail})" if detail else ""))
+    return " | ".join(parts)
+
+
 def _loopback_client(websocket: WebSocket) -> bool:
     host = str(getattr(websocket.client, "host", "") or "")
     return host in {"127.0.0.1", "::1"}
@@ -429,6 +442,10 @@ async def chrome_background_bridge_websocket(websocket: WebSocket) -> None:
                 chrome_background_bridge.touch(connection_id)
                 if message.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
+                elif message.get("type") == "diag":
+                    line = _diag_line(message.get("notes"))
+                    if line:
+                        print(f"[chrome companion] connected; recent: {line}", file=sys.stderr, flush=True)
                 else:
                     chrome_background_bridge.handle_message(message)
     except WebSocketDisconnect:

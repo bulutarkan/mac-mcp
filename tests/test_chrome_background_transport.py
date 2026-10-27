@@ -190,12 +190,27 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
         bridge = SimpleNamespace(supports=lambda feature: feature == "open_tab_window",
                                  request_open_tab=MagicMock(return_value={"chrome_tab_id": 444, "chrome_window_id": 9002}))
         with patch("mcp_server.tools_browser.chrome_background_bridge", bridge), \
-             patch("mcp_server.tools_browser._run_osascript", return_value="9002") as applescript, \
+             patch("mcp_server.tools_browser._run_osascript",
+                   return_value="7001\tdevtools://devtools/x\n8001\thttps://a.test/\n9002\thttps://b.test/\n"), \
              patch("mcp_server.tools_browser.browser_tabs.list_tabs", side_effect=lambda browser: rows.pop(0) if rows else [dict(created)]):
             row, _ = _open_chrome_background_tab_via_extension("https://example.com/", 2)
-        self.assertEqual("get id of window 2", applescript.call_args.args[0].split(" to ", 1)[1])
+        # Window 2 counts browser windows only: the DevTools window in front is skipped.
         bridge.request_open_tab.assert_called_once_with("https://example.com/", window_id=9002, timeout_s=6.0)
         self.assertEqual("444", row["native_id"])
+
+    def test_companion_lifecycle_notes_log_as_one_line_without_other_fields(self) -> None:
+        from mcp_server.chrome_background_bridge import _diag_line
+        line = _diag_line([
+            {"t": 0, "e": "worker_start"},
+            {"t": 0, "e": "skip", "why": "alarm", "r": "backoff"},
+            {"t": 0, "e": "close", "code": 1006, "clean": False, "accepted": True, "token": "not-for-the-log"},
+            "junk",
+        ])
+        self.assertIn("worker_start | ", line)
+        self.assertIn("skip(why=alarm,r=backoff)", line)
+        self.assertIn("close(code=1006,clean=False,accepted=True)", line)
+        self.assertNotIn("not-for-the-log", line)
+        self.assertEqual("", _diag_line(None))
 
     def test_a_tab_opened_in_another_window_is_closed_and_reported(self) -> None:
         # An older companion ignores window_id and uses the last focused window.
@@ -203,7 +218,7 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
                                  request_open_tab=MagicMock(return_value={"chrome_tab_id": 555, "chrome_window_id": 7001}))
         scripts: list[str] = []
         with patch("mcp_server.tools_browser.chrome_background_bridge", bridge), \
-             patch("mcp_server.tools_browser._run_osascript", side_effect=lambda script, **kw: scripts.append(script) or "9002"), \
+             patch("mcp_server.tools_browser._run_osascript", side_effect=lambda script, **kw: scripts.append(script) or "8001\thttps://a.test/\n9002\thttps://b.test/"), \
              patch("mcp_server.tools_browser.browser_tabs.list_tabs", return_value=[]):
             with self.assertRaises(HTTPException) as ctx:
                 _open_chrome_background_tab_via_extension("https://example.com/", 2)

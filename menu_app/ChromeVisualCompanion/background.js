@@ -17,6 +17,27 @@ let reconnectTimer = null;
 let pingTimer = null;
 let failedAttempts = 0;
 
+// Lifecycle notes that survive worker restarts and ride along with hello, so the server log shows
+// why the companion went quiet (woken or not, attempts skipped, close codes).
+const DIAG_KEY = 'mac_mcp_bridge_diag';
+let diagChain = Promise.resolve();
+
+function note(event, detail) {
+  if (!chrome.storage || !chrome.storage.local) return;
+  const entry = Object.assign({t: Date.now(), e: String(event).slice(0, 16)}, detail || {});
+  diagChain = diagChain.then(() => chrome.storage.local.get(DIAG_KEY)).then((stored) => {
+    const list = Array.isArray(stored && stored[DIAG_KEY]) ? stored[DIAG_KEY] : [];
+    list.push(entry);
+    return chrome.storage.local.set({[DIAG_KEY]: list.slice(-40)});
+  }).catch(() => {});
+}
+
+function recentNotes() {
+  return diagChain.then(() => chrome.storage.local.get(DIAG_KEY))
+    .then((stored) => (Array.isArray(stored && stored[DIAG_KEY]) ? stored[DIAG_KEY] : []))
+    .catch(() => []);
+}
+
 function clearTimers() {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
@@ -603,16 +624,23 @@ async function handlePrintPdf(message) {
 }
 
 function connect(trigger) {
-  if (!PORT || !TOKEN) return;
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  const why = typeof trigger === 'string' ? trigger : 'event';
+  if (!PORT || !TOKEN) { note('skip', {why, r: 'no_config'}); return; }
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    if (why !== 'alarm') note('skip', {why, r: socket.readyState === WebSocket.OPEN ? 'open' : 'connecting'});
+    return;
+  }
   // An alarm or page wake during a backoff wait leaves the retry to the pending timer.
+  if (trigger !== 'timer' && reconnectTimer) note('skip', {why, r: 'backoff'});
   if (trigger !== 'timer' && reconnectTimer) return;
   clearTimers();
+  note('connect', {why});
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}/chrome-background-bridge`);
   let accepted = false;
   socket = ws;
   ws.addEventListener('open', () => {
     send({type: 'hello', token: TOKEN, features: FEATURES, version: chrome.runtime.getManifest().version});
+    void recentNotes().then((notes) => { if (notes.length) send({type: 'diag', notes}); });
     pingTimer = setInterval(() => send({type: 'ping'}), 20000);
   });
   ws.addEventListener('message', (event) => {
@@ -629,26 +657,29 @@ function connect(trigger) {
     const handler = message && handlers[message.type];
     if (handler) void withTab(Number(message.chrome_tab_id), () => handler(message));
   });
-  ws.addEventListener('close', () => {
+  ws.addEventListener('close', (event) => {
+    note('close', {code: event.code, clean: event.wasClean, accepted});
     if (socket === ws) socket = null;
     if (!accepted) failedAttempts += 1;
     clearTimers();
     scheduleReconnect();
   });
   ws.addEventListener('error', () => {
+    note('error', {state: ws.readyState});
     try { ws.close(); } catch (_) {}
   });
 }
 
-chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(connect);
+note('worker_start');
+chrome.runtime.onStartup.addListener(() => connect('startup'));
+chrome.runtime.onInstalled.addListener(() => connect('installed'));
 // A restarted server closes the socket while Chrome may have no page loading to wake this
 // worker; a periodic alarm wakes it so it reconnects on its own.
 if (chrome.alarms) {
   chrome.alarms.create('mac-mcp-reconnect', {periodInMinutes: 0.5});
-  chrome.alarms.onAlarm.addListener((alarm) => { if (alarm && alarm.name === 'mac-mcp-reconnect') connect(); });
+  chrome.alarms.onAlarm.addListener((alarm) => { if (alarm && alarm.name === 'mac-mcp-reconnect') connect('alarm'); });
 }
 chrome.runtime.onMessage.addListener((message) => {
-  if (message && message.type === 'mac_mcp_bridge_wake') connect();
+  if (message && message.type === 'mac_mcp_bridge_wake') connect('page');
 });
-connect();
+connect('start');
