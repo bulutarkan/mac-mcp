@@ -60,6 +60,14 @@ class TeamPresetsSourceTests(unittest.TestCase):
         self.assertIn("private var usable: [String] { AgentChoice.usableProviders(providers) }", section)
         self.assertGreaterEqual(section.count("guard AgentChoice.isUsable(provider, in: providers)"), 2)
 
+    def test_the_builder_never_force_unwraps_the_draft(self) -> None:
+        # Binding($draft) force-unwraps; the builder is still drawn while it leaves after Save or Close
+        # sets draft to nil, and saving a team crashed the app (2026-10-27).
+        section = source("TeamPresetsSection.swift")
+        code = "\n".join(line.split("//", 1)[0] for line in section.splitlines())
+        self.assertNotRegex(code, re.compile(r"Binding\(\$"))
+        self.assertIn("Binding(get: { draft ?? current }, set: { draft = $0 })", section)
+
     def test_section_is_accessible_and_uses_the_state_alias(self) -> None:
         section = source("TeamPresetsSection.swift")
         self.assertNotRegex(section, re.compile(r"(?<![A-Za-z0-9_])@State\b"))

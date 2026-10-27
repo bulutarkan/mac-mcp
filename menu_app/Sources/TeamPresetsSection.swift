@@ -21,9 +21,11 @@ struct TeamPresetsSection: View {
 
     var body: some View {
         Group {
-            if let preset = Binding($draft) {
+            if let current = draft {
+                // Not Binding($draft): that binding force-unwraps, and the builder is still drawn during
+                // its leaving transition after Save or Close set draft to nil, which crashed the app.
                 TeamPresetBuilder(
-                    preset: preset,
+                    preset: Binding(get: { draft ?? current }, set: { draft = $0 }),
                     original: original,
                     others: settings.teamPresets,
                     providers: providers,
