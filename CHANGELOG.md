@@ -1,3 +1,10 @@
+## 2.3.1 r3 - 2026-10-27
+
+**In short:** a signed checkpoint on the 2.3.1 line; the version stays 2.3.1. Updates now really install new dependencies, and an agent can pick several suggestions in one browser step.
+
+- `mac-mcp update` copies the dependency lock into the runtime and installs the release's set whenever the runtime's lock differs from it. Before, a dependency change kept the old set, so installs updated to 2.3.1 r2 still ran `mcp` 1.28.1; the update after this one brings them up to date (installs from the package or the installer were not affected).
+- `browser_act` has `autocomplete_many`: up to 10 labels picked in one step from a field's suggestions (such as topics or tags), each matched exactly and checked on the page, with what is done, still open, ambiguous or failed reported back. Nothing uncertain is retried, and it stops if you take over the tab.
+
 ## 2.3.1 r2 - 2026-10-26
 
 **In short:** a signed checkpoint on the 2.3.1 line; the version stays 2.3.1. Setup starts with Set up now and walks ChatGPT and any other MCP app through step by step, checking that the app really connected. Pausing observation holds on every route, secrets from the clipboard and Mac MCP's own token files cannot leave unnoticed, commands no longer see the server's keys, and npm publishes only from a signed checkpoint. Chat history is kept 90 days (changeable) and private mode keeps new chats off disk; agent and job records are stored with secrets masked. Read-only agents cannot save to your memory. Chat, the menu, Settings, the dashboard and the ChatGPT panel get many reliability and accessibility fixes, and dependencies with known vulnerabilities are updated (`mcp` 1.30). Update with `mac-mcp update` or the new package.
