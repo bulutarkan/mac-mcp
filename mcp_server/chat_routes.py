@@ -99,6 +99,14 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         body = await _body(request)
         return get_host().rename(request.path_params["chat_id"], str(body.get("title") or ""))
 
+    async def organize(request: Request) -> Dict[str, Any]:
+        """Archive or restore a chat, pin or unpin it: {"archived": bool} and/or {"pinned": bool}."""
+        body = await _body(request)
+        flags = {key: body[key] for key in ("archived", "pinned") if key in body}
+        if any(not isinstance(value, bool) for value in flags.values()):
+            raise ChatError("archived and pinned are true or false.")
+        return get_host().organize(request.path_params["chat_id"], **flags)
+
     async def events(request: Request) -> Response:
         """Server-sent events: each `data:` is the same object as GET /chats/{id}?after=…"""
         denied = dashboard_guard(request)
@@ -148,6 +156,7 @@ def create_chat_routes(dashboard_guard: Callable[[Request], Optional[Response]])
         Route("/dashboard/api/chats/{chat_id}/events", events, methods=["GET"]),
         Route("/dashboard/api/chats/{chat_id}/connect", guarded(connect), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/rename", guarded(rename), methods=["POST"]),
+        Route("/dashboard/api/chats/{chat_id}/organize", guarded(organize), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/config", guarded(config), methods=["POST"]),
         Route("/dashboard/api/chats/{chat_id}/delete", guarded(delete), methods=["POST"]),
     ]

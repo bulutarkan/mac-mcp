@@ -133,6 +133,9 @@ FAKE_AGENT = textwrap.dedent('''\
             config[params["configId"]] = params["value"]
             result = {"configOptions": options()}
         elif method == "session/load":
+            if os.path.exists(LOG_PATH + ".noload"):  # the agent lost the session
+                send({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32603, "message": "Session not found"}})
+                continue
             update(params["sessionId"], {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "old"}})
             update(params["sessionId"], {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "old"}})
             result = {} if os.path.exists(LOG_PATH + ".nooptions") else {"configOptions": options()}
@@ -376,6 +379,117 @@ class ChatHostTest(unittest.TestCase):
                          ["user", "thought", "assistant", "turn", "user", "thought", "assistant", "turn"])
         self.assertNotIn("old", [item.get("text") for item in state["items"]])
         self.assertEqual([item["type"] for item in fresh["items"]], ["user", "thought", "assistant", "turn"])
+
+    def test_unloadable_session_continues_from_a_summary(self):
+        async def first():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "hello")
+            await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return chat_id
+
+        chat_id = self.run_async(first())
+        chat_sessions.reset_host_for_tests()  # the server restarted, and the agent no longer has the session
+        Path(str(self.log) + ".noload").write_text("")
+
+        async def second():
+            host = chat_sessions.get_host()
+            await host.prompt(chat_id, "hello again")
+            await self.wait_idle(host, chat_id)
+            after_first = host.read(chat_id)["chat"]
+            await host.prompt(chat_id, "and once more")
+            state = await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return after_first, state
+
+        after_first, state = self.run_async(second())
+        prompts = [entry["params"]["prompt"] for entry in self.agent_log() if entry.get("method") == "session/prompt"]
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual([block["text"] for block in prompts[0]], ["hello"])
+        summary, message = prompts[1]
+        self.assertEqual(message["text"], "hello again")
+        self.assertIn("could not be reopened", summary["text"])
+        self.assertIn("Owner: hello", summary["text"])
+        self.assertIn("Agent: Hello", summary["text"])
+        self.assertNotIn("hello again", summary["text"])  # the new message goes as itself, after the summary
+        self.assertEqual([block["text"] for block in prompts[2]], ["and once more"])  # only once
+        self.assertNotIn("carry_over", after_first)
+        notices = [item["text"] for item in state["items"] if item["type"] == "notice"]
+        self.assertEqual(notices, ["The earlier conversation could not be reopened; the agent continues from a summary of it."])
+        news = [entry["method"] for entry in self.agent_log() if entry.get("method") in ("session/new", "session/load")]
+        self.assertEqual(news, ["session/new", "session/load", "session/new"])
+
+    def test_carry_over_summary_lists_files_checked_on_disk(self):
+        (self.project / "kept.py").write_text("x")
+        chat = chat_sessions.Chat({"id": "chat_0123456789ab", "project": str(self.project)}, [
+            {"type": "user", "text": "fix  it\nplease", "attachments": [{"name": "a.png", "path": "/nowhere/a.png"}]},
+            {"type": "tool", "kind": "edit", "files": ["kept.py"],
+             "diffs": [{"path": "kept.py", "added": 2, "removed": 1}]},
+            {"type": "tool", "kind": "delete", "files": [str(self.project / "gone.txt")]},
+            {"type": "thought", "text": "secret thinking"},
+            {"type": "assistant", "text": "Done."},
+            {"type": "user", "text": "the message going out now"},
+        ])
+        summary = chat_sessions._carry_over_summary(chat)
+        self.assertIn("Owner: fix it please [attached: a.png]", summary)
+        self.assertIn("Agent: Done.", summary)
+        self.assertNotIn("secret thinking", summary)
+        self.assertNotIn("going out now", summary)
+        self.assertIn(f"- {self.project / 'kept.py'} (edited, +2 -1; exists)", summary)
+        self.assertIn(f"- {self.project / 'gone.txt'} (deleted; no longer there)", summary)
+        self.assertIn("- /nowhere/a.png (attached; no longer there)", summary)
+        long = chat_sessions.Chat({"id": "chat_0123456789ab", "project": str(self.project)},
+                                  [{"type": "assistant", "text": f"answer {n} " + "x" * 1000} for n in range(20)]
+                                  + [{"type": "user", "text": "now"}])
+        cut = chat_sessions._carry_over_summary(long)
+        self.assertIn("answer 19", cut)
+        self.assertNotIn("answer 0 ", cut)
+        self.assertIn("earlier messages left out", cut)
+        self.assertEqual(chat_sessions._carry_over_summary(chat_sessions.Chat({"id": "x"}, [{"type": "user", "text": "hi"}])), "")
+
+    def test_archive_and_pin_change_only_those_fields_and_keep_the_chat_in_place(self):
+        async def scenario():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "hello")
+            await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return chat_id
+
+        chat_id = self.run_async(scenario())
+        host = chat_sessions.get_host()
+        record = chat_sessions.chats_root() / chat_id / "chat.json"
+        before = json.loads(record.read_text())
+        with self.assertRaises(chat_sessions.ChatError):
+            host.organize(chat_id)
+        archived = host.organize(chat_id, archived=True)["chat"]
+        self.assertGreater(archived["archived_at"], 0)
+        self.assertEqual(archived["updated_at"], before["updated_at"])  # neither moved up nor kept from retention
+        host.organize(chat_id, pinned=True)
+        saved = json.loads(record.read_text())
+        self.assertEqual({key: value for key, value in saved.items() if key not in ("archived_at", "pinned_at", "rev")},
+                         {key: value for key, value in before.items() if key != "rev"})
+        chat_sessions.reset_host_for_tests()  # kept over a restart
+        host = chat_sessions.get_host()
+        listed = host.list()["projects"][0]["chats"][0]
+        self.assertTrue(listed["archived_at"] and listed["pinned_at"])
+        restored = host.organize(chat_id, archived=False)["chat"]
+        self.assertNotIn("archived_at", restored)
+        self.assertIn("pinned_at", restored)
+        self.assertNotIn("pinned_at", host.organize(chat_id, pinned=False)["chat"])
+
+    def test_agent_that_is_not_ready_cannot_start_a_chat(self):
+        host = chat_sessions.get_host()
+        with mock.patch.object(chat_sessions, "_command", return_value=None):
+            agents = host.list()["agents"]
+            self.assertEqual((agents[0]["ready"], agents[0]["reason"]),
+                             (False, "Node.js (npx) is needed to connect to it."))
+            with self.assertRaises(chat_sessions.ChatError) as caught:
+                host.create(str(self.project), "copilot")
+            self.assertEqual((caught.exception.code, str(caught.exception)),
+                             ("agent_missing", "Node.js (npx) is needed to connect to it."))
+        self.assertTrue(host.create(str(self.project), "copilot")["ok"])
 
     def test_agent_options_are_read_set_and_kept_across_restart(self):
         async def first():
@@ -854,6 +968,13 @@ class ChatHostTest(unittest.TestCase):
         empty = client.post(f"/dashboard/api/chats/{chat_id}/prompt", headers={"Authorization": "Bearer good"},
                             json={"text": "  "})
         self.assertEqual((empty.status_code, empty.json()["error"]), (400, "empty"))
+        organize = f"/dashboard/api/chats/{chat_id}/organize"
+        self.assertEqual(client.post(organize, json={"archived": True}).status_code, 401)
+        self.assertEqual(client.post(organize, headers={"Authorization": "Bearer good"},
+                                     json={"archived": "yes"}).status_code, 400)
+        archived = client.post(organize, headers={"Authorization": "Bearer good"}, json={"archived": True})
+        self.assertEqual(archived.status_code, 200)
+        self.assertGreater(archived.json()["chat"]["archived_at"], 0)
         self.assertEqual(client.get(f"/dashboard/api/chats/{chat_id}/events").status_code, 401)
         self.assertEqual(client.get("/dashboard/api/chats/chat_000000000000/events",
                                     headers={"Authorization": "Bearer good"}).status_code, 404)

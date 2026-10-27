@@ -334,15 +334,21 @@ def _agent_env(agent: str, model: str, token: str = "") -> Dict[str, str]:
     return env
 
 
+def _not_ready(agent: str) -> str:
+    """Why a chat cannot start with this (enabled) agent, or "" when it can."""
+    if _command(agent):
+        return ""
+    label = AGENTS[agent]["label"]
+    return f"{label} is not installed." if not _binary(agent) else "Node.js (npx) is needed to connect to it."
+
+
 def available_agents() -> List[Dict[str, Any]]:
     """Agents the owner can chat with: enabled in Settings and installed. Disabled ones are not offered."""
     out = []
     for agent, spec in AGENTS.items():
         if not provider_enabled(agent):
             continue
-        command = _command(agent)
-        reason = "" if command else (f"{spec['label']} is not installed." if not _binary(agent)
-                                     else "Node.js (npx) is needed to connect to it.")
+        reason = _not_ready(agent)
         out.append({"id": agent, "label": spec["label"], "ready": not reason, "reason": reason})
     return out
 
@@ -586,6 +592,60 @@ def _terminal_text(data: Any) -> str:
     return "\n".join(line.rsplit("\r", 1)[-1] for line in text.split("\n"))
 
 
+CARRY_OVER_CHARS = 6000  # the conversation part of a carry-over summary; the newest words are kept
+CARRY_OVER_FILES = 25
+
+
+def _carry_over_summary(chat: "Chat") -> str:
+    """A short account of the conversation before the message now going out, for an agent whose earlier session
+    could not be reopened: what was said (the newest kept when long) and the files its steps touched, each checked
+    on disk now."""
+    items = chat.items
+    last_user = max((index for index, item in enumerate(items) if item.get("type") == "user"), default=len(items))
+    lines: List[str] = []
+    files: Dict[str, str] = {}
+    for item in items[:last_user]:
+        kind = item.get("type")
+        if kind == "user":
+            attached = [entry for entry in item.get("attachments") or [] if isinstance(entry, dict)]
+            text = _cut(" ".join(str(item.get("text") or "").split()), 600)
+            named = ", ".join(str(entry.get("name") or "") for entry in attached)
+            lines.append("Owner: " + (text or "(files only)") + (f" [attached: {named}]" if named else ""))
+            for entry in attached:
+                files[str(entry.get("path") or "")] = "attached"
+        elif kind == "assistant" and str(item.get("text") or "").strip():
+            lines.append("Agent: " + _cut(" ".join(str(item["text"]).split()), 1200))
+        elif kind == "tool":
+            for diff in item.get("diffs") or []:
+                files[str(diff.get("path") or "")] = f"edited, +{diff.get('added', 0)} -{diff.get('removed', 0)}"
+            what = {"edit": "edited", "delete": "deleted", "move": "moved", "read": "read"}.get(str(item.get("kind")))
+            for name in item.get("files") or []:
+                if what and str(name) not in files:
+                    files[str(name)] = what
+    if not lines:
+        return ""
+    kept: List[str] = []
+    used = 0
+    for line in reversed(lines):
+        if kept and used + len(line) > CARRY_OVER_CHARS:
+            kept.append("… (earlier messages left out)")
+            break
+        kept.append(line)
+        used += len(line)
+    out = ["[Mac MCP Chat] This conversation began in an earlier session that could not be reopened, so this is a "
+           "new session. Here is a summary of it; carry on from it. The owner's new message follows the summary.",
+           "", "Conversation so far (oldest first):", *reversed(kept)]
+    project = Path(str(chat.meta.get("project") or "/"))
+    checked = []
+    for name, what in [entry for entry in reversed(list(files.items())) if entry[0]][:CARRY_OVER_FILES]:
+        path = Path(name) if Path(name).is_absolute() else project / name
+        checked.append(f"- {path} ({what}; {'exists' if path.exists() else 'no longer there'})")
+    if checked:
+        out += ["", "Files from the earlier session, newest first (checked just now):", *checked]
+    out += ["", "[End of summary]"]
+    return "\n".join(out)
+
+
 class Chat:
     """One conversation: its record, its transcript and, while in use, its agent process."""
 
@@ -615,13 +675,14 @@ class Chat:
     def dir(self) -> Path:
         return chats_root() / self.meta["id"]
 
-    def bump(self, item: Optional[Dict[str, Any]] = None) -> None:
+    def bump(self, item: Optional[Dict[str, Any]] = None, touch: bool = True) -> None:
         self.seq += 1
         if item is not None:
             item["rev"] = self.seq
         else:
             self.meta["rev"] = self.seq
-        self.meta["updated_at"] = _now()
+        if touch:  # pinning or archiving is not using the chat: it keeps its place and its retention clock
+            self.meta["updated_at"] = _now()
         # Wake whoever streams this chat (the app's event stream), and the chat list's stream.
         waiters, self.waiters = self.waiters, []
         for waiter in waiters:
@@ -786,8 +847,9 @@ class ChatHost:
             raise ChatError("Choose a project folder, not the whole disk or home folder.", "bad_project")
         if agent not in AGENTS or not provider_enabled(agent):
             raise ChatError("That agent is not turned on in Settings.", "agent_disabled")
-        if not _binary(agent):
-            raise ChatError(f"{AGENTS[agent]['label']} is not installed.", "agent_missing")
+        reason = _not_ready(agent)
+        if reason:
+            raise ChatError(reason, "agent_missing")  # the app shows the same reason and keeps Start Chat off
         chat_id = "chat_" + secrets.token_hex(6)
         now = _now()
         meta = {
@@ -816,6 +878,21 @@ class ChatHost:
         chat.meta["title"] = _cut(title, MAX_TITLE)
         chat.meta["titled"] = True  # the agent's own title no longer replaces it
         chat.bump()
+        chat.save()
+        return {"ok": True, "chat": chat.public()}
+
+    def organize(self, chat_id: str, archived: Optional[bool] = None, pinned: Optional[bool] = None) -> Dict[str, Any]:
+        """Pin a chat to the top of the list, or archive it out of the list (and back). Only these two fields
+        change; the rest of its record stays as it is."""
+        chat = self._chat(chat_id)
+        if archived is None and pinned is None:
+            raise ChatError("Say what to change: archived or pinned.", "bad_request")
+        for key, value in (("archived_at", archived), ("pinned_at", pinned)):
+            if value is True:
+                chat.meta[key] = chat.meta.get(key) or _now()
+            elif value is False:
+                chat.meta.pop(key, None)
+        chat.bump(touch=False)
         chat.save()
         return {"ok": True, "chat": chat.public()}
 
@@ -1033,8 +1110,16 @@ class ChatHost:
         stop, usage = "error", {}
         try:
             await self._ensure_session(chat)
-            result = await chat.conn.request("session/prompt", {
-                "sessionId": chat.session_id, "prompt": _prompt_blocks(text, files or [], chat.prompt_caps or {})})
+            blocks = _prompt_blocks(text, files or [], chat.prompt_caps or {})
+            # Not before an agent command ("/compact"): the command must stay the message's first words.
+            carry = bool(chat.meta.get("carry_over")) and not text.startswith("/")
+            if carry:
+                summary = _carry_over_summary(chat)
+                if summary:
+                    blocks.insert(0, {"type": "text", "text": summary})
+            result = await chat.conn.request("session/prompt", {"sessionId": chat.session_id, "prompt": blocks})
+            if carry:
+                chat.meta.pop("carry_over", None)
             stop = str(result.get("stopReason") or "end_turn")
             usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
 
@@ -1172,10 +1257,6 @@ class ChatHost:
             except AcpError as exc:
                 if _needs_sign_in(exc):
                     raise
-                if any(item.get("type") == "turn" for item in chat.items):
-                    # Only worth saying when there was a conversation (an empty session is not kept).
-                    chat.add("notice", text="The earlier conversation could not be reopened; the agent starts fresh.",
-                             tone="warning")
             finally:
                 chat.replaying = False
         if not chat.session_id:
@@ -1184,6 +1265,13 @@ class ChatHost:
             if not chat.session_id:
                 raise ChatError("The agent did not open a session.", "agent_failed")
             chat.meta["acp_session_id"] = chat.session_id
+            if previous and any(item.get("type") == "turn" for item in chat.items):
+                # The earlier session is gone (it would not load, or the agent loads none): the next message takes
+                # a summary of the conversation along. Kept in the record until it went, also over a restart.
+                # Only worth it when there was a conversation (an empty session is not kept).
+                chat.meta["carry_over"] = True
+                chat.add("notice", text="The earlier conversation could not be reopened; the agent continues from "
+                                        "a summary of it.", tone="warning")
         return opened
 
     async def _apply_choices(self, chat: Chat) -> None:
