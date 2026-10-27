@@ -94,7 +94,8 @@ from .tools_browser import (
     browser_coordinate_click, browser_get_snapshot,
 )
 from .tools_browser_agent import (
-    _run_json_js, browser_observe, browser_find, browser_act, normalize_act_actions, semantic_extract_fields,
+    _NON_MUTATING_ACT_TYPES, _run_json_js, browser_observe, browser_find, browser_act, normalize_act_actions,
+    semantic_extract_fields,
 )
 from .tools_browser import _norm_browser
 from . import browser_checkpoint, browser_tabs
@@ -257,7 +258,10 @@ BROWSER_ACT_DESCRIPTION = (
     "the new tab_handle without activating it, or ambiguous_new_tabs / NO_NEW_TAB. "
     "Reading a page: {type:'read'} returns all the text the page shows in one action (content that loads on scroll "
     "included; offset=next_offset continues a longer page, load_more:false reads it as it is). It scrolls to load and "
-    "then the page is put back where it was. Moving the page yourself: {type:'scroll', dy:<px>} (negative is up, dx "
+    "then the page is put back where it was. {type:'network'} lists the tab's recent requests (method, URL with "
+    "secrets redacted, status, timing; max_items, url_contains, cursor=next_since). {type:'pdf'} saves the tab as a PDF "
+    "artifact in the background (path, artifact_id). A stale element_id is found again by what observe saw it as; "
+    "if that is ambiguous nothing is clicked (stale_target_ambiguous). Moving the page yourself: {type:'scroll', dy:<px>} (negative is up, dx "
     "sideways; with element_id/query it brings that element into view instead); the page stays where it was scrolled. "
     "Long or virtualized lists (feeds, results, virtual tables): one {type:'scan'} action scrolls the list's container "
     "(element_id/query, or the largest scrollable area) in bounded steps and returns de-duplicated items "
@@ -2355,6 +2359,8 @@ def create_app():
             "Leave return_state='none' normally; debug=true can expose raw/full state. "
             "For selector reads use actions=[{type:'extract',fields:[{name:'reviews',selector:'.review',all:true}]}]. "
             "fields in the result reports counts and exact continuation offsets; partial output never means a full-page read. "
+            "tabs=[handles] runs the same read-only actions (extract/read/wait/network/pdf) on several open tabs in one call, "
+            "in the background; a tab another agent holds is reported, not taken. "
             "save_as_recipe='name' keeps a successful run as a recipe draft (review and activate it with recipe)."
         ),
     )
@@ -2366,8 +2372,35 @@ def create_app():
                           return_state: DoReturnState = "none", allow_foreground: bool = False,
                           close_after: bool = False, debug: bool = False,
                           extract: Optional[List[str]] = None,
-                          save_as_recipe: Optional[str] = None) -> Dict[str, Any]:
+                          save_as_recipe: Optional[str] = None,
+                          tabs: Optional[List[str]] = None) -> Dict[str, Any]:
         call_arguments = dict(locals())  # read before anything else is bound here
+        if tabs is not None:
+            # Several already-open tabs in one call (#137): each is read where it is, never brought
+            # forward, with the same lease rules as a single read.
+            handles = list(dict.fromkeys(str(item or "").strip() for item in tabs if str(item or "").strip()))
+            if not handles or len(handles) > 10:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "tabs takes 1-10 tab handles from browser_list_tabs.")
+            if url or tab_handle or close_after:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    "tabs reads tabs that are already open: leave url, tab_handle and close_after unset.")
+            if any(item["type"] not in _NON_MUTATING_ACT_TYPES for item in normalize_act_actions(list(actions or []))):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    "tabs runs read-only actions only: extract, read, wait, network, pdf.")
+            pages: List[Dict[str, Any]] = []
+            for handle in handles:
+                try:
+                    page = await _browser_do(
+                        browser, actions=actions, new_tab=False, tab_handle=handle, wait_after_open=False,
+                        return_state=return_state, debug=debug, extract=extract,
+                    )
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {"error": "browser_do_failed", "message": str(exc.detail)}
+                    page = {"ok": False, "tab_handle": handle, **{key: detail[key] for key in (
+                        "error", "message", "reason_code", "retryable", "owner") if key in detail}}
+                pages.append(page)
+            return {"ok": all(page.get("ok") for page in pages), "tabs": pages, "tab_count": len(pages),
+                    "failed_count": sum(1 for page in pages if not page.get("ok"))}
 
         def work() -> Dict[str, Any]:
             handle = tab_handle

@@ -3425,7 +3425,9 @@
                             "drag",
                             "post",
                             "fill",
-                            "autocomplete_many"
+                            "autocomplete_many",
+                            "network",
+                            "pdf"
                           ],
                           "type": "string"
                         },
@@ -3829,7 +3831,9 @@
                                 "drag",
                                 "post",
                                 "fill",
-                                "autocomplete_many"
+                                "autocomplete_many",
+                                "network",
+                                "pdf"
                               ],
                               "type": "string"
                             }
@@ -3933,17 +3937,20 @@
                     "default": null,
                     "title": "Extract"
                   },
-                  "save_as_recipe": {
+                  "tabs": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       },
                       {
                         "type": "null"
                       }
                     ],
                     "default": null,
-                    "title": "Save As Recipe"
+                    "title": "Tabs"
                   },
                   "idempotency_key": {
                     "type": "string",

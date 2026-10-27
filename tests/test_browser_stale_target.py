@@ -92,5 +92,95 @@ class StaleTargetActTests(unittest.TestCase):
         self.assertTrue(result["mutation_dispatched"])
 
 
+_DETACHED = {"ok": False, "type": "click", "element_id": "e_old", "error": "element_not_ready",
+             "reason_code": "ELEMENT_DETACHED", "observe_again": True}
+
+
+class ObservedIdentityRebindTests(unittest.TestCase):
+    """#137: a re-rendered target is found again by what observe saw it as; a doubtful match is never clicked."""
+
+    _act = StaleTargetActTests._act
+
+    def setUp(self) -> None:
+        agent._TARGET_IDENTITIES.clear()
+        self.addCleanup(agent._TARGET_IDENTITIES.clear)
+        # The decision model is off in tests: an ambiguous match stays ambiguous.
+        decision = patch.object(agent.decision_engine, "resolve_ambiguity",
+                                return_value=agent.decision_engine.DecisionResult(outcome="disabled"))
+        decision.start()
+        self.addCleanup(decision.stop)
+
+    def _observed(self, *elements) -> None:
+        agent._remember_target_identities("Safari", "tab", list(elements))
+
+    def test_rerendered_target_without_a_locator_is_found_again_and_clicked_once(self) -> None:
+        self._observed({"element_id": "e_old", "role": "button", "tag": "button", "text": "Save draft"},
+                       {"element_id": "e_2", "role": "button", "text": "Publish"})
+        fresh = {"element_id": "e_new", "text": "Save draft", "role": "button", "confidence": 0.98}
+        result, calls, find = self._act(
+            [{"type": "click", "element_id": "e_old"}],
+            [_DETACHED, {"ok": True, "type": "click", "element_id": "e_new"}],
+            [{"ok": True, "best_match": fresh, "matches": [fresh]}],
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(["e_old", "e_new"], [call["element_id"] for call in calls])
+        self.assertEqual(("Save draft", "button", "Save draft"),
+                         (find.call_args.kwargs["query"], find.call_args.kwargs["role"], find.call_args.kwargs["text"]))
+        self.assertEqual({"stale_element_id": "e_old", "reason_code": "ELEMENT_DETACHED", "via": "observed_identity"},
+                         result["actions"][0]["re_resolved"])
+
+    def test_two_close_matches_now_stop_without_a_click(self) -> None:
+        self._observed({"element_id": "e_old", "role": "button", "text": "Delete"})
+        twins = [{"element_id": f"e_{n}", "text": "Delete", "role": "button", "confidence": 0.98} for n in (1, 2)]
+        result, calls, _find = self._act(
+            [{"type": "click", "element_id": "e_old"}], [_DETACHED],
+            [{"ok": True, "best_match": twins[0], "matches": twins}],
+        )
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["mutation_dispatched"])
+        self.assertEqual(1, len(calls))
+        failed = result["actions"][0]
+        self.assertEqual(("stale_target_ambiguous", "RECOVERY_AMBIGUOUS_TARGET", "e_old"),
+                         (failed["error"], failed["reason_code"], failed["stale_element_id"]))
+        self.assertFalse(result["outcome_unknown"])
+
+    def test_a_label_shared_when_observed_is_never_rebound_by_label(self) -> None:
+        self._observed({"element_id": "e_old", "role": "button", "text": "Delete"},
+                       {"element_id": "e_other", "role": "button", "text": "Delete"})
+        result, calls, find = self._act([{"type": "click", "element_id": "e_old"}], [_DETACHED])
+        self.assertEqual("stale_target_ambiguous", result["actions"][0]["error"])
+        self.assertEqual(1, len(calls))
+        find.assert_not_called()
+
+    def test_a_weak_match_is_not_found_rather_than_close_enough(self) -> None:
+        self._observed({"element_id": "e_old", "role": "button", "text": "Archive conversation"})
+        weak = {"element_id": "e_x", "text": "Archive", "role": "button", "confidence": 0.5}
+        result, calls, _find = self._act(
+            [{"type": "click", "element_id": "e_old"}], [_DETACHED],
+            [{"ok": True, "best_match": weak, "matches": [weak]}],
+        )
+        self.assertEqual(("target_not_found", "RECOVERY_TARGET_NOT_FOUND"),
+                         (result["actions"][0]["error"], result["actions"][0]["reason_code"]))
+        self.assertEqual(1, len(calls))
+
+    def test_unknown_ids_and_other_tabs_keep_the_old_stale_failure(self) -> None:
+        agent._remember_target_identities("Safari", "other-tab", [{"element_id": "e_old", "role": "button", "text": "Go"}])
+        result, calls, find = self._act([{"type": "click", "element_id": "e_old"}], [_DETACHED])
+        self.assertEqual("element_not_ready", result["actions"][0]["error"])
+        find.assert_not_called()
+
+    def test_identities_are_bounded_and_never_keep_field_values(self) -> None:
+        with patch.object(agent, "_MAX_TARGET_IDENTITIES", 3):
+            self._observed(*[{"element_id": f"e_{n}", "role": "textbox", "name": f"f{n}", "value": "secret"} for n in range(5)])
+        self.assertEqual(3, len(agent._TARGET_IDENTITIES))
+        self.assertIsNone(agent._remembered_target_identity("Safari", "tab", "e_0"))
+        self.assertNotIn("value", agent._remembered_target_identity("Safari", "tab", "e_4"))
+
+    def test_in_page_recovery_refuses_ties_and_twins_in_other_rows(self) -> None:
+        helpers = agent._bootstrap_functions_source()
+        self.assertIn("if(ranked.length>1&&ranked[0].score===ranked[1].score)return null;", helpers)
+        self.assertIn("(!row||__mcpRowKey(el)===row)", helpers)
+
+
 if __name__ == "__main__":
     unittest.main()

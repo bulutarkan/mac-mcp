@@ -20,7 +20,7 @@ PLACEHOLDERS = {
     "__QUERY__": '""', "__ROLE__": '""', "__TEXT__": '""', "__ACTIONABLE_ONLY__": "false", "__COLLECT_LIMIT__": "80",
     "__WITHIN_BLOCK__": "", "__MAX_CANDIDATES__": "80", "__SPECS__": "[]", "__ALIASES__": "{}", "__BUDGET__": "4000",
     "__SCAN_OPTIONS__": "{}", "__CONTAINER_ID__": '""', "__ITEM_SELECTOR__": '""', "__KEY_FIELD__": '"text"',
-    "__READ_OPTIONS__": "{}",
+    "__READ_OPTIONS__": "{}", "__NETWORK_OPTIONS__": "{}", "__SNAPSHOT_OPTIONS__": "{}",
 }
 # The larger page scripts once lived in Python f-strings ({{ }} escaping); they are assets now.
 ASSET_BUILDERS = {

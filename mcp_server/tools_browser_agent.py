@@ -88,6 +88,52 @@ def _browser_observation_owned_by_current(observation_id: Optional[str]) -> bool
         return False
     with _BROWSER_OBSERVATION_OWNER_LOCK:
         return _BROWSER_OBSERVATION_OWNERS.get(key) == _perception_owner_key()
+
+
+# What each element_id meant when observe/find returned it (role and label, never a field value),
+# so browser_act can find a target again after the page re-rendered it (#137). Bounded LRU.
+_TARGET_IDENTITY_LOCK = threading.Lock()
+_TARGET_IDENTITIES: "OrderedDict[Tuple[str, str, str], Dict[str, Any]]" = OrderedDict()
+_MAX_TARGET_IDENTITIES = 2_000
+_IDENTITY_KEYS = ("role", "tag", "text", "aria_label", "placeholder", "name", "title")
+_IDENTITY_LABEL_KEYS = ("aria_label", "text", "placeholder", "name", "title")
+
+
+def _remember_target_identities(browser: str, tab_handle: Optional[str], elements: Any) -> None:
+    if not tab_handle or not isinstance(elements, list):
+        return
+    rows = []
+    for element in elements:
+        if not isinstance(element, dict) or not element.get("element_id"):
+            continue
+        identity = {key: str(element[key])[:200] for key in _IDENTITY_KEYS if element.get(key)}
+        if any(identity.get(key) for key in _IDENTITY_LABEL_KEYS):
+            rows.append((str(element["element_id"]), identity))
+    # A label shared by several controls in the same read (one Delete per row) cannot be told apart later.
+    labels: Dict[Tuple[str, str], int] = {}
+    for _, identity in rows:
+        label = (identity.get("role", ""), next((identity[k] for k in _IDENTITY_LABEL_KEYS if identity.get(k)), ""))
+        labels[label] = labels.get(label, 0) + 1
+    b = _norm_browser(browser)
+    with _TARGET_IDENTITY_LOCK:
+        for element_id, identity in rows:
+            label = (identity.get("role", ""), next((identity[k] for k in _IDENTITY_LABEL_KEYS if identity.get(k)), ""))
+            identity["unique"] = labels.get(label, 0) == 1
+            key = (b, str(tab_handle), element_id)
+            _TARGET_IDENTITIES[key] = identity
+            _TARGET_IDENTITIES.move_to_end(key)
+        while len(_TARGET_IDENTITIES) > _MAX_TARGET_IDENTITIES:
+            _TARGET_IDENTITIES.popitem(last=False)
+
+
+def _remembered_target_identity(browser: str, tab_handle: Optional[str], element_id: Any) -> Optional[Dict[str, Any]]:
+    if not tab_handle or not element_id:
+        return None
+    with _TARGET_IDENTITY_LOCK:
+        found = _TARGET_IDENTITIES.get((_norm_browser(browser), str(tab_handle), str(element_id)))
+        return dict(found) if found else None
+
+
 _VISUAL_ENSURE_CACHE: Dict[Tuple[str, str, str], float] = {}
 # Guards cache metadata only; browser I/O runs outside it. Injection into one
 # tab is already single-flight because _tab_lease is exclusive per tab.
@@ -1264,6 +1310,7 @@ def _browser_observe_locked(
     )
     payload["duration_ms"] = int((time.perf_counter() - started) * 1000)
     _remember_browser_observation(payload.get("observation_id"))
+    _remember_target_identities(browser, tab_handle, payload.get("elements"))
 
     image_data: Optional[bytes] = None
     if visual != "none":
@@ -1694,6 +1741,7 @@ def _browser_find_impl(
             **({"offscreen": True} if element.get("offscreen") else {}),
             **({"within_up": element.get("within_up"), "within_down": element.get("within_down")} if scoped else {}),
         })
+    _remember_target_identities(browser, tab_handle, matches)
     return {
         "ok": True,
         "observation_id": payload.get("observation_id"),
@@ -3456,6 +3504,77 @@ def _read_action(
     return out
 
 
+def _network_js(options: Dict[str, Any]) -> str:
+    return _fill_js(_browser_js("network.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__NETWORK_OPTIONS__": json.dumps(options),
+    })
+
+
+def _network_action(
+    settings: Settings, browser: str, action: Dict[str, Any], window_index: int,
+    tab_index: Optional[int], tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """{type:'network'}: this tab's recent requests, newest last, from a ring the page keeps
+    (100 at most). URLs come back with query secrets redacted; bodies and headers never.
+    Pass next_since back as cursor for only what came after."""
+    cursor = str(action.get("cursor") or "0")
+    options = {
+        "since": int(cursor) if cursor.isdigit() else 0,
+        "url_contains": str(action.get("url_contains") or "")[:200],
+        "max_items": action.get("max_items") or 50,
+    }
+    out = _run_json_js(settings, browser, _network_js(options), window_index, tab_index, tab_handle)
+    requests = []
+    for row in out.get("requests") or []:
+        if not isinstance(row, dict):
+            continue
+        item = {key: row[key] for key in ("seq", "kind", "method", "status", "start_ms", "duration_ms", "bytes", "error")
+                if row.get(key) is not None}
+        item["url"] = redact_sensitive_text(str(row.get("url") or ""))
+        if row.get("kind") in {"fetch", "xhr"} and row.get("duration_ms") is None and not row.get("error"):
+            item["pending"] = True
+        requests.append(item)
+    out["requests"] = requests
+    out["url"] = redact_sensitive_text(str(out.get("url") or ""))
+    out["type"] = "network"
+    out["_js_calls"] = 1
+    return out
+
+
+def _pdf_action(
+    settings: Settings, browser: str, window_index: int, tab_index: Optional[int], tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """{type:'pdf'}: save the tab as a PDF artifact in the background (browser_pdf)."""
+    from . import browser_pdf
+
+    def run_snapshot(options: Dict[str, Any]) -> Dict[str, Any]:
+        return _run_json_js(settings, browser, _fill_js(_browser_js("page_snapshot.js"), {
+            "__BOOTSTRAP__": _browser_state_bootstrap(),
+            "__SNAPSHOT_OPTIONS__": json.dumps(options),
+        }), window_index, tab_index, tab_handle)
+
+    if (
+        browser == "Google Chrome" and not current_frame_scope()
+        and chrome_background_bridge.is_connected() and chrome_background_bridge.supports("print_pdf")
+    ):
+        native_id = _chrome_native_id(browser, tab_handle)
+        if native_id:
+            page = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index, tab_handle)
+            try:
+                out = browser_pdf.chrome_print_pdf(native_id, page)
+            except HTTPException as exc:
+                # Chrome could not print this tab (too large, debugger refused): the page copy still can.
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                out = browser_pdf.snapshot_pdf(run_snapshot)
+                out["chrome_print_error"] = str(detail.get("error") or "chrome_print_failed")
+                out["_js_calls"] = int(out.get("_js_calls") or 0) + 1
+                return out
+            out["_js_calls"] = 1
+            return out
+    return browser_pdf.snapshot_pdf(run_snapshot)
+
+
 # {type:'fill', values:{label: value}}: a whole form in one action. Each label is resolved
 # like a query; text boxes are typed, selects (native and custom) pick the option, and
 # checkboxes/radios are set from a true/false value. Fields are filled in the given order,
@@ -4093,7 +4212,7 @@ def _decide_browser_target(
     return out
 
 
-_NON_MUTATING_ACT_TYPES = {"wait", "extract", "read"}
+_NON_MUTATING_ACT_TYPES = {"wait", "extract", "read", "network", "pdf"}
 # Failures that change nothing on the page: the target, option or field is not there, or it
 # was refused before anything was sent. With every earlier step verified, the outcome of the
 # call is known (outcome_unknown=false), so a delegated agent is not locked out by it.
@@ -4102,15 +4221,75 @@ _KNOWN_FAILURE_ERRORS = frozenset({
     "element_not_ready", "stale_observation", "field_not_found", "invalid_input_mode",
     "trusted_input_not_supported_for_action", "post_field_not_found", "post_field_ambiguous",
     "post_field_outside_item", "post_submit_not_found", "post_submit_ambiguous", "chrome_debugger_blocked",
+    "stale_target_ambiguous",
 })
 _LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
 
 
 def _has_locator(action: Dict[str, Any]) -> bool:
     return any(action.get(key) for key in _LOCATOR_KEYS)
+
+
+def _stale_target_locator(
+    browser: str, tab_handle: Optional[str], action: Dict[str, Any], result: Dict[str, Any],
+) -> Optional[Tuple[Dict[str, Any], str]]:
+    """How to find a re-rendered target again, when nothing was done to the old one.
+
+    The caller's own locator wins; otherwise the role and label observe/find saw for that
+    element_id, turned into a locator the way computer_plan's recovery does.
+    """
+    untouched = bool(result.get("no_side_effect")) or (
+        result.get("reason_code") == "ELEMENT_DETACHED" and result.get("error") in {"element_not_ready", "stale_element"}
+    )
+    if not untouched or not action.get("element_id"):
+        return None
+    relocated = {key: value for key, value in action.items() if key != "element_id"}
+    if _has_locator(action):
+        return relocated, "caller_locator"
+    identity = _remembered_target_identity(browser, tab_handle, action.get("element_id"))
+    if not identity:
+        return None
+    from .computer_plan import _semantic_target_from_browser_node
+
+    semantic = _semantic_target_from_browser_node(identity)
+    if not semantic.get("query"):
+        return None
+    relocated.update(query=semantic["query"], role=semantic.get("role"), text_match=semantic.get("text"))
+    return relocated, ("observed_identity" if identity.get("unique") else "observed_identity_not_unique")
+
+
+def _stale_rebind_refusal(action: Dict[str, Any], via: str, found: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Refuse a rebind unless exactly one current element plausibly is the old target.
+
+    Same rule as computer_plan's recovery (decision_engine.assess_ambiguity): a weak best match is
+    not found, and two close candidates are ambiguous unless an enabled Decision picked one. A
+    label that several controls shared when it was observed (one Delete per row) is never rebound
+    by that label alone. Nothing was done to the page either way.
+    """
+    stale = {"stale_element_id": action.get("element_id"), "rebind_via": via, "observe_again": True,
+             "no_side_effect": True}
+    if isinstance(found, dict) and found.get("ok") is False:
+        return {**found, **stale}
+    best = found or {}
+    decision = best.get("decision") if isinstance(best.get("decision"), dict) else None
+    if via == "observed_identity_not_unique" or (decision is not None and not decision.get("accepted")):
+        return {
+            "ok": False, "error": "stale_target_ambiguous", "reason_code": "RECOVERY_AMBIGUOUS_TARGET",
+            "message": "The target re-rendered and more than one element now matches it; nothing was clicked. "
+                       "Observe again and pick one (query/within).",
+            **({"ambiguity": decision.get("ambiguity")} if decision else {}), **stale,
+        }
+    if float(best.get("confidence") or 0.0) < decision_engine.AMBIGUITY_FLOOR:
+        return {
+            "ok": False, "error": "target_not_found", "reason_code": "RECOVERY_TARGET_NOT_FOUND",
+            "message": "The target re-rendered and nothing on the page now matches it closely enough.",
+            "best_confidence": best.get("confidence"), **stale,
+        }
+    return None
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
     "wait", "key", "keyboard", "shortcut", "extract", "scan", "read", "dialog", "hover", "drag", "post", "fill", "autocomplete_many",
+    "network", "pdf",
 )
 # Agents often name the action kind "action" instead of "type"; accept it.
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
@@ -4540,7 +4719,12 @@ def _browser_act_impl(
             _flag_unconfirmed(rest)
             return rest
         _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
-        with _measure_transport() as transport, _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
+        # A batch that only reads (extract, read, wait, network, pdf) leases the tab the way observe
+        # does: it never takes a tab another agent holds, and needs no observe of its own first.
+        read_only = all(item["type"] in _NON_MUTATING_ACT_TYPES for item in actions)
+        with _measure_transport() as transport, _tab_lease(
+            b, tab_handle, window_index, tab_index, allow_rebind=read_only, mutation=not read_only,
+        ) as target:
             started = True
             result = _browser_act_locked(
                 settings=settings,
@@ -5140,6 +5324,20 @@ def _browser_act_locked(
                 if not auto_result.get("ok"):
                     break
                 continue
+            if typ in {"network", "pdf"}:
+                if not flush_pending():
+                    break
+                in_flight = [typ]
+                page_result = (
+                    _network_action(settings, browser, action, window_index, tab_index, tab_handle)
+                    if typ == "network" else _pdf_action(settings, browser, window_index, tab_index, tab_handle)
+                )
+                internal_js_calls += int(page_result.pop("_js_calls", 0))
+                results.append(page_result)
+                in_flight = []
+                if not page_result.get("ok"):
+                    break
+                continue
             if typ == "fill":
                 if not flush_pending():
                     break
@@ -5197,30 +5395,39 @@ def _browser_act_locked(
                     if action_result.get("no_side_effect"):
                         # The page refused the remembered target before acting on it.
                         mutation_dispatched = dispatched_before
-                        if resolved_target is None and _has_locator(action):
-                            # The caller also described the target, so look it up again
-                            # on the current page once instead of acting on the old id.
-                            relocated = {k: v for k, v in action.items() if k != "element_id"}
-                            retry_action, retry_target = resolve_target(relocated)
-                            if isinstance(retry_target, dict) and retry_target.get("ok") is False:
-                                results.append({"type": typ, **retry_target, "stale_element_id": action.get("element_id")})
-                                break
-                            current_observation_id = None
-                            mutation_dispatched = True
-                            stale_result = action_result
-                            work_action, resolved_target = retry_action, retry_target
-                            action_result = _verified_dom_action(
-                                settings, browser, work_action, None,
-                                window_index, tab_index, tab_handle,
-                                mutation_revalidator=revalidate_mutation,
-                            )
-                            internal_js_calls += int(action_result.pop("_js_calls", 0))
-                            if action_result.get("no_side_effect"):
-                                mutation_dispatched = dispatched_before
-                            action_result["re_resolved"] = {
-                                "stale_element_id": action.get("element_id"),
-                                "reason_code": stale_result.get("reason_code"),
-                            }
+                    rebind = (
+                        _stale_target_locator(browser, tab_handle, action, action_result)
+                        if resolved_target is None else None
+                    )
+                    if rebind is not None:
+                        relocated, rebind_via = rebind
+                        # The page re-rendered the target: find it again once on the current page,
+                        # by the caller's own locator or by what observe/find saw it as.
+                        mutation_dispatched = dispatched_before
+                        retry_action, retry_target = (
+                            (relocated, None) if rebind_via == "observed_identity_not_unique" else resolve_target(relocated)
+                        )
+                        refusal = _stale_rebind_refusal(action, rebind_via, retry_target)
+                        if refusal is not None:
+                            results.append({"type": typ, **refusal})
+                            break
+                        current_observation_id = None
+                        mutation_dispatched = True
+                        stale_result = action_result
+                        work_action, resolved_target = retry_action, retry_target
+                        action_result = _verified_dom_action(
+                            settings, browser, work_action, None,
+                            window_index, tab_index, tab_handle,
+                            mutation_revalidator=revalidate_mutation,
+                        )
+                        internal_js_calls += int(action_result.pop("_js_calls", 0))
+                        if action_result.get("no_side_effect"):
+                            mutation_dispatched = dispatched_before
+                        action_result["re_resolved"] = {
+                            "stale_element_id": action.get("element_id"),
+                            "reason_code": stale_result.get("reason_code"),
+                            **({"via": rebind_via} if rebind_via != "caller_locator" else {}),
+                        }
                     action_result.pop("_compact_state", None)
                     if resolved_target:
                         action_result["resolved_target"] = {

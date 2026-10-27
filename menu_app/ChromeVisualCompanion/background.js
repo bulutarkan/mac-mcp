@@ -9,7 +9,7 @@ const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000),
 // While the server is down, wait longer after each failed attempt, up to the alarm period.
 const MAX_RECONNECT_MS = 30000;
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames', 'open_window', 'open_tab_window'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames', 'open_window', 'open_tab_window', 'print_pdf'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -568,6 +568,40 @@ async function handleSetFileInput(message) {
   }
 }
 
+// The tab as Chrome prints it, without a print dialog and without activating the tab (#137).
+const PRINT_PDF_MAX_CHARS = 15000000;
+
+async function handlePrintPdf(message) {
+  const requestId = String(message.request_id || '');
+  const tabId = Number(message.chrome_tab_id);
+  if (!requestId || !Number.isInteger(tabId) || tabId < 0) {
+    send({type: 'result', request_id: requestId, ok: false, error: 'invalid_print_pdf_request'});
+    return;
+  }
+  const target = {tabId};
+  let attached = false;
+  try {
+    await chrome.tabs.get(tabId);
+    await debuggerAttach(target);
+    attached = true;
+    const out = await debuggerCommand(target, 'Page.printToPDF', {printBackground: true, preferCSSPageSize: true});
+    const data = String(out.data || '');
+    if (!data) throw new Error('empty_pdf');
+    if (data.length > PRINT_PDF_MAX_CHARS) {
+      send({type: 'result', request_id: requestId, ok: false, error: 'pdf_too_large', message: 'The PDF is larger than the bridge carries.'});
+      return;
+    }
+    send({type: 'result', request_id: requestId, ok: true, chrome_tab_id: tabId, data});
+  } catch (error) {
+    send({
+      type: 'result', request_id: requestId, ok: false,
+      error: 'chrome_print_pdf_failed', message: String(error && error.message || error || 'unknown')
+    });
+  } finally {
+    if (attached) { try { await debuggerDetach(target); } catch (_) {} }
+  }
+}
+
 function connect(trigger) {
   if (!PORT || !TOKEN) return;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
@@ -590,7 +624,7 @@ function connect(trigger) {
     if (message && message.type === 'open_window') { void handleOpenWindow(message); return; }
     const handlers = {
       execute_js: handleExecuteJs, dispatch_mouse: handleDispatchMouse, set_file_input: handleSetFileInput,
-      handle_dialog: handleDialog, gesture: handleGesture
+      handle_dialog: handleDialog, gesture: handleGesture, print_pdf: handlePrintPdf
     };
     const handler = message && handlers[message.type];
     if (handler) void withTab(Number(message.chrome_tab_id), () => handler(message));

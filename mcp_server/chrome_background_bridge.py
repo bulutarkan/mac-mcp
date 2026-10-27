@@ -151,7 +151,7 @@ def ensure_chrome_companion_config(runtime_root: Optional[Path] = None) -> Optio
 # version number matches (same-version checkpoints add features too).
 EXPECTED_COMPANION_FEATURES = frozenset({
     "dialogs", "gestures", "alarm_reconnect", "tab_queue", "dialog_memory", "dialog_session_hold", "keys", "frames",
-    "open_window", "open_tab_window",
+    "open_window", "open_tab_window", "print_pdf",
 })
 
 
@@ -370,6 +370,11 @@ class ChromeBackgroundBridge:
             },
             timeout_s=timeout_s,
         )
+
+    def request_print_pdf(self, chrome_tab_id: str | int, *, timeout_s: float = 60.0) -> Dict[str, Any]:
+        """The tab as Chrome prints it (Page.printToPDF), base64 in data; the tab is never activated."""
+        self.require("print_pdf")
+        return self._request("print_pdf", {"chrome_tab_id": int(chrome_tab_id)}, timeout_s=timeout_s)
 
     def handle_message(self, message: Dict[str, Any]) -> None:
         message_type = str(message.get("type") or "")

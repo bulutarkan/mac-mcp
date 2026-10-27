@@ -354,12 +354,15 @@ function __mcpNativeValueSetter(el,value){var win=__mcpOwnerWindow(el),tag=Strin
 function __mcpRecoverElement(id,s){
   var old=s.elements[id];if(old&&old.isConnected)return old;if(!old)return null;
   var ident={tag:String(old.tagName||'').toLowerCase(),role:__mcpRole(old),text:__mcpText(old),aria:old.getAttribute&&old.getAttribute('aria-label')||'',name:old.getAttribute&&old.getAttribute('name')||'',ph:old.getAttribute&&old.getAttribute('placeholder')||'',title:old.getAttribute&&old.getAttribute('title')||''};
-  var all=__mcpQueryAll('*'),ranked=[];
+  /* The old node keeps its detached row (list item, table row, card), so a twin control in another row is not it. */
+  var row=__mcpRowKey(old),all=__mcpQueryAll('*'),ranked=[];
   for(var i=0;i<all.length;i++){var el=all[i];if(!el.isConnected||!__mcpSemanticVisible(el))continue;var score=0,role=__mcpRole(el),tag=String(el.tagName||'').toLowerCase();if(ident.role&&role===ident.role)score+=2;if(ident.tag&&tag===ident.tag)score+=1;
-    var pairs=[['aria','aria-label'],['name','name'],['ph','placeholder'],['title','title']];for(var j=0;j<pairs.length;j++){var want=ident[pairs[j][0]];if(want&&String(el.getAttribute(pairs[j][1])||'')===want)score+=4;}if(ident.text&&__mcpText(el)===ident.text)score+=3;if(score>=5)ranked.push({el:el,score:score});}
-  ranked.sort(function(a,b){return b.score-a.score;});if(!ranked.length)return null;if(ranked.length>1&&ranked[0].score===ranked[1].score&&ranked[0].score<8)return null;
+    var pairs=[['aria','aria-label'],['name','name'],['ph','placeholder'],['title','title']];for(var j=0;j<pairs.length;j++){var want=ident[pairs[j][0]];if(want&&String(el.getAttribute(pairs[j][1])||'')===want)score+=4;}if(ident.text&&__mcpText(el)===ident.text)score+=3;if(score>=5&&(!row||__mcpRowKey(el)===row))ranked.push({el:el,score:score});}
+  /* Two equally good matches are ambiguous: never pick one of them. */
+  ranked.sort(function(a,b){return b.score-a.score;});if(!ranked.length)return null;if(ranked.length>1&&ranked[0].score===ranked[1].score)return null;
   var recovered=ranked[0].el;s.elements[id]=recovered;try{s.ids.set(recovered,id);}catch(e){}return recovered;
 }
+function __mcpRowKey(el){try{var r=el&&el.closest&&el.closest('li,tr,[role=row],[role=listitem],article');return r?String(r.textContent||'').replace(/[0-9]+/g,'#').replace(/\s+/g,' ').trim().slice(0,300):'';}catch(e){return '';}}
 function __mcpNorm(v){return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9çğıöşü]+/g,' ').replace(/\s+/g,' ').trim();}
 function __mcpRecoverAction(a,s){
   var id=String(a&&a.element_id||''), byId=id?__mcpRecoverElement(id,s):null;if(byId)return byId;
