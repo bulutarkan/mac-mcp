@@ -61,7 +61,7 @@ _READ_ONLY_MAC_APP_ACTIONS = frozenset({
 # max(poll_ms, _AX_WAKE_FALLBACK_S), so a missed notification costs latency, never the result; without a
 # watcher (not enabled, app refuses notifications, another wait holds it) it polls every poll_ms as before.
 _AX_WAKE_TOOLS = frozenset({"mac_observe", "mac_snapshot"})
-_AX_WAKE_FALLBACK_S = 0.5
+_AX_WAKE_FALLBACK_S = 0.25
 _AX_WAKE_MIN_GAP_S = 0.15
 _MAX_STEPS = 8
 _MAX_EXPANDED_STEPS = 16

@@ -90,7 +90,11 @@ def agent_label(agent_id: Optional[str], team_id: Optional[str] = None) -> Dict[
 
 
 def visual_label() -> Optional[str]:
-    """The overlay's name for the caller acting now: "Research team · Compare prices"; None for a chat."""
+    """The overlay's name for the caller acting now: "Research team"; None for a chat.
+
+    It is written into the page, where the site's own scripts can read it, so it names who acts but never the
+    task (the task stays in the menu).
+    """
     try:
         from .policy import current_policy_context
         context = current_policy_context()
@@ -100,8 +104,7 @@ def visual_label() -> Optional[str]:
     if not agent:
         return None
     label = agent_label(agent, str(getattr(context, "team_id", "") or "").strip() or None)
-    text = " · ".join(part for part in (label.get("who"), label.get("task")) if part)
-    return text[:80] or None
+    return str(label.get("who") or "")[:80] or None
 
 
 _LABELLED_DOCUMENTS: Dict[Any, bool] = {}

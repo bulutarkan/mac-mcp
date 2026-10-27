@@ -240,7 +240,7 @@ class ActiveTabRowsTests(unittest.TestCase):
             prefix = browser_activity.visual_who_prefix(("Safari", "1", ""))
         finally:
             reset_policy_context(token)
-        self.assertTrue(prefix.startswith("window.__mcpVisualWho=\"Codex agent"))
+        self.assertEqual("window.__mcpVisualWho=\"Codex agent\";\n", prefix)  # the page never sees the task
         # The next chat script on that document clears the name once, then leaves scripts alone.
         self.assertEqual("window.__mcpVisualWho=null;\n", browser_activity.visual_who_prefix(("Safari", "1", "")))
         self.assertEqual("", browser_activity.visual_who_prefix(("Safari", "1", "")))
