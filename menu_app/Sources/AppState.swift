@@ -629,7 +629,8 @@ final class AppState: ObservableObject {
             AgentNotificationTeamState(
                 id: $0.teamID,
                 status: $0.status,
-                title: $0.title,
+                // A saved team is named by its preset ("Vurucu Team"), like the menu and the island.
+                title: $0.teamPreset?.name ?? $0.title,
                 success: $0.success,
                 partialFailure: $0.partialFailure,
                 outcome: $0.outcome
