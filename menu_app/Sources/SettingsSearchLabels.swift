@@ -55,6 +55,14 @@ extension SettingsSearchIndex {
         "agents/skills": [
             "Use in Mac MCP",
         ],
+        "agents/teams": [
+            "Provider",
+            "Model",
+            "Thinking",
+            "Role",
+            "Bench",
+            "Line-up",
+        ],
         "apps": [
             "Sending",
             "When confirmation is off",

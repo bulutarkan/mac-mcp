@@ -88,6 +88,8 @@ struct SearchHarness {
             ("mobile", nil, "connections/mobile"),
             ("skills", nil, "agents/skills"),
             ("team history", nil, "agents/team-history"),
+            ("teams", nil, "agents/teams"),
+            ("bench", nil, "agents/teams"),
             ("recipes", nil, "scheduled/recipes"),
             ("general", nil, "general"),
             ("privacy", nil, "privacy"),

@@ -788,8 +788,8 @@ private struct CountdownRing: View {
     }
 }
 
-/// Chips that wrap onto the next line.
-private struct PromptFlow: Layout {
+/// Chips that wrap onto the next line (also the provider bench in Settings › Agents › Teams).
+struct PromptFlow: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

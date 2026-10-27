@@ -15,6 +15,7 @@ extension SettingsTab {
 
 enum AgentsTab: String, SettingsTab {
     case general
+    case teams
     case providers
     case skills
     case history
@@ -22,6 +23,7 @@ enum AgentsTab: String, SettingsTab {
     var title: String {
         switch self {
         case .general: return "General"
+        case .teams: return "Teams"
         case .providers: return "Providers"
         case .skills: return "Skills"
         case .history: return "Team History"
@@ -31,6 +33,7 @@ enum AgentsTab: String, SettingsTab {
     var symbol: String {
         switch self {
         case .general: return "slider.horizontal.3"
+        case .teams: return "person.3"
         case .providers: return "shippingbox"
         case .skills: return "book.closed"
         case .history: return "clock.arrow.circlepath"
@@ -126,7 +129,7 @@ final class SettingsTabs: ObservableObject {
 
     /// Links that name a tab, and the pane each one opens.
     private static let links: [String: SettingsSection] = [
-        "providers": .agents, "skills": .agents, "team-history": .agents,
+        "teams": .agents, "team-presets": .agents, "providers": .agents, "skills": .agents, "team-history": .agents,
         "tool-usage": .usage, "agent-usage": .usage, "chat-usage": .usage, "usage-data": .usage,
         "documents": .privacy, "knowledge": .privacy, "your-data": .privacy,
         "sending": .apps, "shortcuts": .apps, "app-support": .apps,
@@ -137,6 +140,7 @@ final class SettingsTabs: ObservableObject {
     /// Shows the tab a link names; any other link leaves every pane on its last tab.
     func select(link: String) {
         switch link {
+        case "teams", "team-presets": agents = .teams
         case "providers": agents = .providers
         case "skills": agents = .skills
         case "team-history": agents = .history

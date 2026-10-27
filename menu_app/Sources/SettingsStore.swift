@@ -217,6 +217,11 @@ final class SettingsStore: ObservableObject {
     @Published var hasDecisionsKey = false
     @Published private(set) var settingsLoadIssue = ""
     @Published private(set) var providerSettingsLocked = false
+    /// Saved teams (Settings › Agents › Teams), from `subagents.team_presets`. They are saved on
+    /// their own, one team at a time, never through `save()`, which leaves the key as it is.
+    @Published private(set) var teamPresets: [TeamPreset] = []
+    /// Why some saved teams are not listed; those entries stay in the file untouched.
+    @Published private(set) var teamPresetsIssue = ""
 
     let path: URL
 
@@ -264,12 +269,15 @@ final class SettingsStore: ObservableObject {
                 let mergedData = try JSONSerialization.data(withJSONObject: mergedObject)
                 current = try JSONDecoder().decode(MenuSettings.self, from: mergedData)
                 providerConfigValid = true
+                applyTeamPresets(from: rawObject)
             } catch {
                 settingsLoadIssue = "settings.json could not be read or decoded. Delegated providers are disabled until you repair the file."
                 providerSettingsLocked = true
+                applyTeamPresets(from: [:])
             }
         } else {
             settingsLoadIssue = "settings.json is missing. Delegated providers are disabled until settings are saved."
+            applyTeamPresets(from: [:])
         }
 
         voiceEnabled = current.experimental_tools["ask_user_voice"]?.enabled ?? false
@@ -429,6 +437,88 @@ final class SettingsStore: ObservableObject {
             }
         }
         return result
+    }
+
+    // MARK: Team presets
+
+    /// Re-reads the saved teams, which an agent or another window may have changed.
+    func reloadTeamPresets() {
+        guard !providerSettingsLocked,
+              let data = try? Data(contentsOf: path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        applyTeamPresets(from: object)
+    }
+
+    /// Saves one team, adding it or replacing the saved team with its id, and stamps `updated_at`.
+    /// Only `subagents.team_presets` changes; other teams and every other setting stay as on disk.
+    @discardableResult
+    func saveTeamPreset(_ preset: TeamPreset) throws -> TeamPreset {
+        var stored = preset
+        stored.name = TeamPreset.trimmed(stored.name)
+        for index in stored.members.indices {
+            stored.members[index].name = TeamPreset.trimmed(stored.members[index].name)
+        }
+        stored.updatedAt = Date()
+        try updateTeamPresets { entries, saved in
+            let issues = stored.issues(among: saved)
+            guard issues.isEmpty else {
+                let message = [issues.name, issues.members].compactMap { $0 }.first
+                    ?? issues.memberNames.values.sorted().first
+                    ?? issues.memberProviders.values.sorted().first
+                    ?? "The team is not complete."
+                throw NSError(domain: "MacMCPSettings", code: 76, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+            var object = stored.jsonObject()
+            if let index = entries.firstIndex(where: { ($0 as? [String: Any])?["id"] as? String == stored.id }) {
+                // Keys this app does not know about stay with the team.
+                let previous = entries[index] as? [String: Any] ?? [:]
+                object = previous.merging(object) { _, new in new }
+                entries[index] = object
+            } else {
+                entries.append(object)
+            }
+        }
+        return stored
+    }
+
+    func deleteTeamPreset(id: String) throws {
+        try updateTeamPresets { entries, _ in
+            entries.removeAll { ($0 as? [String: Any])?["id"] as? String == id }
+        }
+    }
+
+    /// Reads settings.json, changes its `subagents.team_presets` list and writes it back atomically
+    /// (0600). It refuses a file it cannot read rather than replace what is in it.
+    private func updateTeamPresets(_ change: (inout [Any], [TeamPreset]) throws -> Void) throws {
+        if providerSettingsLocked && FileManager.default.fileExists(atPath: path.path) {
+            throw NSError(domain: "MacMCPSettings", code: 75, userInfo: [NSLocalizedDescriptionKey: settingsLoadIssue])
+        }
+        if !FileManager.default.fileExists(atPath: path.path) {
+            try save()
+        }
+        let data = try Data(contentsOf: path)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var subagents = object["subagents"] as? [String: Any] ?? [:]
+        var entries = subagents[TeamPreset.settingsKey] as? [Any] ?? []
+        let saved = entries.compactMap { ($0 as? [String: Any]).flatMap(TeamPreset.init(jsonObject:)) }
+        try change(&entries, saved)
+        subagents[TeamPreset.settingsKey] = entries
+        object["subagents"] = subagents
+        let output = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try output.write(to: path, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        applyTeamPresets(from: object)
+    }
+
+    private func applyTeamPresets(from object: [String: Any]) {
+        let entries = (object["subagents"] as? [String: Any])?[TeamPreset.settingsKey] as? [Any] ?? []
+        let presets = entries.compactMap { ($0 as? [String: Any]).flatMap(TeamPreset.init(jsonObject:)) }
+        let unreadable = entries.count - presets.count
+        if teamPresets != presets { teamPresets = presets }
+        teamPresetsIssue = unreadable == 0 ? ""
+            : "\(unreadable) saved team\(unreadable == 1 ? " is" : "s are") not shown because settings.json has them in a form Mac MCP cannot read. They are left as they are."
     }
 
     func providerEnabled(_ id: String) -> Bool {

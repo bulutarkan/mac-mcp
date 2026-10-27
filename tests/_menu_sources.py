@@ -24,6 +24,8 @@ FEATURES = {
         "DesktopCursorOverlay.swift",
         "BrowserTabPulse.swift",
         "ScheduledTaskWatchdog.swift",
+        # SettingsStore.swift, compiled with this feature, keeps the saved team presets.
+        "TeamPresets.swift",
     ),
 }
 

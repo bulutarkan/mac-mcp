@@ -33,6 +33,7 @@ FILES = {
     "IPhoneSection.swift": "macs",
     "SkillsSection.swift": "agents/skills",
     "TeamHistorySection.swift": "agents/team-history",
+    "TeamPresetsSection.swift": "agents/teams",
     "SavedLoginsView.swift": "permissions",
     "MessagesAccessSection.swift": "apps/sending",
     "ConnectAppsBox.swift": "connections/ai-clients",

@@ -1161,6 +1161,16 @@ struct SettingsView: View {
                         agentsStatusRows
                         defaultAgentCard
                         agentLimitsGroup
+                    case .teams:
+                        agentsStatusRows
+                        TeamPresetsSection(
+                            settings: settings,
+                            providers: state.providerStatuses,
+                            catalogs: state.providerCatalogs,
+                            phase: providersPhase
+                        ) {
+                            tabs.agents = .providers
+                        }
                     case .providers:
                         agentsStatusRows
                         providersList
@@ -3444,17 +3454,7 @@ struct SettingsView: View {
     }
 
     private var defaultProviderOptions: [String] {
-        var values = state.providerStatuses
-            .filter { $0.enabled && $0.detected }
-            .map(\.id)
-        let current = settings.defaultAgentProvider
-        if !current.isEmpty && !values.contains(current) {
-            values.append(current)
-        }
-        let order = ["opencode", "codex", "claude", "kimi", "grok"] + AgentProviders.more
-        return values.sorted {
-            (order.firstIndex(of: $0) ?? 99) < (order.firstIndex(of: $1) ?? 99)
-        }
+        AgentChoice.providerOptions(state.providerStatuses, keeping: settings.defaultAgentProvider)
     }
 
     private var defaultProviderCatalog: ProviderCatalogInfo? {
@@ -3466,17 +3466,8 @@ struct SettingsView: View {
         defaultProviderCatalog?.modelItems ?? []
     }
 
-    private var defaultSelectedModelInfo: AgentModelInfo? {
-        guard let catalog = defaultProviderCatalog else { return nil }
-        let modelID = settings.defaultAgentModel.isEmpty
-            ? (catalog.defaultModel ?? "")
-            : settings.defaultAgentModel
-        guard !modelID.isEmpty else { return nil }
-        return catalog.modelItems.first(where: { $0.id == modelID })
-    }
-
     private var defaultReasoningOptions: [String] {
-        defaultSelectedModelInfo?.reasoningValues ?? []
+        AgentChoice.reasoningOptions(settings.defaultAgentModel, in: defaultProviderCatalog)
     }
 
     private var defaultProviderBinding: Binding<String> {
@@ -3511,77 +3502,37 @@ struct SettingsView: View {
         )
     }
 
-    private var defaultAgentStatus: (label: String, detail: String, symbol: String, color: Color) {
-        let providerID = settings.defaultAgentProvider
-        guard !providerID.isEmpty else {
-            return (
-                "Not configured",
-                "Delegated requests must keep passing a provider explicitly until a default is selected.",
-                "minus.circle",
-                .secondary
-            )
-        }
-        if state.providerStatuses.isEmpty {
-            switch state.providerSettingsState.phase {
-            case .loading:
-                return ("Loading", "Checking the delegated provider before validating this default.", "arrow.clockwise", .secondary)
-            case .error, .unavailable:
-                return ("Unavailable", state.providerSettingsState.message ?? "Provider status could not be loaded.", "exclamationmark.triangle.fill", .orange)
-            default:
-                break
-            }
-        }
-        guard let provider = state.providerStatuses.first(where: { $0.id == providerID }) else {
-            return ("Unavailable", "The saved provider is not present in the latest provider response.", "exclamationmark.triangle.fill", .orange)
-        }
-        guard provider.enabled else {
-            return ("Disabled", "Enable \(providerDisplayName(providerID)) before using it as the default.", "pause.circle.fill", .orange)
-        }
-        guard provider.detected else {
-            return ("Unavailable", "\(providerDisplayName(providerID)) CLI is not currently detected.", "exclamationmark.triangle.fill", .orange)
-        }
-        guard let catalog = defaultProviderCatalog, catalog.available else {
-            return ("Unavailable", "The live model catalog for \(providerDisplayName(providerID)) is unavailable.", "exclamationmark.triangle.fill", .orange)
-        }
-        if catalog.catalogFreshness == "stale" {
-            return ("Stale", "The provider model catalog is stale. Refresh the provider before spawning this default.", "clock.badge.exclamationmark", .orange)
-        }
-        if !settings.defaultAgentModel.isEmpty && defaultSelectedModelInfo == nil {
-            return ("Stale model", "\(settings.defaultAgentModel) is no longer in the live provider catalog.", "exclamationmark.triangle.fill", .orange)
-        }
-        if !settings.defaultAgentReasoning.isEmpty {
-            guard let model = defaultSelectedModelInfo else {
-                return ("Check thinking", "Choose a catalog-backed model before pinning a thinking level.", "exclamationmark.triangle.fill", .orange)
-            }
-            guard model.reasoningValues.contains(settings.defaultAgentReasoning) else {
-                return (
-                    "Unsupported",
-                    "\(reasoningDisplayName(settings.defaultAgentReasoning)) is not supported by \(model.displayName).",
-                    "exclamationmark.triangle.fill",
-                    .orange
-                )
-            }
-        }
-        let modelName = defaultSelectedModelInfo?.displayName ?? "Provider default model"
-        let thinking = settings.defaultAgentReasoning.isEmpty
-            ? "provider default thinking"
-            : reasoningDisplayName(settings.defaultAgentReasoning)
-        return (
-            "Ready",
-            "\(providerDisplayName(providerID)) · \(modelName) · \(thinking). Explicit spawn arguments still take precedence.",
-            "checkmark.circle.fill",
-            .green
+    private var defaultAgentStatus: AgentChoice.Status {
+        let status = AgentChoice.status(
+            provider: settings.defaultAgentProvider,
+            model: settings.defaultAgentModel,
+            reasoning: settings.defaultAgentReasoning,
+            providers: state.providerStatuses,
+            catalogs: state.providerCatalogs,
+            phase: providersPhase,
+            subject: "this default"
+        )
+        guard status.isReady else { return status }
+        return AgentChoice.Status(
+            label: status.label,
+            detail: status.detail + " Explicit spawn arguments still take precedence.",
+            symbol: status.symbol,
+            color: status.color
         )
     }
 
-    private func reasoningDisplayName(_ value: String) -> String {
-        switch value.lowercased() {
-        case "xhigh": return "Extra High"
-        case "extra-high": return "Extra High"
-        case "max": return "Max"
-        case "ultra": return "Ultra"
-        default: return value.capitalized
+    /// The provider list's load state, for checks that have no provider to look at yet.
+    private var providersPhase: AgentChoice.ProvidersPhase {
+        switch state.providerSettingsState.phase {
+        case .loading: return .loading
+        case .error, .unavailable:
+            return .failed(state.providerSettingsState.message ?? "Provider status could not be loaded.")
+        default: return .loaded
         }
+    }
+
+    private func reasoningDisplayName(_ value: String) -> String {
+        AgentChoice.reasoningDisplayName(value)
     }
 
     /// How many agents run, whether a team can talk, and how long finished agents stay: rows in one box, like Usage.

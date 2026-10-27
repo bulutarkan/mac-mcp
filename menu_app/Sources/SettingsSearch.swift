@@ -15,7 +15,7 @@ enum SettingsSearchIndex {
         "start": "get started setup first run onboarding checklist begin connect ai app client first request permissions accessibility screen recording",
         "general": "general overview status server connected degraded disconnected update version issues remote access caught up",
         "activity": "activity notifications alerts completion attention agents macos permission tool bubble speech descriptions require show preview cursor pointer mouse desktop",
-        "agents": "agents subagents provider providers codex opencode claude code model reasoning thinking default agent history retention delete keep team teams team history tool calls tokens messages between agents team messages skills skill instructions",
+        "agents": "agents subagents provider providers codex opencode claude code model reasoning thinking default agent history retention delete keep team teams team presets saved teams squad roster members role coder reviewer orchestrator team history tool calls tokens messages between agents team messages skills skill instructions",
         "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
         "permissions": "permissions safety approvals security profile read only trusted access saved logins passwords sign in keychain import",
         "scheduled": "scheduled tasks schedule cron recurring automation automate timer daily weekly monthly script run later approval review ai task recipe recipes saved steps shortcuts siri replay",
@@ -43,7 +43,7 @@ enum SettingsSearchIndex {
     /// The tabs of tabbed panes, by the title each one shows.
     static let tabTitles: [String: [String]] = [
         "agents/agents-general": ["General"], "agents/providers": ["Providers"], "agents/skills": ["Skills"],
-        "agents/team-history": ["Team History"],
+        "agents/teams": ["Teams"], "agents/team-history": ["Team History"],
         "usage/tool-usage": ["Tools"], "usage/agent-usage": ["Delegated Agents"], "usage/chat-usage": ["Chat"],
         "usage/usage-data": ["Data & Storage"],
         "privacy/protection": ["Protection"], "privacy/documents": ["Documents"], "privacy/your-data": ["Your Data"],
