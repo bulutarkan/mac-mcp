@@ -6170,7 +6170,9 @@ def _team_preset_catalog() -> Dict[str, Any]:
         for member in preset["members"]:
             member_problems = provider_problems(member["provider"])
             members.append({**member, "ready": not member_problems, "problems": member_problems})
-        preset_problems = [f"{member['name']}: {problem}" for member in members for problem in member["problems"]]
+        # A member settings.json could not read keeps the whole preset from starting (fail closed).
+        preset_problems = list(preset.get("problems") or [])
+        preset_problems += [f"{member['name']}: {problem}" for member in members for problem in member["problems"]]
         rows.append({"id": preset["id"], "name": preset["name"], "updated_at": preset.get("updated_at"),
                      "member_count": len(members), "members": members,
                      "ready": not preset_problems, "problems": preset_problems})
@@ -6186,6 +6188,16 @@ def _find_team_preset(ref: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]
             return preset, None
     names = ", ".join(repr(preset["name"]) for preset in presets) or "none (save one in Mac MCP Settings > Agents)"
     return None, f"team_preset {ref!r} is not a saved team preset; saved presets: {names}."
+
+
+def _team_preset_unusable(preset: Dict[str, Any]) -> Optional[str]:
+    """Why a saved preset that lost members in settings.json must not start, else None: a team never starts
+    with fewer members than the owner saved."""
+    problems = list(preset.get("problems") or [])
+    if not problems:
+        return None
+    return (f"team preset {preset['name']!r} has {len(problems)} member(s) that cannot be read, so it does not start "
+            f"with fewer members: {'; '.join(problems)}. Fix the team in Mac MCP Settings > Agents > Teams.")
 
 
 def _team_preset_tasks(preset: Dict[str, Any], tasks: List[Any]
@@ -6307,11 +6319,12 @@ def spawn_agents(
     preset_members: List[Optional[Dict[str, Any]]] = []
     exact_tasks = exact_team = team_preset_record is not None
     preset_ref = str(team_preset or "").strip()
-    preset_missing = False
+    preset_unusable = False
     if preset_ref:
         preset, preset_problem = _find_team_preset(preset_ref)
-        if preset is None:
-            preset_missing = True
+        preset_problem = preset_problem or (_team_preset_unusable(preset) if preset else None)
+        if preset is None or preset_problem:
+            preset_unusable = True
             problems.append(str(preset_problem))
         else:
             team_preset_record = {"id": preset["id"], "name": preset["name"]}
@@ -6330,7 +6343,7 @@ def spawn_agents(
     elif isinstance(tasks, list):
         problems.extend(f"tasks[{index}].member needs team_preset." for index, task in enumerate(tasks)
                         if isinstance(task, dict) and task.get("member") is not None)
-    if not (preset_missing and _clean_optional_selection(provider) is None):
+    if not (preset_unusable and _clean_optional_selection(provider) is None):
         try:
             selection = _resolve_agent_selection(provider, model, reasoning,
                                                  **({"inherit_default": False} if exact_team else {}))
@@ -7619,6 +7632,32 @@ def _resume_team(team_id: str, team: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "team_id": team_id, **plan, "team": summary}
 
 
+def _add_task_member(team: Dict[str, Any], task: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """add_task's task.member: the task with that member's provider, model, reasoning, role and title, mapped as
+    spawn_agents maps one (the task's own fields win). The member comes from the saved team the team started
+    from, read by id as it is saved now; a deleted or partly unreadable preset, or an ad hoc team, is refused."""
+    record = team.get("team_preset") if isinstance(team.get("team_preset"), dict) else {}
+    if not record.get("id"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "task.member needs a team started from a saved team (spawn_agents team_preset); this team "
+                            "was not, so give the task its own provider, model and reasoning instead.")
+    preset = next((item for item in _team_presets()[0] if item["id"] == record["id"]), None)
+    if preset is None:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"task.member cannot be resolved: the team preset {record.get('name')!r} this team started "
+                            "from is no longer saved in Mac MCP Settings > Agents > Teams (deleted or unreadable). "
+                            "Give the task its own provider, model and reasoning instead.")
+    unusable = _team_preset_unusable(preset)
+    if unusable:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, unusable)
+    mapped, chosen, problems = _team_preset_tasks(preset, [task])
+    _raise_input_problems([problem.replace("tasks[0].", "task.", 1) for problem in problems])
+    _team_preset_member_check(mapped, chosen)
+    member = chosen[0]
+    assert member is not None
+    return mapped[0], member
+
+
 def _add_team_task(team_id: str, team: Dict[str, Any], task: Any, expected_revision: Optional[int]) -> Dict[str, Any]:
     """Add one task to a team's plan while it runs or after it finished (#74).
 
@@ -7640,11 +7679,16 @@ def _add_team_task(team_id: str, team: Dict[str, Any], task: Any, expected_revis
     exhausted = _team_budget_snapshot(team).get("admission_exhausted_reason")
     if exhausted:
         raise HTTPException(status.HTTP_409_CONFLICT, f"budget_exhausted: {exhausted}; this team cannot start new tasks.")
+    member: Optional[Dict[str, Any]] = None
+    if task.get("member") is not None:
+        task, member = _add_task_member(team, task)
     access_mode = str(team.get("access_mode") or "read_only")
     normalized = _normalize_team_task(task, len(team.get("tasks") or []) + 1, team.get("role"),
                                       int(team.get("max_revisions") or 0))
     normalized.update(_task_agent_selection(normalized.pop("_override", {}), str(team["provider"]), team.get("model"),
-                                            team.get("reasoning"), access_mode))
+                                            team.get("reasoning"), access_mode, **({"exact": True} if member else {})))
+    if member is not None:
+        normalized["preset_member"] = {"id": str(member["id"])[:64], "name": str(member.get("name") or "")[:60]}
     try:
         team_scope = ResourceScope.from_dict(dict(team.get("scope") or {}))
     except (TypeError, ValueError) as exc:
@@ -7665,6 +7709,13 @@ def _add_team_task(team_id: str, team: Dict[str, Any], task: Any, expected_revis
         tasks = list(current.get("tasks") or [])
         if len(tasks) >= MAX_TEAM_SIZE:
             raise HTTPException(status.HTTP_409_CONFLICT, f"A team can contain at most {MAX_TEAM_SIZE} tasks.")
+        busy = member and next((item for item in tasks if isinstance(item.get("preset_member"), dict)
+                                and item["preset_member"].get("id") == member["id"]
+                                and str(item.get("state") or "") not in _GRAPH_TASK_TERMINAL), None)
+        if busy:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                f"member {member['name']!r} is already on task {busy.get('id')!r}, which has not "
+                                "finished; a member runs one task at a time. Pick another member or wait for it.")
         _validate_team_graph([*(dict(item) for item in tasks), dict(new_task)])
         if int(current.get("max_parallel") or 0) >= len(tasks):
             # A team that ran all its tasks at once runs the new one alongside them too.

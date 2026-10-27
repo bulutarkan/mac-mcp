@@ -105,6 +105,23 @@ func presets(_ path: String) -> [[String: Any]] {
         precondition(team.issues(among: []).memberNames.count == 2, "member names are unique without case")
         team.members[1].name = String(repeating: "x", count: 41)
         precondition(team.issues(among: []).memberNames.count == 1)
+        // Names count Unicode scalars, as the server does (tests/test_team_presets.py): a family emoji is
+        // one character on screen and seven scalars, so a name the app accepts is never skipped there.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}"
+        precondition(family.count == 1 && TeamPreset.length(family) == 7)
+        team.members[1].name = String(repeating: family, count: 5) + "Atlas"   // 40 scalars, 10 characters
+        precondition(team.issues(among: []).memberNames.isEmpty)
+        team.members[1].name = String(repeating: family, count: 5) + "Atlas!"  // 41 scalars, 11 characters
+        precondition(team.issues(among: []).memberNames.count == 1)
+        team.name = String(repeating: family, count: 8) + "Team"               // 60 scalars
+        precondition(team.issues(among: []).name == nil)
+        team.name = String(repeating: family, count: 8) + "Team!"
+        precondition(team.issues(among: []).name != nil)
+        // A copy's name stays within the limit and never splits an emoji.
+        let copy = team.duplicate(among: [team]).name
+        precondition(TeamPreset.length(copy) <= TeamPreset.maxNameLength, "\(TeamPreset.length(copy))")
+        precondition(copy == String(repeating: family, count: 7) + " Copy", copy)
+        team.name = "Night Shift"
         team.members.append(TeamPresetMember(id: "m_0000000b", name: "Eleven", provider: "codex"))
         precondition(team.issues(among: []).members != nil, "more than 10 members is refused")
         var order = TeamPreset(id: "tp_2", name: "Order", members: ["a", "b", "c", "d"].map {

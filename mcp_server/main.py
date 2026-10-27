@@ -1163,7 +1163,8 @@ def create_app():
             "side-effect or uncertain crash boundary; resume preserves the provider session, worktree and durable receipts. Team resume "
             "(a stopped team) keeps finished tasks, continues interrupted ones from their checkpoints, restarts only those with no side "
             "effect yet and lists the rest. Team add_task adds one task to a running or finished team: task={id, prompt, depends_on?, "
-            "title?, role?, scope?, resources?, provider?, model?, reasoning?}; it starts once its depends_on complete and gets their "
+            "title?, role?, scope?, resources?, provider?, model?, reasoning?, member?}; member (name or id, for a team started "
+            "with team_preset) runs it as that saved member; it starts once its depends_on complete and gets their "
             "results; pass expected_revision (the team's plan_revision) to get a conflict instead of racing another change. "
             "Team cancel cascades to all children; team despawn refuses unapplied isolated changes."
         ),

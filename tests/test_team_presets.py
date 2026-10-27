@@ -1,7 +1,8 @@
 """Team presets: named agent teams saved in Settings > Agents, started by name with spawn_agents.
 
 Each member brings its own provider, model, reasoning and role; the task's own fields still win. A broken
-preset never stops the server, and a member whose provider is off fails closed and is named.
+preset never stops the server, a preset that lost a member is refused rather than started smaller, and a
+member whose provider is off fails closed and is named. add_task can add a task as one member.
 """
 from __future__ import annotations
 
@@ -51,6 +52,7 @@ class TeamPresetReaderTests(unittest.TestCase):
     def test_a_valid_preset_reads_back_with_empty_fields_as_provider_default(self) -> None:
         presets, problems = self.read([{**NIGHT_SHIFT, "members": [ATLAS, {**ECHO, "model": "", "reasoning": None}]}])
         self.assertEqual([], problems)
+        self.assertEqual([], presets[0]["problems"])
         self.assertEqual(["Atlas", "Echo"], [member["name"] for member in presets[0]["members"]])
         self.assertEqual({"id": "m_00000003", "name": "Echo", "provider": "codex", "model": None,
                           "reasoning": None, "role": None}, presets[0]["members"][1])
@@ -78,6 +80,11 @@ class TeamPresetReaderTests(unittest.TestCase):
                          "repeats another member", ".model must be text", "repeats another preset",
                          "no usable members", "name must be 1-60"):
             self.assertIn(fragment, joined)
+        # The preset that lost members keeps why, so it is listed but never starts smaller (fail closed).
+        own = presets[0]["problems"]
+        self.assertEqual(4, len(own))
+        self.assertTrue(all(problem.startswith("team_presets[2] ('Night Shift').members[") for problem in own), own)
+        self.assertFalse(any("skipped" in problem for problem in own))
 
     def test_a_broken_or_missing_settings_file_yields_no_presets(self) -> None:
         self.assertEqual(([], ["settings.json is invalid_json; no team presets read."]), self.read(raw="{nope"))
@@ -92,6 +99,23 @@ class TeamPresetReaderTests(unittest.TestCase):
         presets, problems = self.read([{**NIGHT_SHIFT, "members": members}])
         self.assertEqual(agents.MAX_TEAM_SIZE, len(presets[0]["members"]))
         self.assertEqual(2, len(problems))
+        self.assertEqual(2, len(presets[0]["problems"]))
+
+    def test_names_count_unicode_scalars_like_the_app(self) -> None:
+        # A family emoji is one character on screen but 7 Unicode scalars (4 people joined by 3 ZWJ). The app's
+        # builder counts scalars too (tests/test_team_presets_native.py), so a name it accepts is never skipped.
+        family = "\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466"
+        self.assertEqual(7, len(family))
+        fits = family * 5 + "Atlas"          # 40 scalars, 10 characters on screen
+        too_long = family * 5 + "Atlas!"     # 41 scalars, 11 characters on screen
+        presets, problems = self.read([{**NIGHT_SHIFT, "name": family * 8 + "Team", "members": [
+            {**ATLAS, "name": fits}, {**ECHO, "name": too_long}]}])
+        self.assertEqual(family * 8 + "Team", presets[0]["name"])  # 60 scalars
+        self.assertEqual([fits], [member["name"] for member in presets[0]["members"]])
+        self.assertIn("members[1].name must be 1-40 characters", presets[0]["problems"][0])
+        presets, problems = self.read([{**NIGHT_SHIFT, "name": family * 8 + "Team!"}])
+        self.assertEqual([], presets)
+        self.assertIn("name must be 1-60", problems[0])
 
 
 class TeamPresetSpawnTests(unittest.TestCase):
@@ -274,6 +298,83 @@ class TeamPresetSpawnTests(unittest.TestCase):
         team = self.spawn([{"id": "a", "prompt": "x"}], provider="codex")
         self.assertIsNone(team["team_preset"])
 
+    def test_a_preset_that_lost_a_member_never_starts_smaller(self) -> None:
+        write_settings(self.settings_path, [{**NIGHT_SHIFT, "members": [
+            ATLAS, {**NOVA, "provider": "skynet"}, {**ECHO, "id": "bad"}]}])
+        for kwargs in ({}, {"provider": "codex"}):
+            with self.subTest(**kwargs):
+                error = self.refused([{"id": "a", "prompt": "x"}], team_preset="Night Shift", **kwargs)
+                self.assertEqual(400, error.status_code)
+                detail = str(error.detail)
+                self.assertIn("team preset 'Night Shift' has 2 member(s) that cannot be read", detail)
+                self.assertIn("('Nova').provider 'skynet'", detail)
+                self.assertIn("('Echo').id must be m_", detail)
+                self.assertIn("Settings > Agents > Teams", detail)
+                self.assertNotIn("Default Agent", detail)
+
+    # add_task(member=...): a task added to a running team runs as one of its saved team's members.
+
+    def add(self, team_id, task):
+        return agents.agent_action(load_settings(), "add_task", team_id=team_id, task=task)
+
+    def add_refused(self, team_id, task) -> HTTPException:
+        before = [item["id"] for item in agents._read_team(team_id)["tasks"]]
+        spawned = len(self.spawned)
+        with self.assertRaises(HTTPException) as ctx:
+            self.add(team_id, task)
+        self.assertEqual(before, [item["id"] for item in agents._read_team(team_id)["tasks"]])
+        self.assertEqual(spawned, len(self.spawned))
+        return ctx.exception
+
+    def test_add_task_runs_as_the_named_member_and_its_own_fields_win(self) -> None:
+        team_id = self.spawn([{"id": "build", "prompt": "build it"}], team_preset="Night Shift")["team_id"]
+        added = self.add(team_id, {"id": "review", "prompt": "review it", "member": "nova"})
+        self.assertEqual("running", added["task_state"])
+        self.assertEqual(("claude", "opus", None, "Nova", "reviewer"),
+                         tuple(self.runs()["review"][key] for key in ("provider", "model", "reasoning", "title", "role")))
+        stored = {task["id"]: task for task in agents._read_team(team_id)["tasks"]}
+        self.assertEqual({"id": "m_00000002", "name": "Nova"}, stored["review"]["preset_member"])
+        self.add(team_id, {"id": "docs", "prompt": "write docs", "member": "M_00000003", "model": "gpt-5.4",
+                           "title": "Docs", "role": "orchestrator"})
+        self.assertEqual(("codex", "gpt-5.4", None, "Docs", "orchestrator"),
+                         tuple(self.runs()["docs"][key] for key in ("provider", "model", "reasoning", "title", "role")))
+
+    def test_add_task_refuses_a_busy_unknown_or_disabled_member(self) -> None:
+        team_id = self.spawn([{"id": "build", "prompt": "build it"}], team_preset="Night Shift")["team_id"]
+        busy = self.add_refused(team_id, {"id": "more", "prompt": "more", "member": "Atlas"})
+        self.assertEqual(409, busy.status_code)
+        self.assertIn("member 'Atlas' is already on task 'build'", str(busy.detail))
+        unknown = self.add_refused(team_id, {"id": "more", "prompt": "more", "member": "Ghost"})
+        self.assertEqual(400, unknown.status_code)
+        self.assertIn("task.member 'Ghost' is not in team preset 'Night Shift'", str(unknown.detail))
+        write_settings(self.settings_path, [NIGHT_SHIFT], enabled=("codex", "opencode"))
+        disabled = self.add_refused(team_id, {"id": "more", "prompt": "more", "member": "Nova"})
+        self.assertEqual(403, disabled.status_code)
+        self.assertIn("provider_disabled: member 'Nova' runs on Claude Code", str(disabled.detail))
+        # Once its task has finished, the member takes another.
+        agents._update_meta("agt_1", lambda meta: meta.update(status="completed"))
+        agents._team_tick(team_id)
+        self.add(team_id, {"id": "more", "prompt": "more", "member": "Atlas"})
+        self.assertEqual(("codex", "gpt-5.5", "high", "Atlas"),
+                         tuple(self.runs()["more"][key] for key in ("provider", "model", "reasoning", "title")))
+
+    def test_add_task_member_needs_a_preset_team_whose_preset_is_still_saved(self) -> None:
+        ad_hoc = self.spawn([{"id": "a", "prompt": "x"}], provider="codex")["team_id"]
+        error = self.add_refused(ad_hoc, {"id": "b", "prompt": "y", "member": "Atlas"})
+        self.assertEqual(400, error.status_code)
+        self.assertIn("task.member needs a team started from a saved team", str(error.detail))
+        team_id = self.spawn([{"id": "a", "prompt": "x"}], team_preset="Night Shift")["team_id"]
+        write_settings(self.settings_path, [{**NIGHT_SHIFT, "members": [ATLAS, NOVA, {**ECHO, "provider": "skynet"}]}])
+        broken = self.add_refused(team_id, {"id": "b", "prompt": "y", "member": "Nova"})
+        self.assertEqual(400, broken.status_code)
+        self.assertIn("team preset 'Night Shift' has 1 member(s) that cannot be read", str(broken.detail))
+        write_settings(self.settings_path, [])
+        deleted = self.add_refused(team_id, {"id": "b", "prompt": "y", "member": "Nova"})
+        self.assertEqual(409, deleted.status_code)
+        self.assertIn("'Night Shift' this team started from is no longer saved", str(deleted.detail))
+        # A task without a member still joins as before.
+        self.add(team_id, {"id": "b", "prompt": "y"})
+
 
 class TeamPresetCatalogTests(unittest.TestCase):
     def test_catalog_lists_presets_with_readiness_and_fails_closed(self) -> None:
@@ -300,6 +401,20 @@ class TeamPresetCatalogTests(unittest.TestCase):
         self.assertEqual(1, len(result["team_preset_problems"]))
         # One CLI lookup per provider, however many members use it.
         self.assertEqual(1, find.call_count)
+
+    def test_catalog_lists_a_preset_that_lost_a_member_as_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            write_settings(path, [{**NIGHT_SHIFT, "members": [ATLAS, {**NOVA, "role": "boss"}]}])
+            with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(path)}), \
+                 patch.object(agents, "_find_binary", side_effect=lambda provider: f"/tmp/fake-{provider}"):
+                result = agents.agent_catalog(load_settings(), provider="codex")
+        night = result["team_presets"][0]
+        self.assertEqual(("Night Shift", False, 1), (night["name"], night["ready"], night["member_count"]))
+        self.assertEqual(1, len(night["problems"]))
+        self.assertIn("('Nova').role 'boss'", night["problems"][0])
+        self.assertTrue(night["members"][0]["ready"])
+        self.assertEqual(1, len(result["team_preset_problems"]))
 
 
 if __name__ == "__main__":

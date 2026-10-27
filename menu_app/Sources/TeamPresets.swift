@@ -33,6 +33,8 @@ struct TeamPresetMember: Identifiable, Equatable {
 /// `subagents.team_presets`. Member order is the team's default task order.
 struct TeamPreset: Identifiable, Equatable {
     static let maxMembers = 10
+    /// Name limits count Unicode scalars (`length`), not characters on screen: the server counts code
+    /// points, so a family emoji (one character, seven scalars) counts as seven on both sides.
     static let maxNameLength = 60
     static let maxMemberNameLength = 40
     static let settingsKey = "team_presets"
@@ -103,7 +105,7 @@ struct TeamPreset: Identifiable, Equatable {
     /// A copy under a free name ("Night Shift Copy", "Night Shift Copy 2") with a new id.
     func duplicate(among presets: [TeamPreset]) -> TeamPreset {
         let used = Set(presets.map { Self.folded($0.name) })
-        let base = String(Self.trimmed(name).prefix(Self.maxNameLength - 10)) + " Copy"
+        let base = Self.prefix(Self.trimmed(name), length: Self.maxNameLength - 10) + " Copy"
         var candidate = base
         var number = 2
         while used.contains(Self.folded(candidate)) {
@@ -131,8 +133,8 @@ struct TeamPreset: Identifiable, Equatable {
         let teamName = Self.trimmed(name)
         if teamName.isEmpty {
             issues.name = "Give the team a name."
-        } else if teamName.count > Self.maxNameLength {
-            issues.name = "Use \(Self.maxNameLength) characters or fewer."
+        } else if Self.length(teamName) > Self.maxNameLength {
+            issues.name = Self.tooLong(Self.maxNameLength)
         } else if others.contains(where: { $0.id != id && Self.folded($0.name) == Self.folded(teamName) }) {
             issues.name = "Another team is already called “\(teamName)”."
         }
@@ -147,8 +149,8 @@ struct TeamPreset: Identifiable, Equatable {
             let memberName = Self.trimmed(member.name)
             if memberName.isEmpty {
                 issues.memberNames[member.id] = "Name this member."
-            } else if memberName.count > Self.maxMemberNameLength {
-                issues.memberNames[member.id] = "Use \(Self.maxMemberNameLength) characters or fewer."
+            } else if Self.length(memberName) > Self.maxMemberNameLength {
+                issues.memberNames[member.id] = Self.tooLong(Self.maxMemberNameLength)
             } else if (seen[Self.folded(memberName)] ?? 0) > 1 {
                 issues.memberNames[member.id] = "Name already used in this team."
             }
@@ -161,6 +163,27 @@ struct TeamPreset: Identifiable, Equatable {
 
     static func trimmed(_ text: String) -> String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A name's length as the server counts it: Unicode scalars (Python code points).
+    static func length(_ text: String) -> Int {
+        text.unicodeScalars.count
+    }
+
+    /// The longest start of `text` within `length` Unicode scalars, never cutting a character in two.
+    static func prefix(_ text: String, length limit: Int) -> String {
+        var kept = ""
+        var used = 0
+        for character in text {
+            used += character.unicodeScalars.count
+            guard used <= limit else { break }
+            kept.append(character)
+        }
+        return kept
+    }
+
+    private static func tooLong(_ limit: Int) -> String {
+        "Use \(limit) characters or fewer (an emoji can count as several)."
     }
 
     /// Names compare without case, accents or surrounding spaces.
