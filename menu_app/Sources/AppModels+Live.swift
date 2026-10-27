@@ -12,6 +12,7 @@ enum LiveTone: Equatable {
 enum LiveTarget: Equatable {
     case dashboard
     case agent(String)
+    case team(String)
     case settings(String)
 }
 

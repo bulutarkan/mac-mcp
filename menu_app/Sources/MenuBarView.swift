@@ -19,6 +19,8 @@ struct MenuBarView: View {
     @MacMCPState private var showSessions = false
     @MacMCPState private var showSecurity = false
     @MacMCPState private var showAllAgents = false
+    /// Finished teams opened to their members in the agent list.
+    @MacMCPState private var expandedTeamIDs: Set<String> = []
     @MacMCPState private var showActivity = false
     /// #20: the "n failed" count opens the list showing only the failed calls.
     @MacMCPState private var showFailedOnly = false
@@ -127,8 +129,13 @@ struct MenuBarView: View {
         window.setFrame(frame, display: true, animate: animated)
     }
 
-    private var displayAgents: [AgentInfo] {
-        state.agents.filter(\.isActive) + state.agents.filter { !$0.isActive }
+    /// The agent list: a finished team is one entry, never its agents one by one; running teams
+    /// show as cards above it.
+    private var displayAgents: [MenuAgentEntry] {
+        MenuAgentEntry.list(agents: state.agents, teams: state.agentTeams).filter {
+            if case .team(let team) = $0 { return !team.isActive }
+            return true
+        }
     }
 
     private var activeTeams: [AgentTeamInfo] {
@@ -678,7 +685,12 @@ struct MenuBarView: View {
     // MARK: Agents
 
     private var agentCard: some View {
-        let activeAgents = state.agents.filter(\.isActive)
+        let entries = displayAgents
+        // Agents working on their own; a running team's members are in its card.
+        let activeAgents = entries.compactMap { entry -> AgentInfo? in
+            if case .agent(let agent) = entry, agent.isActive { return agent }
+            return nil
+        }
         return VStack(alignment: .leading, spacing: 6) {
             // The header opens and closes the full list, like Recent activity's chevron.
             Button { showAllAgents.toggle() } label: {
@@ -692,8 +704,9 @@ struct MenuBarView: View {
                             .scaleEffect(0.5)
                             .frame(width: 22, height: 18)
                     }
-                    if !state.agents.isEmpty {
-                        Text("\(min(state.agents.count, Self.agentListLimit)) recent")
+                    // A team counts once, running or finished.
+                    if !entries.isEmpty || !activeTeams.isEmpty {
+                        Text("\(min(entries.count + activeTeams.count, Self.agentListLimit)) recent")
                             .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     }
                     Image(systemName: "chevron.down")
@@ -709,17 +722,22 @@ struct MenuBarView: View {
             .accessibilityValue(showAllAgents ? "Expanded" : "Collapsed")
             .accessibilityHint(showAllAgents ? "Collapses the agent list" : "Lists the recent agents with details")
             VStack(spacing: 6) {
+                // A running team is one card listing its members; agents on their own follow it.
                 ForEach(activeTeams.prefix(Self.teamRowLimit)) { team in
-                    teamRow(team)
+                    teamCard(team)
                 }
                 if activeTeams.count > Self.teamRowLimit {
                     moreTeamsRow(activeTeams.count - Self.teamRowLimit)
                 }
                 if showAllAgents {
-                    // At most 20 agents, inline: the menu's one scroll region scrolls them (#123).
-                    ForEach(Array(displayAgents.prefix(Self.agentListLimit).enumerated()), id: \.element.id) { index, agent in
+                    // At most 20 entries, a team counting as one, inline: the menu's one scroll region
+                    // scrolls them (#123).
+                    ForEach(Array(entries.prefix(Self.agentListLimit).enumerated()), id: \.element.id) { index, entry in
                         if index > 0 { Divider() }
-                        agentRow(agent)
+                        switch entry {
+                        case .team(let team): finishedTeamRow(team)
+                        case .agent(let agent): agentRow(agent)
+                        }
                     }
                 } else {
                     ForEach(Array(activeAgents.prefix(2).enumerated()), id: \.element.id) { index, agent in
@@ -755,30 +773,209 @@ struct MenuBarView: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// One active team in a line: progress through its task graph and the plan limits its agents
-    /// spend; opens the dashboard on that team. Badges sit beside the title, or under it when the
-    /// line is too narrow for both.
-    private func teamRow(_ team: AgentTeamInfo) -> some View {
+    /// A running team as one card: its saved name, the task and progress through its task graph, the
+    /// plan limits its agents spend, then each member. The header opens the dashboard on that team;
+    /// badges sit beside the name, or under it when the line is too narrow for both.
+    private func teamCard(_ team: AgentTeamInfo) -> some View {
         let quota = team.quota ?? []
-        return Button { state.openDashboard(focusTeamID: team.teamID) } label: {
-            Group {
-                if quota.isEmpty {
-                    teamLine(team, quota: [])
-                } else {
-                    ViewThatFits(in: .horizontal) {
-                        teamLine(team, quota: quota)
-                        VStack(alignment: .leading, spacing: 4) {
-                            teamLine(team, quota: [])
-                            QuotaBadges(quota: quota).padding(.leading, 25)
+        let shape = RoundedRectangle(cornerRadius: VisualTokens.Radius.card - 2, style: .continuous)
+        return VStack(alignment: .leading, spacing: 0) {
+            Button { state.openDashboard(focusTeamID: team.teamID) } label: {
+                Group {
+                    if quota.isEmpty {
+                        teamLine(team, quota: [])
+                    } else {
+                        ViewThatFits(in: .horizontal) {
+                            teamLine(team, quota: quota)
+                            VStack(alignment: .leading, spacing: 4) {
+                                teamLine(team, quota: [])
+                                QuotaBadges(quota: quota).padding(.leading, 25)
+                            }
                         }
                     }
                 }
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help("Show this team's tasks in the dashboard")
+            .accessibilityLabel("Show \(team.displayName) in the dashboard")
+            ForEach(team.members(agents: state.agents)) { member in
+                Divider()
+                teamMemberRow(member)
+            }
         }
-        .buttonStyle(.plain)
-        .help("Show this team's tasks in the dashboard")
-        .accessibilityLabel("Team \(team.title ?? ""), \(team.progressText)")
+        .padding(.horizontal, 8)
+        .background(VisualTokens.quietFill, in: shape)
+        .overlay(shape.strokeBorder(VisualTokens.hairline))
+        // VoiceOver reads the card as one group: the team and how far it is.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Team \(teamSpokenName(team)), \(team.progressText)")
+    }
+
+    /// A finished team in the agent list: one row (outcome, name, result, time, tokens) that opens to
+    /// its members; the dashboard is a link under them and in the row's context menu.
+    private func finishedTeamRow(_ team: AgentTeamInfo) -> some View {
+        let expanded = expandedTeamIDs.contains(team.teamID)
+        let outcome = TeamHistoryFormat.outcome(team.status, team.outcome)
+        var facts = [team.resultText]
+        if let duration = team.durationMS(agents: state.agents) { facts.append(compactDuration(duration)) }
+        if let tokens = team.totalTokens { facts.append("\(UsageFormat.compact(tokens)) tokens") }
+        let summary = facts.joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 2) {
+            Button {
+                if expanded { expandedTeamIDs.remove(team.teamID) } else { expandedTeamIDs.insert(team.teamID) }
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: outcome.symbol)
+                        .foregroundStyle(outcome.tint)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 3) {
+                        teamNameLine(team)
+                        Text(summary).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10 * glyphScale, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(outcome.text)
+            .contextMenu {
+                Button("Show in Dashboard") { state.openDashboard(focusTeamID: team.teamID) }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Team \(teamSpokenName(team)), \(outcome.text), \(summary)")
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            .accessibilityHint(expanded ? "Hides the team's members" : "Lists the team's members")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                if expanded { expandedTeamIDs.remove(team.teamID) } else { expandedTeamIDs.insert(team.teamID) }
+            }
+            if expanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(team.members(agents: state.agents)) { member in teamMemberRow(member) }
+                    Button { state.openDashboard(focusTeamID: team.teamID) } label: {
+                        HStack(spacing: 4) {
+                            Text("Show in Dashboard").font(.caption.weight(.medium))
+                            Image(systemName: "arrow.up.forward").font(.system(size: 9 * glyphScale, weight: .semibold))
+                                .accessibilityHidden(true)
+                        }
+                        .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 3)
+                    .accessibilityHint("Opens this team in the dashboard")
+                }
+                .padding(.leading, 18)
+                .accessibilityElement(children: .contain)
+            }
+        }
+    }
+
+    /// One member inside a team: done, running (with its tool and turn time) or waiting on another.
+    private func teamMemberRow(_ member: AgentTeamMember) -> some View {
+        let status = memberStatus(member)
+        let detail = memberDetail(member)
+        return HStack(alignment: .top, spacing: 9) {
+            Image(systemName: memberSymbol(member))
+                .foregroundStyle(memberColor(member))
+                .frame(width: 18)
+                .help(status)
+                .accessibilityLabel(status)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(member.name).font(.caption.weight(.semibold)).lineLimit(1)
+                    if member.role?.lowercased() == "reviewer" {
+                        Text("Reviewer")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                    }
+                }
+                HStack(spacing: 5) {
+                    // Who runs it keeps its room; the tool or what it waits for gives way first.
+                    Text("\(providerName(member.provider)) · \(modelName(member.model))")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+                    if let reasoning = member.reasoning, !reasoning.isEmpty { reasoningChip(reasoning) }
+                    if let detail {
+                        Text("· \(detail)").font(.caption2)
+                            .foregroundStyle(member.stage == .waiting ? .tertiary : .secondary).lineLimit(1)
+                    }
+                }
+            }
+            Spacer(minLength: 6)
+            if let agent = member.agent {
+                if agent.isActive, let turnElapsed = agent.turnElapsedMS, turnElapsed > 0 {
+                    Text("turn \(compactDuration(turnElapsed))").font(.caption2).foregroundStyle(.tertiary)
+                } else if let duration = agent.durationMS {
+                    Text(compactDuration(duration)).font(.caption2).foregroundStyle(.tertiary)
+                }
+                if agent.isActive { agentStopButton(agent) }
+            }
+        }
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func memberSymbol(_ member: AgentTeamMember) -> String {
+        switch member.stage {
+        case .done: return "checkmark.circle.fill"
+        case .waiting: return "circle.dashed"
+        case .running: return member.agent.map(agentPhaseSymbol) ?? "hourglass"
+        case .failed: return member.agent.map(agentPhaseSymbol) ?? "xmark.octagon.fill"
+        }
+    }
+
+    private func memberColor(_ member: AgentTeamMember) -> Color {
+        switch member.stage {
+        case .done: return .green
+        case .waiting: return .secondary
+        case .running: return .accentColor
+        case .failed: return member.agent.map(agentPhaseColor) ?? .red
+        }
+    }
+
+    private func memberStatus(_ member: AgentTeamMember) -> String {
+        switch member.stage {
+        case .done: return "Done"
+        case .waiting: return member.waitingFor ?? "Waiting"
+        case .running: return member.agent.map(agentPhaseLabel) ?? "Starting"
+        case .failed: return member.agent.map(agentPhaseLabel) ?? "Failed"
+        }
+    }
+
+    /// What a member is doing now, or what it waits for; nothing once it is done.
+    private func memberDetail(_ member: AgentTeamMember) -> String? {
+        switch member.stage {
+        case .done: return nil
+        case .waiting: return member.waitingFor
+        case .failed: return member.agent == nil ? "Failed" : nil
+        case .running:
+            guard let agent = member.agent else { return "Starting" }
+            if let resource = primaryInteractiveResource(agent), let label = resource.label, !label.isEmpty { return label }
+            if let tool = agent.lastTool, !tool.isEmpty { return cleanToolName(tool) }
+            return agentPhaseLabel(agent)
+        }
+    }
+
+    /// "Vurucu Team, kısa test" for VoiceOver.
+    private func teamSpokenName(_ team: AgentTeamInfo) -> String {
+        [team.displayName, team.taskTitle].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// The saved team's name, then the task it was given.
+    private func teamNameLine(_ team: AgentTeamInfo) -> some View {
+        HStack(spacing: 4) {
+            Text(team.displayName).font(.caption.weight(.semibold)).lineLimit(1).layoutPriority(1)
+            if let task = team.taskTitle {
+                Text("· \(task)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
     }
 
     /// Active teams beyond the rows shown: counted, and the dashboard lists them all.
@@ -804,7 +1001,7 @@ struct MenuBarView: View {
         HStack(spacing: 7) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.caption2).foregroundStyle(.secondary).frame(width: 18)
-            Text(team.title ?? "Team").font(.caption2.weight(.semibold)).lineLimit(1)
+            teamNameLine(team)
             if !quota.isEmpty { QuotaBadges(quota: quota) }
             Spacer(minLength: 6)
             Text(team.progressText).font(.caption2).foregroundStyle(
@@ -846,15 +1043,7 @@ struct MenuBarView: View {
                     Text(providerName(agent.provider)).font(.caption2).foregroundStyle(.secondary)
                     Text("·").font(.caption2).foregroundStyle(.tertiary)
                     Text(modelName(agent.model)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    if let reasoning = agent.reasoning, !reasoning.isEmpty {
-                        HStack(spacing: 3) {
-                            Image(systemName: "brain").font(.system(size: 8 * glyphScale, weight: .semibold))
-                            Text(reasoningBadge(reasoning)).font(.caption2.weight(.semibold))
-                        }
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                        .help("Reasoning: \(reasoningBadge(reasoning))")
-                    }
+                    if let reasoning = agent.reasoning, !reasoning.isEmpty { reasoningChip(reasoning) }
                     if let capabilityProfile = agent.capabilityProfile, capabilityProfile != "legacy", !capabilityProfile.isEmpty {
                         Text(profileDisplayName(capabilityProfile))
                             .font(.caption2.weight(.semibold))
@@ -899,6 +1088,16 @@ struct MenuBarView: View {
                 }
             }
         }.padding(.vertical, 5)
+    }
+
+    private func reasoningChip(_ reasoning: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "brain").font(.system(size: 8 * glyphScale, weight: .semibold))
+            Text(reasoningBadge(reasoning)).font(.caption2.weight(.semibold))
+        }
+        .padding(.horizontal, 5).padding(.vertical, 2)
+        .background(.quaternary, in: Capsule())
+        .help("Reasoning: \(reasoningBadge(reasoning))")
     }
 
     @ViewBuilder

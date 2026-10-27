@@ -2009,6 +2009,7 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
             "role": task.get("role"),
             "provider": chosen.get("provider"),
             "model": chosen.get("model"),
+            "reasoning": chosen.get("reasoning"),
             "state": state,
             "depends_on": list(task.get("depends_on") or []),
             "review_of": task.get("review_of"),
@@ -2210,6 +2211,10 @@ def _dashboard_task(task: Dict[str, Any]) -> Dict[str, Any]:
         "id": _dashboard_text(task.get("id"), 40),
         "title": _dashboard_text(task.get("title")),
         "role": _dashboard_text(task.get("role"), 24),
+        # Who runs it, so a task still waiting on another can be shown as its member (menu team card).
+        "provider": _dashboard_text(task.get("provider"), 24),
+        "model": _dashboard_text(task.get("model"), 64),
+        "reasoning": _dashboard_text(task.get("reasoning"), 16),
         "state": task.get("state"),
         "depends_on": [str(dep)[:40] for dep in list(task.get("depends_on") or [])[:10]],
         "review_of": _dashboard_text(task.get("review_of"), 40),

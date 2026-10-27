@@ -103,23 +103,62 @@ struct AgentTeamInfo: Decodable, Identifiable, Equatable {
     let pendingCount: Int?
     let workCount: Int?
     let title: String?
+    /// The saved team (Settings › Agents) it runs as; nil for a team made up on the spot.
+    let teamPreset: Preset?
     let provider: String?
     let model: String?
     let count: Int?
     let terminalCount: Int?
     let unresolvedConflictCount: Int?
     let tasks: [TeamTaskInfo]?
+    let budget: Budget?
     /// Plan quota of each provider the team's running agents spend; empty once it finishes.
     let quota: [ProviderQuota]?
+
+    struct Preset: Decodable, Equatable {
+        let id: String?
+        let name: String?
+    }
+
+    /// Tokens the team's agents used; incomplete when a provider reported none (a lower bound then).
+    struct Budget: Decodable, Equatable {
+        let totalTokensUsed: Int?
+        let totalTokensComplete: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case totalTokensUsed = "total_tokens_used"
+            case totalTokensComplete = "total_tokens_complete"
+        }
+
+        init(from decoder: Decoder) throws {
+            // A field the app cannot read drops out rather than failing the whole agents poll.
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            totalTokensUsed = (try? values.decodeIfPresent(Int.self, forKey: .totalTokensUsed)) ?? nil
+            totalTokensComplete = (try? values.decodeIfPresent(Bool.self, forKey: .totalTokensComplete)) ?? nil
+        }
+    }
 
     struct TeamTaskInfo: Decodable, Equatable {
         let id: String?
         let state: String?
         let queuedReason: String?
+        /// The member's name for a preset team, else the task's title.
+        let title: String?
+        let role: String?
+        let dependsOn: [String]?
+        let gateResult: String?
+        /// The agent running it, else the one that last ran it.
+        let agentID: String?
+        let provider: String?
+        let model: String?
+        let reasoning: String?
 
         enum CodingKeys: String, CodingKey {
-            case id, state
+            case id, state, title, role, provider, model, reasoning
             case queuedReason = "queued_reason"
+            case dependsOn = "depends_on"
+            case gateResult = "gate_result"
+            case agentID = "agent_id"
         }
     }
 
@@ -140,7 +179,8 @@ struct AgentTeamInfo: Decodable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case teamID = "team_id"
-        case status, success, outcome, title, provider, model, count, tasks, quota
+        case status, success, outcome, title, provider, model, count, tasks, quota, budget
+        case teamPreset = "team_preset"
         case unresolvedConflictCount = "unresolved_conflict_count"
         case partialFailure = "partial_failure"
         case successfulCount = "successful_count"
@@ -148,6 +188,155 @@ struct AgentTeamInfo: Decodable, Identifiable, Equatable {
         case pendingCount = "pending_count"
         case workCount = "work_count"
         case terminalCount = "terminal_count"
+    }
+}
+
+// MARK: Teams in the menu: one card while it runs, one row once it finished.
+
+extension AgentTeamInfo {
+    private static func text(_ value: String?) -> String? {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The saved team's name when it runs as one, else its task title.
+    var displayName: String { Self.text(teamPreset?.name) ?? Self.text(title) ?? "Team" }
+
+    /// The task title beside a saved team's name; nil when the name already is the title.
+    var taskTitle: String? {
+        guard Self.text(teamPreset?.name) != nil, let title = Self.text(title), title != displayName else { return nil }
+        return title
+    }
+
+    var doneCount: Int {
+        let all = tasks ?? []
+        return all.isEmpty ? (successfulCount ?? 0) : all.filter { ["completed", "skipped"].contains($0.state ?? "") }.count
+    }
+
+    var memberCount: Int {
+        let all = tasks ?? []
+        return all.isEmpty ? (workCount ?? count ?? 0) : all.count
+    }
+
+    /// "4/4 · review passed" or "3/4 · 1 failed" once the team finished.
+    var resultText: String {
+        var parts = ["\(doneCount)/\(memberCount)"]
+        let failed = failureCount ?? 0
+        let gates = (tasks ?? []).compactMap { $0.gateResult?.lowercased() }
+        if failed > 0 {
+            parts.append("\(failed) failed")
+        } else if !gates.isEmpty, gates.allSatisfy({ $0 == "pass" }) {
+            parts.append(gates.count == 1 ? "review passed" : "reviews passed")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The tokens the team used, only when every member's provider reported its own.
+    var totalTokens: Int? {
+        guard let used = budget?.totalTokensUsed, used > 0, budget?.totalTokensComplete != false else { return nil }
+        return used
+    }
+
+    /// First start to last end of the members the menu knows, while none is running.
+    func durationMS(agents: [AgentInfo]) -> Int? {
+        let own = agents.filter { $0.teamID == teamID }
+        guard !own.isEmpty, !own.contains(where: \.isActive) else { return nil }
+        let spans = own.compactMap { agent -> (Double, Double)? in
+            guard let end = agent.endedAt, let duration = agent.durationMS else { return nil }
+            return (end - Double(duration) / 1000, end)
+        }
+        guard let start = spans.map(\.0).min(), let end = spans.map(\.1).max() else { return nil }
+        return Int(((end - start) * 1000).rounded())
+    }
+
+    /// Each member in the team's plan order, joined to its agent once one runs it. A team without a
+    /// task graph lists its agents.
+    func members(agents: [AgentInfo]) -> [AgentTeamMember] {
+        let own = agents.filter { $0.teamID == teamID }
+        let all = tasks ?? []
+        guard !all.isEmpty else {
+            return own.map { agent in
+                AgentTeamMember(id: agent.agentID, name: Self.text(agent.title) ?? "Agent", role: nil, agent: agent,
+                                provider: agent.provider, model: agent.model, reasoning: agent.reasoning,
+                                stage: agent.isActive ? .running : agent.isFailure || agent.status == "cancelled" ? .failed : .done,
+                                waitingFor: nil)
+            }
+        }
+        let names = Dictionary(all.compactMap { task in task.id.map { ($0, Self.text(task.title) ?? $0) } },
+                               uniquingKeysWith: { first, _ in first })
+        let states = Dictionary(all.compactMap { task in task.id.map { ($0, task.state ?? "") } },
+                                uniquingKeysWith: { first, _ in first })
+        return all.enumerated().map { index, task in
+            let agent = own.first { $0.agentID == task.agentID && task.agentID != nil }
+                ?? own.first { $0.teamTaskID != nil && $0.teamTaskID == task.id }
+            let state = (task.state ?? "").lowercased()
+            let stage: AgentTeamMember.Stage
+            switch state {
+            case "completed", "skipped": stage = .done
+            case "failed", "quality_failed", "cancelled": stage = .failed
+            case "running", "spawning", "stopping": stage = .running
+            default: stage = agent?.isActive == true ? .running : .waiting
+            }
+            var waitingFor: String?
+            if stage == .waiting {
+                let open = (task.dependsOn ?? []).filter { !["completed", "skipped"].contains(states[$0] ?? "") }
+                if let first = open.first {
+                    let name = names[first] ?? first
+                    waitingFor = open.count == 1 ? "Waiting for \(name)" : "Waiting for \(name) +\(open.count - 1)"
+                } else {
+                    waitingFor = state == "queued" || task.queuedReason != nil ? "Queued" : "Waiting"
+                }
+            }
+            return AgentTeamMember(id: task.id ?? "task-\(index)", name: Self.text(task.title) ?? Self.text(agent?.title) ?? task.id ?? "Member",
+                                   role: Self.text(task.role), agent: agent,
+                                   provider: agent?.provider ?? task.provider, model: agent?.model ?? task.model,
+                                   reasoning: agent?.reasoning ?? task.reasoning, stage: stage, waitingFor: waitingFor)
+        }
+    }
+}
+
+/// One member of a team as the menu shows it: its agent once one runs, else the task it waits to run.
+struct AgentTeamMember: Identifiable, Equatable {
+    enum Stage: Equatable { case done, failed, running, waiting }
+    let id: String
+    let name: String
+    let role: String?
+    let agent: AgentInfo?
+    let provider: String?
+    let model: String?
+    let reasoning: String?
+    let stage: Stage
+    /// "Waiting for Atlas", "Queued": only for a member that has not started.
+    let waitingFor: String?
+}
+
+/// One line of the menu's agent list: a team shows once, where its newest member would, never as
+/// separate agent rows.
+enum MenuAgentEntry: Identifiable, Equatable {
+    case team(AgentTeamInfo)
+    case agent(AgentInfo)
+
+    var id: String {
+        switch self {
+        case .team(let team): return "team-\(team.teamID)"
+        case .agent(let agent): return agent.agentID
+        }
+    }
+
+    /// Running agents first, then the rest in the server's (newest first) order; a team's agents fold
+    /// into the team. Agents of a team the menu has no summary for stay separate rows.
+    static func list(agents: [AgentInfo], teams: [AgentTeamInfo]) -> [MenuAgentEntry] {
+        let byID = Dictionary(teams.map { ($0.teamID, $0) }, uniquingKeysWith: { first, _ in first })
+        var shown = Set<String>()
+        var entries: [MenuAgentEntry] = []
+        for agent in agents.filter(\.isActive) + agents.filter({ !$0.isActive }) {
+            guard let teamID = agent.teamID, let team = byID[teamID] else {
+                entries.append(.agent(agent))
+                continue
+            }
+            if shown.insert(teamID).inserted { entries.append(.team(team)) }
+        }
+        return entries
     }
 }
 

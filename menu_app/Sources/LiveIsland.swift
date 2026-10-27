@@ -336,6 +336,8 @@ final class LiveIslandController {
     /// stores the new value, so reading `state.agents` inside the sink still gave the old list:
     /// a finished agent stayed under Now, its timer running, until something else changed.
     private var agentsSnapshot: [AgentInfo] = []
+    /// The latest teams, published the same way: a running team is one Now row named like the menu's card.
+    private var teamsSnapshot: [AgentTeamInfo] = []
     private var serverRunningNow = false
 
     var enabled: Bool { state?.settings.showLiveIsland == true }
@@ -346,6 +348,7 @@ final class LiveIslandController {
         state.onLiveToolCallFinished = { [weak self] id, ok in self?.toolFinished(id, ok: ok) }
         state.onScheduledRunFinished = { [weak self] run, name in self?.scheduledRunFinished(run, name: name) }
         state.$agents.sink { [weak self] agents in self?.agentsChanged(agents) }.store(in: &subscriptions)
+        state.$agentTeams.sink { [weak self] teams in self?.teamsChanged(teams) }.store(in: &subscriptions)
         state.$privacyFlags.sink { [weak self] flags in
             self?.model.privateMode = flags?.privateMode == true
             self?.model.observationPaused = flags?.paused == true
@@ -447,13 +450,39 @@ final class LiveIslandController {
                 let name = Self.agentName(agent)
                 let detail = [Self.providerName(agent.provider), agent.durationMS.map { Self.duration(Double($0) / 1000) }]
                     .compactMap { $0 }.joined(separator: " · ")
-                enqueuePeek(LivePeek(id: "agent-end-\(agent.agentID)", symbol: ok ? "checkmark" : "xmark",
-                                     title: ok ? "\(name) finished" : "\(name) \(current == "cancelled" ? "was stopped" : "failed")",
-                                     detail: detail, tone: ok ? .done : .problem, target: .agent(agent.agentID)))
+                // A member of a known team is told once, with its team, when the team finishes.
+                if !isTeamMember(agent) {
+                    enqueuePeek(LivePeek(id: "agent-end-\(agent.agentID)", symbol: ok ? "checkmark" : "xmark",
+                                         title: ok ? "\(name) finished" : "\(name) \(current == "cancelled" ? "was stopped" : "failed")",
+                                         detail: detail, tone: ok ? .done : .problem, target: .agent(agent.agentID)))
+                }
                 remember(LiveHistoryEntry(id: "agent-\(agent.agentID)", tool: "spawn_agent", title: name,
                                           client: Self.providerName(agent.provider), target: nil, at: Date(), ok: ok))
             }
         }
+    }
+
+    private func isTeamMember(_ agent: AgentInfo) -> Bool {
+        guard let teamID = agent.teamID else { return false }
+        return teamsSnapshot.contains { $0.teamID == teamID }
+    }
+
+    /// A team that was running and is not any more: one peek with its name and result.
+    private func teamsChanged(_ teams: [AgentTeamInfo]) {
+        let wasActive = Set(teamsSnapshot.filter(\.isActive).map(\.teamID))
+        teamsSnapshot = teams
+        for team in teams where wasActive.contains(team.teamID) && !team.isActive {
+            let outcome = TeamHistoryFormat.outcome(team.status, team.outcome)
+            let ok = outcome.text == "Succeeded"
+            let detail = [team.taskTitle, team.resultText,
+                          team.durationMS(agents: agentsSnapshot).map { Self.duration(Double($0) / 1000) }]
+                .compactMap { $0 }.joined(separator: " · ")
+            enqueuePeek(LivePeek(id: "team-end-\(team.teamID)", symbol: ok ? "checkmark" : "xmark",
+                                 title: ok ? "\(team.displayName) finished" : "\(team.displayName): \(outcome.text.lowercased())",
+                                 detail: detail, tone: ok ? .done : .problem, target: .team(team.teamID)))
+        }
+        rebuild()
+        refreshSlot()
     }
 
     private func scheduledRunFinished(_ run: TaskRun, name: String) {
@@ -652,8 +681,20 @@ final class LiveIslandController {
                                 detail: "Start it from the menu bar", tone: .problem, startedAt: nil, target: nil))
         }
         let agents = runningAgents()
+        let teams = Dictionary(teamsSnapshot.map { ($0.teamID, $0) }, uniquingKeysWith: { first, _ in first })
+        var teamsShown = Set<String>()
         for agent in agents {
             let step = agent.lastTool.map { Self.toolWords($0) } ?? (agent.phase.map { $0.capitalized } ?? "Working")
+            // A running team is one row, named like the menu's card: its saved name, progress, who works.
+            if let teamID = agent.teamID, let team = teams[teamID] {
+                guard teamsShown.insert(teamID).inserted else { continue }
+                let members = agents.filter { $0.teamID == teamID }
+                now.append(LiveItem(id: "team-\(teamID)", symbol: agent.provider ?? "", title: team.displayName,
+                                    detail: "\(team.progressText) · \(Self.agentName(agent)): \(step)", tone: .working,
+                                    startedAt: members.compactMap { estimatedAgentStartedAt($0) }.min(),
+                                    target: .team(teamID)))
+                continue
+            }
             // `symbol` carries the provider here; the row turns it into the maker's logo.
             now.append(LiveItem(id: "agent-\(agent.agentID)", symbol: agent.provider ?? "", title: Self.agentName(agent),
                                 detail: "\(Self.providerName(agent.provider)) · \(step)", tone: .working,
@@ -755,6 +796,8 @@ final class LiveIslandController {
         switch target {
         case .agent(let id):
             if let base = state.dashboardURL, let url = URL(string: base.absoluteString + "#agent=\(id)") { NSWorkspace.shared.open(url) }
+        case .team(let id):
+            state.openDashboard(focusTeamID: id)
         case .settings(let pane):
             MenuAppDelegate.openSettings?(pane)
         case .dashboard:

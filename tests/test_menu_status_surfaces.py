@@ -121,7 +121,7 @@ class MenuPopoverStructureTests(unittest.TestCase):
         self.assertIn("Button { showAllAgents.toggle() }", card)
         self.assertIn('Image(systemName: "chevron.down")', card)
         self.assertNotIn("Show fewer", card)
-        self.assertIn("displayAgents.prefix(Self.agentListLimit)", card)
+        self.assertIn("entries.prefix(Self.agentListLimit)", card)
         self.assertIn("private static let agentListLimit = 20", self.menu)
         self.assertIn("agentRow(agent)", card)
 
