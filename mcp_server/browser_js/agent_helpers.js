@@ -2,6 +2,7 @@
 function __mcpInternalHost(el){try{return !!el&&el.id==='mac-mcp-visual-companion-root';}catch(e){return false;}}
 function __mcpInternalMutation(rec){
   if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')return true;
+  if(rec.type==='attributes'&&/^data-mac-mcp-(id|page|n)$/.test(rec.attributeName||''))return true;
   if(__mcpInternalHost(rec.target))return true;
   if(rec.type!=='childList')return false;
   var nodes=Array.prototype.concat.call([],Array.prototype.slice.call(rec.addedNodes||[]),Array.prototype.slice.call(rec.removedNodes||[]));
@@ -48,9 +49,14 @@ function __mcpStartMutationWatch(s,ttl){
   for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}
   s.observerTimer=setTimeout(function(){__mcpStopMutationWatch(s);},Math.max(500,Math.min(Number(ttl||3000),8000)));
 }
+/* Chrome can run page scripts in two worlds (the companion debugger, or Apple Events when a frame of another
+   extension blocks the debugger). The page token, the id counter and every element id live on the DOM,
+   which both worlds share, so an id handed out in one world still finds its element in the other. */
+function __mcpPageToken(){var de=document.documentElement,t=de&&de.getAttribute('data-mac-mcp-page');if(!t||!/^[a-z0-9]{4,12}$/.test(t)){t=Math.random().toString(36).slice(2,10);try{de.setAttribute('data-mac-mcp-page',t);}catch(e){}}return t;}
+function __mcpNextId(s){var de=document.documentElement,n=Math.max(Number(de&&de.getAttribute('data-mac-mcp-n'))||0,s.counter)+1;s.counter=n;try{de.setAttribute('data-mac-mcp-n',String(n));}catch(e){}return n;}
 function __mcpState(){
   var s=window.__macMcpBrowserAgent;
-  if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),observationMeta:Object.create(null),rootObservers:[],observerTimer:null};}
+  if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:__mcpPageToken(),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),observationMeta:Object.create(null),rootObservers:[],observerTimer:null};}
 if(!s.observationMeta)s.observationMeta=Object.create(null);
 if(!s.targetFp)s.targetFp=Object.create(null);
   return s;
@@ -70,7 +76,7 @@ function __mcpVisual(action,el,effect,ttl,detail){
     if(effect==='click')payload.effect='click';if(['Up','Down','Into view'].indexOf(String(detail||''))>=0)payload.detail=String(detail);if(typeof window.__mcpVisualWho==='string'&&window.__mcpVisualWho)payload.who=window.__mcpVisualWho.slice(0,80);
     var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));(document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
   }catch(e){}}
-function __mcpId(el,s){var id=s.ids.get(el);if(!id){id='e_'+s.pageToken+'_'+(++s.counter);s.ids.set(el,id);}s.elements[id]=el;return id;}
+function __mcpId(el,s){var id=s.ids.get(el);if(!id){var tagged=el.getAttribute&&el.getAttribute('data-mac-mcp-id');id=tagged&&tagged.indexOf('e_'+s.pageToken+'_')===0?tagged:'e_'+s.pageToken+'_'+__mcpNextId(s);s.ids.set(el,id);if(id!==tagged){try{el.setAttribute('data-mac-mcp-id',id);}catch(e){}}}s.elements[id]=el;return id;}
 function __mcpRoute(){var h=String(location.hash||'');return String(location.pathname||'')+String(location.search||'')+((h.indexOf('#/')===0||h.indexOf('#!')===0)?h:'');}
 function __mcpTargetFp(el){
   var role=String(__mcpRole(el)||''),tag=String(el.tagName||'').toLowerCase();
@@ -352,7 +358,10 @@ function __mcpDoubleActivate(el){el=__mcpActivate(el);__mcpActivate(el);var ev=_
 function __mcpInputEvent(el,type,data,inputType,cancelable){var win=__mcpOwnerWindow(el);try{if(typeof win.InputEvent==='function')return new win.InputEvent(type,{bubbles:true,cancelable:!!cancelable,composed:true,data:data,inputType:inputType});}catch(e){}try{return new win.Event(type,{bubbles:true,cancelable:!!cancelable,composed:true});}catch(e){return null;}}
 function __mcpNativeValueSetter(el,value){var win=__mcpOwnerWindow(el),tag=String(el.tagName||'').toLowerCase(),proto=null;if(tag==='input')proto=win.HTMLInputElement&&win.HTMLInputElement.prototype;else if(tag==='textarea')proto=win.HTMLTextAreaElement&&win.HTMLTextAreaElement.prototype;else if(tag==='select')proto=win.HTMLSelectElement&&win.HTMLSelectElement.prototype;if(proto){try{var d=Object.getOwnPropertyDescriptor(proto,'value');if(d&&typeof d.set==='function'){d.set.call(el,value);return true;}}catch(e){}}try{el.value=value;return true;}catch(e){return false;}}
 function __mcpRecoverElement(id,s){
-  var old=s.elements[id];if(old&&old.isConnected)return old;if(!old)return null;
+  var old=s.elements[id];if(old&&old.isConnected)return old;
+  if(!old){/* An id handed out in the other world of the page: find it by its DOM tag. */
+    if(!/^e_[a-z0-9]+_[0-9]+$/.test(String(id)))return null;var tagged=null;try{tagged=document.querySelector('[data-mac-mcp-id="'+id+'"]');}catch(e){}
+    if(!tagged)return null;s.elements[id]=tagged;try{s.ids.set(tagged,id);}catch(e){}return tagged;}
   var ident={tag:String(old.tagName||'').toLowerCase(),role:__mcpRole(old),text:__mcpText(old),aria:old.getAttribute&&old.getAttribute('aria-label')||'',name:old.getAttribute&&old.getAttribute('name')||'',ph:old.getAttribute&&old.getAttribute('placeholder')||'',title:old.getAttribute&&old.getAttribute('title')||''};
   /* The old node keeps its detached row (list item, table row, card), so a twin control in another row is not it. */
   var row=__mcpRowKey(old),all=__mcpQueryAll('*'),ranked=[];
