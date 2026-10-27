@@ -18,6 +18,8 @@ BASELINE = {
     "MCP_ALLOW_SHELL": "true",
     # Tests never read this Mac's provider logins or call the providers' quota endpoints.
     "MAC_MCP_PROVIDER_QUOTA": "off",
+    # Tests never send Apple Events to the owner's Chrome to wake the companion.
+    "MAC_MCP_CHROME_WAKE": "off",
 }
 # Runtime .env and shell settings that would make results depend on this Mac.
 AMBIENT = (

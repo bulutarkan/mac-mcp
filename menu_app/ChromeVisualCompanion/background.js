@@ -641,7 +641,12 @@ function connect(trigger) {
   ws.addEventListener('open', () => {
     send({type: 'hello', token: TOKEN, features: FEATURES, version: chrome.runtime.getManifest().version});
     void recentNotes().then((notes) => { if (notes.length) send({type: 'diag', notes}); });
-    pingTimer = setInterval(() => send({type: 'ping'}), 20000);
+    // Chrome stops an idle extension worker even while this socket is open; an extension API call
+    // every 20 seconds counts as activity and keeps the bridge alive between requests.
+    pingTimer = setInterval(() => {
+      send({type: 'ping'});
+      try { chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError); } catch (_) {}
+    }, 20000);
   });
   ws.addEventListener('message', (event) => {
     let message = null;

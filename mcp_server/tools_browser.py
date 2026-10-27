@@ -1537,6 +1537,33 @@ def _is_foreign_extension_frame_error(exc: HTTPException) -> bool:
     return "chrome-extension://" in text and "different extension" in text
 
 
+_WAKE_COMPANION_SCRIPT = '''if application "Google Chrome" is not running then return "0"
+tell application "Google Chrome"
+    repeat with w in windows
+        repeat with t in tabs of w
+            if (URL of t) starts with "http" then
+                execute t javascript "window.dispatchEvent(new Event('macmcp-bridge-wake'));'1'"
+                return "1"
+            end if
+        end repeat
+    end repeat
+end tell
+return "0"'''
+
+
+def _wake_chrome_companion() -> bool:
+    """Fire the companion's wake event in an open web tab of a running Chrome (never launches it)."""
+    if _CHROME_NATIVE_JS_DENIED or os.getenv("MAC_MCP_CHROME_WAKE", "on").strip().lower() == "off":
+        return False
+    try:
+        return str(_run_osascript(_WAKE_COMPANION_SCRIPT, timeout_s=5) or "").strip() == "1"
+    except HTTPException:
+        return False
+
+
+chrome_background_bridge.set_waker(_wake_chrome_companion)
+
+
 def _execute_js_for_target(
     browser: str,
     js: str,
@@ -1545,6 +1572,9 @@ def _execute_js_for_target(
 ) -> str:
     global _CHROME_NATIVE_JS_DENIED
     frame = _FRAME_SCOPE.get()
+    if browser == "Google Chrome" and target.native_id and not chrome_background_bridge.is_connected():
+        # Keep one transport per page: a sleeping companion is woken instead of switching to Apple Events.
+        chrome_background_bridge.wake(timeout_s=3.0)
     if frame:
         # Cross-origin frames are reachable only through the companion's debugger frame contexts.
         if browser != "Google Chrome" or not chrome_background_bridge.is_connected() or not target.native_id:

@@ -13,7 +13,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import HTTPException, status
 from starlette.routing import WebSocketRoute
@@ -155,6 +155,9 @@ EXPECTED_COMPANION_FEATURES = frozenset({
 })
 
 
+_WAKE_RETRY_S = 60.0
+
+
 class ChromeBackgroundBridge:
     """Thread-safe RPC broker for Chrome-only, non-focus-stealing tab creation."""
 
@@ -168,6 +171,9 @@ class ChromeBackgroundBridge:
         self._version: Optional[str] = None
         self._connected_at: Optional[float] = None
         self._last_seen_at: Optional[float] = None
+        # Asks an open Chrome tab to wake the companion's worker (set by tools_browser; AppleScript).
+        self._waker: Optional[Callable[[], bool]] = None
+        self._wake_failed_at = 0.0
 
     def configured_token(self) -> str:
         configured = str(os.getenv("MAC_MCP_CHROME_BRIDGE_TOKEN", "") or "").strip()
@@ -176,6 +182,32 @@ class ChromeBackgroundBridge:
     def is_connected(self) -> bool:
         with self._lock:
             return self._loop is not None and self._websocket is not None
+
+    def set_waker(self, waker: Optional[Callable[[], bool]]) -> None:
+        self._waker = waker
+
+    def wake(self, timeout_s: float = 4.0) -> bool:
+        """Chrome stops an idle companion worker and its alarm does not always bring it back: ask an
+        open tab to wake it, then wait briefly for it to connect. True when it is connected."""
+        if self.is_connected():
+            return True
+        waker = self._waker
+        # A companion that is not installed never answers: try again only after a quiet minute.
+        if waker is None or time.monotonic() - self._wake_failed_at < _WAKE_RETRY_S:
+            return False
+        try:
+            asked = bool(waker())
+        except Exception:
+            asked = False
+        deadline = time.monotonic() + (max(0.0, float(timeout_s)) if asked else 0.0)
+        while time.monotonic() < deadline:
+            if self.is_connected():
+                return True
+            time.sleep(0.1)
+        if self.is_connected():
+            return True
+        self._wake_failed_at = time.monotonic()
+        return False
 
     def _attach(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop, features: Any = None,
                 version: Any = None) -> str:
@@ -248,6 +280,8 @@ class ChromeBackgroundBridge:
     def _request(self, message_type: str, payload: Dict[str, Any], *, timeout_s: float) -> Dict[str, Any]:
         request_id = uuid.uuid4().hex
         pending = _Pending(event=threading.Event())
+        if not self.is_connected():
+            self.wake()
         with self._lock:
             loop = self._loop
             websocket = self._websocket
