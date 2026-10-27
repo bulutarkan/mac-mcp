@@ -39,6 +39,7 @@ FILES = {
     "ConnectAppsBox.swift": "connections/ai-clients",
     "HelpDiagnostics.swift": "help",
     "ProviderUsageSection.swift": "usage/agent-usage",
+    "TeamUsageSection.swift": "usage/team-usage",
     "ChatUsageSection.swift": "usage/chat-usage",
 }
 

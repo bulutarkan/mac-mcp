@@ -81,6 +81,8 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/SettingsView.swift"
   "${SCRIPT_DIR}/Sources/UsageComponents.swift"
   "${SCRIPT_DIR}/Sources/ProviderUsageSection.swift"
+  "${SCRIPT_DIR}/Sources/TeamUsage.swift"
+  "${SCRIPT_DIR}/Sources/TeamUsageSection.swift"
   "${SCRIPT_DIR}/Sources/TeamHistorySection.swift"
   "${SCRIPT_DIR}/Sources/AgentChoice.swift"
   "${SCRIPT_DIR}/Sources/TeamPresets.swift"

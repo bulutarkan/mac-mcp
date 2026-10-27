@@ -44,6 +44,7 @@ enum AgentsTab: String, SettingsTab {
 enum UsageTab: String, SettingsTab {
     case tools
     case agents
+    case teams
     case chat
     case data
 
@@ -51,6 +52,7 @@ enum UsageTab: String, SettingsTab {
         switch self {
         case .tools: return "Tools"
         case .agents: return "Delegated Agents"
+        case .teams: return "Teams"
         case .chat: return "Chat"
         case .data: return "Data & Storage"
         }
@@ -60,6 +62,7 @@ enum UsageTab: String, SettingsTab {
         switch self {
         case .tools: return "wrench.and.screwdriver"
         case .agents: return "cpu"
+        case .teams: return "person.3"
         case .chat: return "bubble.left.and.text.bubble.right"
         case .data: return "externaldrive"
         }
@@ -130,7 +133,7 @@ final class SettingsTabs: ObservableObject {
     /// Links that name a tab, and the pane each one opens.
     private static let links: [String: SettingsSection] = [
         "teams": .agents, "team-presets": .agents, "providers": .agents, "skills": .agents, "team-history": .agents,
-        "tool-usage": .usage, "agent-usage": .usage, "chat-usage": .usage, "usage-data": .usage,
+        "tool-usage": .usage, "agent-usage": .usage, "team-usage": .usage, "chat-usage": .usage, "usage-data": .usage,
         "documents": .privacy, "knowledge": .privacy, "your-data": .privacy,
         "sending": .apps, "shortcuts": .apps, "app-support": .apps,
     ]
@@ -146,6 +149,7 @@ final class SettingsTabs: ObservableObject {
         case "team-history": agents = .history
         case "tool-usage": usage = .tools
         case "agent-usage": usage = .agents
+        case "team-usage": usage = .teams
         case "chat-usage": usage = .chat
         case "usage-data": usage = .data
         case "documents", "knowledge": privacy = .documents

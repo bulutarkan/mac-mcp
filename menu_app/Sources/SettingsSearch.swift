@@ -44,7 +44,8 @@ enum SettingsSearchIndex {
     static let tabTitles: [String: [String]] = [
         "agents/agents-general": ["General"], "agents/providers": ["Providers"], "agents/skills": ["Skills"],
         "agents/teams": ["Teams"], "agents/team-history": ["Team History"],
-        "usage/tool-usage": ["Tools"], "usage/agent-usage": ["Delegated Agents"], "usage/chat-usage": ["Chat"],
+        "usage/tool-usage": ["Tools"], "usage/agent-usage": ["Delegated Agents"], "usage/team-usage": ["Teams"],
+        "usage/chat-usage": ["Chat"],
         "usage/usage-data": ["Data & Storage"],
         "privacy/protection": ["Protection"], "privacy/documents": ["Documents"], "privacy/your-data": ["Your Data"],
         "apps/sending": ["Mail & Messages"], "apps/shortcuts": ["Shortcuts"], "apps/app-support": ["App Support"],

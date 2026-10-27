@@ -33,7 +33,7 @@ or with Node.js: `npx @bulutarkan/mac-mcp install` (the same installer, [details
 - **Work alongside it:** answers stream in, each step opens to show what it did, file edits show their diff and commands their output as a live terminal. Add files and images, write while the agent works (the message waits its turn), and get a notification when a chat in the background finishes.
 
 **A calmer app**
-- **Settings in one look:** every pane speaks the same quiet language, with logos and status dots instead of long cards; Usage has tabs for Tools, Delegated Agents, Chat and Data & Storage.
+- **Settings in one look:** every pane speaks the same quiet language, with logos and status dots instead of long cards; Usage has tabs for Tools, Delegated Agents, Teams, Chat and Data & Storage.
 - **The menu** shows one card at a time, the most important first, and says just "Ready" when idle.
 
 **Agents**

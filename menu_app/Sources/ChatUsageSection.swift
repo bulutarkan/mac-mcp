@@ -212,34 +212,8 @@ struct ChatUsageSection: View {
     /// The days of the period, today last; a year as its twelve months.
     static func buckets(_ summary: ChatUsageSummary, period: ProviderUsagePeriod,
                         today: Date = Date(), calendar: Calendar = .current) -> [UsageBucket] {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = calendar
-        formatter.dateFormat = "yyyy-MM-dd"
         let byDate = Dictionary(summary.daily.map { ($0.date, $0.agents) }, uniquingKeysWith: { first, _ in first })
-        let start = calendar.startOfDay(for: today)
-        if period == .year {
-            return (0..<12).map { index in
-                let month = calendar.date(byAdding: .month, value: index - 11, to: start) ?? start
-                let parts = calendar.dateComponents([.year, .month], from: month)
-                var sum: [String: Int] = [:]
-                for day in summary.daily {
-                    guard let date = formatter.date(from: day.date) else { continue }
-                    let other = calendar.dateComponents([.year, .month], from: date)
-                    if other.year == parts.year && other.month == parts.month {
-                        sum.merge(day.agents, uniquingKeysWith: +)
-                    }
-                }
-                return UsageBucket(id: index, title: month.formatted(.dateTime.month(.wide).year()),
-                                   axis: month.formatted(.dateTime.month(.abbreviated)), parts: sum)
-            }
-        }
-        let count = period.days
-        return (0..<count).map { index in
-            let day = calendar.date(byAdding: .day, value: index - (count - 1), to: start) ?? start
-            let name = index == count - 1 ? "Today" : day.formatted(.dateTime.month(.abbreviated).day())
-            return UsageBucket(id: index, title: name, axis: name, parts: byDate[formatter.string(from: day)] ?? [:])
-        }
+        return period.buckets(byDate, today: today, calendar: calendar)
     }
 
     /// "OpenRouter/Free Models Router" reads as the model, with where it ran beside it.

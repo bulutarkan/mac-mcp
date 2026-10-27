@@ -1522,13 +1522,16 @@ struct SettingsView: View {
                             summary: state.providerUsageSummary,
                             loading: state.providerUsageLoading,
                             issue: state.providerUsageIssue,
-                            period: $providerUsagePeriod
+                            period: $providerUsagePeriod,
+                            showTeams: { tabs.usage = .teams }
                         )
                         .onChange(of: providerUsagePeriod) { period in
                             Task {
                                 await state.refreshProviderUsage(days: period.days)
                             }
                         }
+                    case .teams:
+                        TeamUsageSection(state: state)
                     case .chat:
                         ChatUsageSection(state: state)
                     case .data:

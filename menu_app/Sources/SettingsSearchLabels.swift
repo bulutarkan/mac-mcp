@@ -228,6 +228,12 @@ extension SettingsSearchIndex {
             "Written by the agents",
             "Read from cache",
         ],
+        "usage/team-usage": [
+            "Period",
+            "Tokens",
+            "Average run",
+            "Review gates passed",
+        ],
         "usage/tool-usage": [
             "Calls from",
             "View",

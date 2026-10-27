@@ -289,9 +289,12 @@ struct ProviderUsageProvider: Decodable, Equatable {
     let cacheWriteTokens: Int?
     let totalTokens: Int?
     let models: [ProviderUsageModel]
+    /// How many of these tokens saved teams used (Usage › Teams); nil from a server before teams were kept.
+    let teamTokens: Int?
 
     enum CodingKeys: String, CodingKey {
         case provider, available, reason, turns, agents, source, sources, models
+        case teamTokens = "team_tokens"
         case schemaVersion = "schema_version"
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"

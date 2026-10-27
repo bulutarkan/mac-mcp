@@ -22,6 +22,38 @@ enum ProviderUsagePeriod: String, CaseIterable, Identifiable {
         case .year: return "Year"
         }
     }
+
+    /// The days of the period as bars, today last; a year as its twelve months. `byDate` is each
+    /// "yyyy-MM-dd" day's tokens by series.
+    func buckets(_ byDate: [String: [String: Int]], today: Date = Date(), calendar: Calendar = .current) -> [UsageBucket] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.dateFormat = "yyyy-MM-dd"
+        let start = calendar.startOfDay(for: today)
+        if self == .year {
+            return (0..<12).map { index in
+                let month = calendar.date(byAdding: .month, value: index - 11, to: start) ?? start
+                let parts = calendar.dateComponents([.year, .month], from: month)
+                var sum: [String: Int] = [:]
+                for (day, split) in byDate {
+                    guard let date = formatter.date(from: day) else { continue }
+                    let other = calendar.dateComponents([.year, .month], from: date)
+                    if other.year == parts.year && other.month == parts.month {
+                        sum.merge(split, uniquingKeysWith: +)
+                    }
+                }
+                return UsageBucket(id: index, title: month.formatted(.dateTime.month(.wide).year()),
+                                   axis: month.formatted(.dateTime.month(.abbreviated)), parts: sum)
+            }
+        }
+        let count = days
+        return (0..<count).map { index in
+            let day = calendar.date(byAdding: .day, value: index - (count - 1), to: start) ?? start
+            let name = index == count - 1 ? "Today" : day.formatted(.dateTime.month(.abbreviated).day())
+            return UsageBucket(id: index, title: name, axis: name, parts: byDate[formatter.string(from: day)] ?? [:])
+        }
+    }
 }
 
 /// How one delegated agent looks in Usage: its symbol and the tint its share and meters use.
@@ -62,6 +94,8 @@ struct ProviderUsageSection: View {
     let loading: Bool
     let issue: String?
     @Binding var period: ProviderUsagePeriod
+    /// Opens Usage › Teams, from the line that says how much of this saved teams used.
+    var showTeams: (() -> Void)?
 
     @MacMCPState private var expanded: Set<String> = []
 
@@ -69,12 +103,14 @@ struct ProviderUsageSection: View {
         summary: ProviderUsageSummaryEnvelope?,
         loading: Bool,
         issue: String?,
-        period: Binding<ProviderUsagePeriod>
+        period: Binding<ProviderUsagePeriod>,
+        showTeams: (() -> Void)? = nil
     ) {
         self.summary = summary
         self.loading = loading
         self.issue = issue
         _period = period
+        self.showTeams = showTeams
     }
 
     var body: some View {
@@ -94,6 +130,7 @@ struct ProviderUsageSection: View {
                 shareBar.padding(.top, 22)
                 Text("Agents").font(.system(size: 13, weight: .semibold)).padding(.top, 28).padding(.bottom, 8)
                 rows
+                teamsLine.padding(.top, 8)
             }
             footer.padding(.top, 10)
         }
@@ -222,6 +259,27 @@ struct ProviderUsageSection: View {
             }
         }
         .usageListBox()
+    }
+
+    /// Tokens saved teams used, counted inside the agents above; nothing when no team ran.
+    private var teamTokens: Int { active.reduce(0) { $0 + ($1.usage.teamTokens ?? 0) } }
+
+    @ViewBuilder
+    private var teamsLine: some View {
+        if teamTokens > 0 {
+            HStack(spacing: 4) {
+                Text("\(UsageFormat.compact(teamTokens)) of this came from teams")
+                    .help(ProviderUsageFormat.exact(teamTokens))
+                if let showTeams {
+                    Text("·").accessibilityHidden(true)
+                    Button("Show in Teams ›", action: showTeams)
+                        .buttonStyle(.link)
+                        .accessibilityLabel("Show team usage")
+                }
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder
