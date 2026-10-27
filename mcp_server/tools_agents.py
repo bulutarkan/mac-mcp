@@ -33,7 +33,9 @@ from .scoped_auth import get_scoped_credential_store
 from .data_guard import LogLineRedactor, redact_sensitive_text, redact_sensitive_value
 from .security import BASE_DIR, Settings, truncate
 from .private_storage import make_private
-from .runtime_settings import load_runtime_settings, load_runtime_settings_state, provider_enabled, provider_setting
+from .runtime_settings import (
+    load_runtime_settings, load_runtime_settings_state, provider_enabled, provider_setting, subagent_team_presets,
+)
 from .tools_lessons import (
     VALID_ROLES, TAINTED_PROVENANCE, extract_lesson_candidates, lesson_candidate_instruction,
     lesson_context, lesson_record_agent_candidate,
@@ -2132,6 +2134,7 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "typed_partial_count": len(typed_partial_tasks),
         "result_fan_in": result_fan_in,
         "title": team.get("title"),
+        "team_preset": team.get("team_preset"),
         "provider": team.get("provider"),
         "model": team.get("model"),
         "reasoning": team.get("reasoning"),
@@ -2229,6 +2232,7 @@ def dashboard_team_summary(team_id: str) -> Dict[str, Any]:
             "pending_count",
             "work_count",
             "title",
+            "team_preset",
             "provider",
             "model",
             "created_at",
@@ -2264,6 +2268,13 @@ def _history_label(value: Any, limit: int) -> str:
         return ""
     text = str(sanitize_value(text, preview_chars=max(limit * 4, 400))).split("\n", 1)[0]
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _history_preset(value: Any) -> Optional[Dict[str, str]]:
+    """The saved team a past team ran as: its id and owner-chosen name, one line."""
+    if not isinstance(value, dict) or not value.get("id"):
+        return None
+    return {"id": str(value["id"])[:16], "name": _history_label(value.get("name"), 60)}
 
 
 def _history_agent(agent_id: str, label: str, usage_rows: Dict[str, Dict[str, Optional[int]]]) -> Optional[Dict[str, Any]]:
@@ -2361,6 +2372,7 @@ def team_history(*, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
         rows.append({
             "team_id": team_id,
             "title": _history_label(team.get("title"), _HISTORY_TITLE_CHARS),
+            "team_preset": _history_preset(team.get("team_preset")),
             "provider": team.get("provider"),
             "model": team.get("model"),
             "status": summary.get("status"),
@@ -3915,7 +3927,7 @@ def agent_catalog(
     if requested and requested not in _PROVIDER_NAMES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
     if requested and not provider_enabled(requested):
-        return {"ok": True, "providers": {}}
+        return {"ok": True, "providers": {}, **_team_preset_catalog()}
 
     providers: Dict[str, Any] = {}
     if (not requested or requested == "opencode") and provider_enabled("opencode"):
@@ -4083,7 +4095,7 @@ def agent_catalog(
                 for mode in sorted(_ACCESS_MODES)
             },
         }
-    return {"ok": True, "providers": providers}
+    return {"ok": True, "providers": providers, **_team_preset_catalog()}
 
 
 def _clean_optional_selection(value: Any) -> Optional[str]:
@@ -4095,6 +4107,8 @@ def _resolve_agent_selection(
     provider: Optional[str],
     model: Optional[str],
     reasoning: Optional[str],
+    *,
+    inherit_default: bool = True,
 ) -> Dict[str, Any]:
     explicit_provider = _clean_optional_selection(provider)
     if explicit_provider is not None:
@@ -4145,7 +4159,8 @@ def _resolve_agent_selection(
     else:
         effective_provider = explicit_provider
 
-    same_as_saved_provider = bool(preset_valid and preset_provider == effective_provider)
+    # A team preset member's empty model/reasoning means the provider's own default, not the Default Agent's.
+    same_as_saved_provider = bool(inherit_default and preset_valid and preset_provider == effective_provider)
     inherited_model = explicit_model is None and same_as_saved_provider and preset_model is not None
     inherited_reasoning = explicit_reasoning is None and same_as_saved_provider and preset_reasoning is not None
 
@@ -5840,20 +5855,22 @@ def _resolve_team_admission_budget(
 
 
 def _task_agent_selection(override: Dict[str, str], provider: str, model: Optional[str],
-                          reasoning: Optional[str], access_mode: str) -> Dict[str, Any]:
+                          reasoning: Optional[str], access_mode: str, *, exact: bool = False) -> Dict[str, Any]:
     """A task's own provider/model/reasoning (#52), checked like the team's; nothing when it uses the team's.
 
     A task that names another provider gets that provider's defaults for whatever it leaves out, never the
-    team's model, which belongs to the team's provider.
+    team's model, which belongs to the team's provider. exact (a team preset member) takes the task's fields as
+    they are: what the member leaves out is its provider's default, not the team's or the Default Agent's.
     """
     if not override:
         return {"provider": None, "model": None, "reasoning": None, "selection_validation": None}
     task_provider = str(override.get("provider") or provider).lower()
-    same = task_provider == provider
+    same = task_provider == provider and not exact
     selection = _resolve_agent_selection(
         task_provider,
         override.get("model") or (model if same else None),
         override.get("reasoning") or (reasoning if same else None),
+        **({"inherit_default": False} if exact else {}),
     )
     task_provider = str(selection["provider"])
     if not provider_enabled(task_provider):
@@ -6009,6 +6026,128 @@ def _persisted_team_task(task: Dict[str, Any], team_scope: ResourceScope, workdi
     }
 
 
+def _team_presets() -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Saved agent teams from Settings > Agents; malformed entries are left out and named, never fatal."""
+    return subagent_team_presets(providers=_PROVIDER_NAMES, roles=VALID_ROLES, max_members=MAX_TEAM_SIZE)
+
+
+def _team_preset_catalog() -> Dict[str, Any]:
+    """Saved team presets with whether each member could start now; no model catalog is read for this."""
+    presets, problems = _team_presets()
+    checked: Dict[str, List[str]] = {}
+
+    def provider_problems(provider: str) -> List[str]:
+        if provider not in checked:
+            label = _PROVIDER_LABELS.get(provider, provider)
+            if not provider_enabled(provider):
+                checked[provider] = [f"{label} is disabled in Mac MCP Settings > Subagents."]
+            elif not _find_binary(provider):
+                checked[provider] = [f"{label} CLI is not installed or not executable."]
+            else:
+                checked[provider] = []
+        return list(checked[provider])
+
+    rows: List[Dict[str, Any]] = []
+    for preset in presets:
+        members = []
+        for member in preset["members"]:
+            member_problems = provider_problems(member["provider"])
+            members.append({**member, "ready": not member_problems, "problems": member_problems})
+        preset_problems = [f"{member['name']}: {problem}" for member in members for problem in member["problems"]]
+        rows.append({"id": preset["id"], "name": preset["name"], "updated_at": preset.get("updated_at"),
+                     "member_count": len(members), "members": members,
+                     "ready": not preset_problems, "problems": preset_problems})
+    return {"team_presets": rows, "team_preset_problems": problems}
+
+
+def _find_team_preset(ref: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """The saved preset whose name or id is ref (case-insensitive), else why there is none."""
+    presets, _ = _team_presets()
+    key = ref.strip().casefold()
+    for preset in presets:
+        if key in (preset["id"].casefold(), preset["name"].casefold()):
+            return preset, None
+    names = ", ".join(repr(preset["name"]) for preset in presets) or "none (save one in Mac MCP Settings > Agents)"
+    return None, f"team_preset {ref!r} is not a saved team preset; saved presets: {names}."
+
+
+def _team_preset_tasks(preset: Dict[str, Any], tasks: List[Any]
+                       ) -> Tuple[List[Any], List[Optional[Dict[str, Any]]], List[str]]:
+    """Each task with the preset member it runs as: its provider, model, reasoning, role and title.
+
+    A task's member names one by name or id; the others take the next unused member in the preset's order.
+    The task's own fields win; a task that picks another provider keeps none of the member's model/reasoning.
+    """
+    members = list(preset["members"])
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for member in members:
+        by_key.setdefault(member["id"].casefold(), member)
+        by_key.setdefault(member["name"].casefold(), member)
+    problems: List[str] = []
+    chosen: List[Optional[Dict[str, Any]]] = [None] * len(tasks)
+    claimed: Dict[str, int] = {}
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict) or task.get("member") is None:
+            continue
+        ref = task.get("member")
+        member = by_key.get(ref.strip().casefold()) if isinstance(ref, str) and ref.strip() else None
+        if member is None:
+            names = ", ".join(repr(item["name"]) for item in members)
+            problems.append(f"tasks[{index}].member {ref!r} is not in team preset {preset['name']!r} (members: {names}).")
+        elif member["id"] in claimed:
+            problems.append(f"tasks[{index}].member {member['name']!r} is already used by tasks[{claimed[member['id']]}]; "
+                            "a member runs at most one task.")
+        else:
+            claimed[member["id"]] = index
+            chosen[index] = member
+    free = [member for member in members if member["id"] not in claimed]
+    unmatched = [index for index, task in enumerate(tasks) if isinstance(task, dict) and task.get("member") is None]
+    if len(unmatched) > len(free):
+        problems.append(f"team preset {preset['name']!r} has {len(members)} members; {len(unmatched)} tasks have no "
+                        f"member but only {len(free)} members are left for them.")
+    for index, member in zip(unmatched, free):
+        chosen[index] = member
+    mapped: List[Any] = []
+    for task, member in zip(tasks, chosen):
+        if member is None or not isinstance(task, dict):
+            mapped.append(task)
+            continue
+        merged = {key: value for key, value in task.items() if key != "member"}
+        own_provider = str(task.get("provider") or "").strip().lower()
+        if not own_provider:
+            merged["provider"] = member["provider"]
+        if own_provider in ("", member["provider"]):
+            for key in ("model", "reasoning"):
+                if not str(task.get(key) or "").strip() and member.get(key):
+                    merged[key] = member[key]
+        # A reviewer gate (review_of) is a reviewer whatever the member's usual role.
+        if not str(task.get("role") or "").strip() and not task.get("review_of") and member.get("role"):
+            merged["role"] = member["role"]
+        if not str(task.get("title") or "").strip():
+            merged["title"] = member["name"]
+        mapped.append(merged)
+    return mapped, chosen, problems
+
+
+def _team_preset_member_check(tasks: List[Any], members: List[Optional[Dict[str, Any]]]) -> None:
+    """Fail closed, naming the member, when a member's provider is off in Settings or its CLI is missing."""
+    disabled: List[str] = []
+    missing: List[str] = []
+    for task, member in zip(tasks, members):
+        if member is None or not isinstance(task, dict):
+            continue
+        provider = str(task.get("provider") or member["provider"]).strip().lower()
+        label = f"member {member['name']!r} runs on {_PROVIDER_LABELS.get(provider, provider)}"
+        if not provider_enabled(provider):
+            disabled.append(f"{label}, which is disabled in Mac MCP Settings > Subagents")
+        elif not _find_binary(provider):
+            missing.append(f"{label}, whose CLI is not installed or not executable")
+    if disabled:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "provider_disabled: " + "; ".join(disabled) + ".")
+    if missing:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "provider_unavailable: " + "; ".join(missing) + ".")
+
+
 def spawn_agents(
     settings: Settings,
     tasks: List[Dict[str, Any]],
@@ -6039,17 +6178,50 @@ def spawn_agents(
     max_total_tokens: Optional[int] = None,
     git_isolation: str = "auto",
     conflict_policy: str = "advisory",
+    team_preset: Optional[str] = None,
+    team_preset_record: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # Every setting is checked before anything is created (#105): a bad value never leaves an empty
     # failed team behind, and one 400 lists all of them with what is allowed.
     problems: List[str] = []
     selection: Dict[str, Any] = {}
-    try:
-        selection = _resolve_agent_selection(provider, model, reasoning)
-    except HTTPException as exc:
-        if exc.status_code != status.HTTP_400_BAD_REQUEST:
-            raise
-        problems.append(_choice_problem("provider", str(provider or "").strip().lower(), _PROVIDER_NAMES) or str(exc.detail))
+    # A saved team (Settings > Agents): each task runs as one of its members. team_preset_record is the preset
+    # a retried team ran as; its tasks already carry their members' selections, which are taken exactly.
+    preset_members: List[Optional[Dict[str, Any]]] = []
+    exact_tasks = exact_team = team_preset_record is not None
+    preset_ref = str(team_preset or "").strip()
+    preset_missing = False
+    if preset_ref:
+        preset, preset_problem = _find_team_preset(preset_ref)
+        if preset is None:
+            preset_missing = True
+            problems.append(str(preset_problem))
+        else:
+            team_preset_record = {"id": preset["id"], "name": preset["name"]}
+            exact_tasks = True
+            if isinstance(tasks, list):
+                tasks, preset_members, mapping_problems = _team_preset_tasks(preset, tasks)
+                problems.extend(mapping_problems)
+            title = title or preset["name"]
+            if _clean_optional_selection(provider) is None:
+                # The team's own selection follows its first member, so no Default Agent is needed.
+                lead_member = next((member for member in preset_members if member), preset["members"][0])
+                provider = lead_member["provider"]
+                model = model or lead_member.get("model")
+                reasoning = reasoning or lead_member.get("reasoning")
+                exact_team = True
+    elif isinstance(tasks, list):
+        problems.extend(f"tasks[{index}].member needs team_preset." for index, task in enumerate(tasks)
+                        if isinstance(task, dict) and task.get("member") is not None)
+    if not (preset_missing and _clean_optional_selection(provider) is None):
+        try:
+            selection = _resolve_agent_selection(provider, model, reasoning,
+                                                 **({"inherit_default": False} if exact_team else {}))
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_400_BAD_REQUEST:
+                raise
+            problems.append(_choice_problem("provider", str(provider or "").strip().lower(), _PROVIDER_NAMES)
+                            or str(exc.detail))
     conflict_policy = str(conflict_policy or "advisory").strip().lower()
     git_isolation = str(git_isolation or "auto").strip().lower()
     team_role = str(role or "").strip().lower() or None
@@ -6097,6 +6269,8 @@ def spawn_agents(
         except HTTPException as exc:
             problems.append(str(exc.detail))
     _raise_input_problems(problems)
+    if preset_members:
+        _team_preset_member_check(tasks, preset_members)
 
     provider = str(selection["provider"])
     model = selection.get("model")
@@ -6151,12 +6325,17 @@ def spawn_agents(
     )
     selection_problems: List[str] = []
     for index, task in enumerate(normalized):
+        member = preset_members[index] if index < len(preset_members) else None
+        where = f"tasks[{index}]" + (f" (member {member['name']!r})" if member else "")
         try:
-            task.update(_task_agent_selection(task.pop("_override", {}), provider, model, reasoning, access_mode))
+            task.update(_task_agent_selection(task.pop("_override", {}), provider, model, reasoning, access_mode,
+                                              **({"exact": True} if exact_tasks else {})))
         except HTTPException as exc:
             if exc.status_code != status.HTTP_400_BAD_REQUEST:
-                raise
-            selection_problems.append(f"tasks[{index}]: {exc.detail}")
+                if member is None:
+                    raise
+                raise HTTPException(exc.status_code, f"{where}: {exc.detail}") from exc
+            selection_problems.append(f"{where}: {exc.detail}")
     _raise_input_problems(selection_problems)
 
     persisted_tasks = [_persisted_team_task(task, team_scope, workdir, access_mode) for task in normalized]
@@ -6171,6 +6350,8 @@ def spawn_agents(
     team_meta: Dict[str, Any] = {
         "team_id": team_id,
         "title": (title or f"{provider} team ({len(persisted_tasks)} tasks)").strip(),
+        # Which saved team ran (Settings > Agents), for the dashboard and history; None for an ad hoc team.
+        "team_preset": dict(team_preset_record) if team_preset_record else None,
         "role": team_role,
         "provenance_class": str(provenance_class or "local").strip().lower() or "local",
         "provider": provider,
@@ -7225,6 +7406,7 @@ def agent_action(
                     team, "admission_token_budget", "max_total_tokens",
                 ),
                 git_isolation=str(team.get("git_isolation") or "auto"),
+                team_preset_record=team.get("team_preset") if isinstance(team.get("team_preset"), dict) else None,
             )
         tasks = []
         for index, child_id in enumerate(ids, start=1):

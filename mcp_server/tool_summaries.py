@@ -55,8 +55,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "receipts). Refuses to overwrite later changes unless force=true; partial captures never claim full undo."
     ),
     "spawn_agents": (
-        "Spawn 1-10 background delegated agents as one team; access_mode defaults to read_only. Task DAGs "
-        "(depends_on), reviewer gates; budgets gate new starts only, so running agents may overshoot. wait_agents."
+        "Spawn 1-10 background agents as one team (team_preset runs a saved team); access_mode defaults to read_only. "
+        "Task DAGs (depends_on), reviewer gates; budgets gate new starts only, so running agents may overshoot."
     ),
     "wait_agents": (
         "Bounded wait for a team or agent_ids (mode all|any|majority). Returns typed result envelopes; "

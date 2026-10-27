@@ -1911,6 +1911,7 @@ def create_dashboard_routes(
                 "pending_count": team.get("pending_count"),
                 "work_count": team.get("work_count"),
                 "title": sanitize_value(team.get("title"), preview_chars=96),
+                "team_preset": team.get("team_preset"),
                 "provider": team.get("provider"),
                 "model": team.get("model"),
                 "created_at": team.get("created_at"),

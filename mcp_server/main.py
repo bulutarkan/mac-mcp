@@ -904,7 +904,12 @@ def create_app():
     # ── Agent delegation tools ──────────────────────────────────────────────
     @mcp.tool(
         name="agent_catalog",
-        description="List available OpenCode, Codex, Claude Code, Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code, Goose and GitHub Copilot providers, models, reasoning options and supported access modes without starting an agent.",
+        description=(
+            "List available OpenCode, Codex, Claude Code, Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code, Goose and "
+            "GitHub Copilot providers, models, reasoning options and supported access modes without starting an agent. "
+            "team_presets lists the owner's saved teams (Settings > Agents) with each member's provider, model, reasoning "
+            "and role, and whether each member and preset is ready to start."
+        ),
     )
     async def _agent_catalog(provider: Optional[str] = None, model_filter: Optional[str] = None,
                              free_only: bool = False, limit: int = 80) -> Dict[str, Any]:
@@ -971,6 +976,9 @@ def create_app():
             "provenance-aware, deduplicates evidence/artifacts, flags keyed claim contradictions, and never injects raw provider logs. "
             "conflict_policy=advisory (default) keeps success but reports unresolved contradictions; review or fail withholds "
             "team success until a reviewer settles them with resolutions. A child reporting success with errors counts as partial_failure. "
+            "team_preset=<saved team name or id> runs a team saved in Settings > Agents: each task runs as one member "
+            "(its provider, model, reasoning, role; title defaults to the member's name); task.member picks one by name, "
+            "other tasks take the next unused member in order; a task's own fields still win. "
             "Returns immediately with parent-visible budget and global admission/queue state."
         ),
     )
@@ -987,7 +995,8 @@ def create_app():
                       admission_tool_call_budget: Optional[int] = None,
                       admission_token_budget: Optional[int] = None,
                       max_total_tool_calls: Optional[int] = None, max_total_tokens: Optional[int] = None,
-                      git_isolation: str = "auto", conflict_policy: str = "advisory") -> Dict[str, Any]:
+                      git_isolation: str = "auto", conflict_policy: str = "advisory",
+                      team_preset: Optional[str] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: privacy_inventory.with_provider_notice(spawn_agents(settings, tasks=tasks, provider=provider, model=model,
@@ -1003,7 +1012,7 @@ def create_app():
                                          admission_token_budget=admission_token_budget,
                                          max_total_tool_calls=max_total_tool_calls,
                                          max_total_tokens=max_total_tokens, git_isolation=git_isolation,
-                                         conflict_policy=conflict_policy)))
+                                         conflict_policy=conflict_policy, team_preset=team_preset)))
 
     @mcp.tool(
         name="wait_agents",

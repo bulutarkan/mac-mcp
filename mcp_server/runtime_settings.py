@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -288,6 +289,120 @@ def subagent_default_preset() -> dict[str, Any] | None:
     if not isinstance(preset, dict):
         return None
     return dict(preset)
+
+
+_TEAM_PRESET_ID_RE = re.compile(r"^tp_[0-9a-f]{8}$")
+_TEAM_MEMBER_ID_RE = re.compile(r"^m_[0-9a-f]{8}$")
+
+
+def _preset_text(value: Any, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text if 1 <= len(text) <= limit else None
+
+
+def _preset_member(
+    raw: Any, where: str, providers: set[str], roles: set[str]
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(raw, dict):
+        return None, f"{where} must be an object; member skipped."
+    name = _preset_text(raw.get("name"), 40)
+    label = f"{where} ({name!r})" if name else where
+    member_id = raw.get("id")
+    if not isinstance(member_id, str) or not _TEAM_MEMBER_ID_RE.fullmatch(member_id):
+        return None, f"{label}.id must be m_ and 8 lowercase hex digits; member skipped."
+    if name is None:
+        return None, f"{where}.name must be 1-40 characters; member skipped."
+    provider = raw.get("provider")
+    provider = provider.strip().lower() if isinstance(provider, str) else ""
+    if provider not in providers:
+        return None, f"{label}.provider {raw.get('provider')!r} is not one of {', '.join(sorted(providers))}; member skipped."
+    fields: dict[str, Any] = {}
+    for key, allowed in (("model", None), ("reasoning", None), ("role", roles)):
+        value = raw.get(key)
+        if value is not None and not isinstance(value, str):
+            return None, f"{label}.{key} must be text; member skipped."
+        text = (value or "").strip() or None
+        if text is not None and key != "model":
+            text = text.lower()
+        if text is not None and allowed is not None and text not in allowed:
+            return None, f"{label}.{key} {text!r} is not one of {', '.join(sorted(allowed))}; member skipped."
+        fields[key] = text
+    return {"id": member_id, "name": name, "provider": provider, **fields}, None
+
+
+def subagent_team_presets(
+    *, providers: Any, roles: Any, max_members: int = 10, path: Path | None = None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Saved agent teams (Settings > Agents) and what was wrong with the ones that were skipped.
+
+    The native app writes them; a hand-edited or newer-format entry must never stop the server, so each
+    malformed preset or member is left out and named in the problems instead.
+    """
+    state = load_runtime_settings_state(path)
+    if not state.ok:
+        return [], ([] if state.status == "missing" else [f"settings.json is {state.status}; no team presets read."])
+    subagents = state.data.get("subagents")
+    raw_presets = subagents.get("team_presets") if isinstance(subagents, dict) else None
+    if raw_presets is None:
+        return [], []
+    if not isinstance(raw_presets, list):
+        return [], ["subagents.team_presets must be a list; no team presets read."]
+    provider_ids, role_ids = set(providers), set(roles)
+    presets: list[dict[str, Any]] = []
+    problems: list[str] = []
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+    for index, raw in enumerate(raw_presets):
+        where = f"team_presets[{index}]"
+        if not isinstance(raw, dict):
+            problems.append(f"{where} must be an object; preset skipped.")
+            continue
+        name = _preset_text(raw.get("name"), 60)
+        preset_id = raw.get("id")
+        if name is None:
+            problems.append(f"{where}.name must be 1-60 characters; preset skipped.")
+            continue
+        where = f"{where} ({name!r})"
+        if not isinstance(preset_id, str) or not _TEAM_PRESET_ID_RE.fullmatch(preset_id):
+            problems.append(f"{where}.id must be tp_ and 8 lowercase hex digits; preset skipped.")
+            continue
+        if preset_id in seen_ids or name.casefold() in seen_names:
+            problems.append(f"{where} repeats another preset's id or name; preset skipped.")
+            continue
+        raw_members = raw.get("members")
+        if not isinstance(raw_members, list):
+            problems.append(f"{where}.members must be a list; preset skipped.")
+            continue
+        members: list[dict[str, Any]] = []
+        member_keys: set[str] = set()
+        for member_index, raw_member in enumerate(raw_members):
+            member_where = f"{where}.members[{member_index}]"
+            if len(members) >= max_members:
+                problems.append(f"{member_where}: a team has at most {max_members} members; member skipped.")
+                continue
+            member, problem = _preset_member(raw_member, member_where, provider_ids, role_ids)
+            if member is not None and (member["id"] in member_keys or member["name"].casefold() in member_keys):
+                member, problem = None, f"{member_where} repeats another member's id or name; member skipped."
+            if member is None:
+                problems.append(str(problem))
+                continue
+            member_keys.update({member["id"], member["name"].casefold()})
+            members.append(member)
+        if not members:
+            problems.append(f"{where} has no usable members; preset skipped.")
+            continue
+        seen_ids.add(preset_id)
+        seen_names.add(name.casefold())
+        updated_at = raw.get("updated_at")
+        presets.append({
+            "id": preset_id,
+            "name": name,
+            "members": members,
+            "updated_at": updated_at if isinstance(updated_at, str) else None,
+        })
+    return presets, problems
 
 
 def provider_setting(provider: str, name: str, default: Any = None) -> Any:

@@ -67,7 +67,7 @@ TOOL_USE_CASES: Dict[str, Tuple[str, ...]] = {
     "screenshot": ("take screenshot", "screen capture"),
     "clipboard_get": ("read clipboard", "paste contents"),
     "clipboard_set": ("copy to clipboard",),
-    "spawn_agents": ("start subagents", "delegate task", "parallel agents", "team of agents"),
+    "spawn_agents": ("start subagents", "delegate task", "parallel agents", "team of agents", "saved team preset"),
     "wait_agents": ("wait for agents", "collect agent results"),
     "team_messages": ("message teammates", "agent to agent messages", "team inbox", "talk to other agents"),
     "iphone": ("iphone", "phone", "my phone", "iphone mirroring", "tap on phone", "telefon", "ios app"),
