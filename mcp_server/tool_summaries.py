@@ -107,8 +107,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "comment: {type:'post',text}. query/role/text_match +intent/within, no find first. Split only for dependencies."
     ),
     "browser_do": (
-        "One-shot workflow: open URL -> actions -> extract -> close_after. Whole page: actions=[{type:'read'}]. "
-        "Several pages: urls=[...] or tabs=[handle|{tab_handle,actions}]. Multi-step: observe -> browser_act instead."
+        "One-shot workflow: URL -> actions -> extract. Read: actions=[{type:'read'}]. Several pages, ONE call: "
+        "urls=[...] opens all; tabs=[{tab_handle,actions}] acts per open tab. Multi-step: observe -> browser_act instead."
     ),
     "browser_upload_artifact": (
         "Select a registered artifact (artifact_id + matching path) into an input[type=file] and verify it; never submits. "
