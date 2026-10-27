@@ -72,6 +72,8 @@ struct ChatConversation: View {
                     .padding(.horizontal, VisualTokens.Space.l)
                     .padding(.top, 22).padding(.bottom, 12)
                     .frame(maxWidth: .infinity)
+                    // Where a diff's relative path lives; it only changes with the chat.
+                    .environment(\.chatProject, model.chat?.project ?? "")
                     // Where the owner is comes from the scroll view itself, never from layout: a state change
                     // driven by what the lazy stack happened to load made SwiftUI lay out again forever.
                     .background(ScrollPositionReader(
@@ -237,6 +239,14 @@ private struct UserMessage: View {
     let item: ChatItem
     let edit: (() -> Void)?
     @MacMCPState private var hovering = false
+    /// Edit and Copy show while the pointer is over the message or either has the keyboard (Tab with keyboard
+    /// navigation on), so they are never focused while invisible.
+    @FocusState private var focusedAction: MessageAction?
+
+    private enum MessageAction: Hashable {
+        case edit
+        case copy
+    }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
@@ -261,14 +271,16 @@ private struct UserMessage: View {
                     }
                     .buttonStyle(.plain)
                     .help("Edit and send again")
+                    .focused($focusedAction, equals: .edit)
                 }
                 CopyButton(text: item.text, label: "Copy message")
+                    .focused($focusedAction, equals: .copy)
             }
-            .opacity(hovering ? 1 : 0)
+            .opacity(hovering || focusedAction != nil ? 1 : 0)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.12), value: hovering || focusedAction != nil)
     }
 }
 
@@ -681,43 +693,101 @@ private struct DiffCounts: View {
     }
 }
 
-/// One file's edit: added lines on green, removed on red, the rest as context.
+private struct ChatProjectKey: EnvironmentKey {
+    static let defaultValue = ""
+}
+
+extension EnvironmentValues {
+    /// The open chat's project folder: a diff's relative path is inside it.
+    var chatProject: String {
+        get { self[ChatProjectKey.self] }
+        set { self[ChatProjectKey.self] = newValue }
+    }
+}
+
+/// One file's edit: added lines on green, removed on red, the rest as context. The file's name opens the file;
+/// the expand button shows the whole diff in a sheet.
 private struct DiffBlock: View {
     let diff: ChatDiff
+    @Environment(\.chatProject) private var project
+    @MacMCPState private var missing = false
+    @MacMCPState private var showingAll = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: diff.created ? "doc.badge.plus" : "doc.text").font(.system(size: 11)).foregroundStyle(.secondary)
-                Text((diff.path as NSString).lastPathComponent).font(.system(size: 12, weight: .semibold))
-                    .help(diff.path)
+                Button(action: openFile) {
+                    Text((diff.path as NSString).lastPathComponent).font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(missing ? Color.secondary : ChatStyle.accent)
+                        .strikethrough(missing, color: .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(missing ? "\(path) is no longer there" : "Open \(path)")
+                .contextMenu {
+                    Button("Open", action: openFile)
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+                    Button("Copy Path") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(path, forType: .string)
+                    }
+                }
                 if diff.created { Text("new file").font(.system(size: 11)).foregroundStyle(.tertiary) }
                 DiffCounts(added: diff.added, removed: diff.removed)
                 Spacer()
+                Button { showingAll = true } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary).frame(width: 22, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("Show the whole diff")
                 CopyButton(text: diff.lines.joined(separator: "\n"), label: "Copy diff")
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(ChatStyle.code)
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line.isEmpty ? " " : line)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(line.hasPrefix("@@") ? Color.secondary : Color.primary.opacity(0.9))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 10).padding(.vertical, 1)
-                            .background(tint(line))
-                    }
-                    if diff.truncated {
-                        Text("… more changes not shown").font(.system(size: 11)).foregroundStyle(.tertiary).padding(10)
-                    }
-                }
-                .textSelection(.enabled)
+                DiffLines(diff: diff)
             }
             .frame(maxHeight: 320)
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(VisualTokens.hairline))
+        .sheet(isPresented: $showingAll) { DiffSheet(diff: diff, path: path, missing: missing, open: openFile) }
+    }
+
+    private var path: String { ChatLibrary.filePath(diff.path, project: project) }
+
+    /// In the app the owner uses for that kind of file; a file that is gone is marked so instead.
+    private func openFile() {
+        guard FileManager.default.fileExists(atPath: path) else {
+            missing = true
+            NSSound.beep()
+            return
+        }
+        missing = false
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+}
+
+/// A diff's lines, tinted: shared by the step and the whole-diff sheet.
+private struct DiffLines: View {
+    let diff: ChatDiff
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
+                Text(line.isEmpty ? " " : line)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(line.hasPrefix("@@") ? Color.secondary : Color.primary.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 1)
+                    .background(tint(line))
+            }
+            if diff.truncated {
+                Text("… more changes not shown: open the file to see all of it").font(.system(size: 11))
+                    .foregroundStyle(.tertiary).padding(10)
+            }
+        }
+        .textSelection(.enabled)
     }
 
     private func tint(_ line: String) -> Color {
@@ -725,5 +795,36 @@ private struct DiffBlock: View {
         if line.hasPrefix("-") { return VisualTokens.error.opacity(0.12) }
         if line.hasPrefix("@@") { return ChatStyle.code.opacity(0.6) }
         return .clear
+    }
+}
+
+/// The whole diff of one file, large, with the file a click away.
+private struct DiffSheet: View {
+    let diff: ChatDiff
+    let path: String
+    let missing: Bool
+    let open: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: diff.created ? "doc.badge.plus" : "doc.text").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text((path as NSString).lastPathComponent).font(.headline)
+                    Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        .textSelection(.enabled)
+                }
+                DiffCounts(added: diff.added, removed: diff.removed)
+                Spacer()
+                Button("Open File", action: open).disabled(missing)
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(14)
+            Divider()
+            ScrollView { DiffLines(diff: diff).padding(.vertical, 6) }
+                .background(ChatStyle.canvas)
+        }
+        .frame(minWidth: 640, idealWidth: 820, minHeight: 420, idealHeight: 640)
     }
 }

@@ -94,6 +94,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/HelpDiagnostics.swift"
   "${SCRIPT_DIR}/Sources/SettingsWindowController.swift"
   "${SCRIPT_DIR}/Sources/ChatReliability.swift"
+  "${SCRIPT_DIR}/Sources/ChatLibrary.swift"
   "${SCRIPT_DIR}/Sources/ChatWindow.swift"
   "${SCRIPT_DIR}/Sources/ChatShell.swift"
   "${SCRIPT_DIR}/Sources/ChatTranscript.swift"

@@ -46,6 +46,7 @@ struct AgentAvatar: View {
 struct ChatView: View {
     @ObservedObject var model: ChatModel
     @MacMCPState private var showingNewChat = false
+    @MacMCPState private var switching = false
     @MacMCPState private var sidebarShown: Bool
 
     init(model: ChatModel, sidebarShown: Bool = true) {
@@ -56,7 +57,8 @@ struct ChatView: View {
     var body: some View {
         HStack(spacing: 0) {
             if sidebarShown {
-                ChatSidebar(model: model, newChat: { showingNewChat = true }, hide: toggleSidebar)
+                ChatSidebar(model: model, newChat: { showingNewChat = true }, switchChat: { switching = true },
+                            hide: toggleSidebar)
                     .frame(width: ChatStyle.sidebarWidth)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
@@ -71,16 +73,22 @@ struct ChatView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ChatStyle.canvas)
+            // On its own view: two sheets on one view do not both open on macOS 13.
+            .sheet(isPresented: $switching) { ChatSwitcher(model: model) }
         }
         .background(ChatStyle.canvas)
         .ignoresSafeArea()
         .background(
-            Button("", action: toggleSidebar).keyboardShortcut("s", modifiers: [.control, .command]).hidden()
+            Group {
+                Button("", action: toggleSidebar).keyboardShortcut("s", modifiers: [.control, .command])
+                Button("") { switching = true }.keyboardShortcut("k", modifiers: .command)
+            }
+            .hidden()
         )
         .sheet(isPresented: $showingNewChat) { NewChatSheet(model: model) }
         .task {
             await model.refreshList()
-            if model.selectedID == nil, let first = model.allChats.first { model.select(first.id) }
+            if model.selectedID == nil, let first = model.listedChats.first { model.select(first.id) }
         }
     }
 
@@ -94,15 +102,22 @@ struct ChatView: View {
 private struct ChatSidebar: View {
     @ObservedObject var model: ChatModel
     let newChat: () -> Void
+    let switchChat: () -> Void
     let hide: () -> Void
     @FocusState private var searching: Bool
     @MacMCPState private var renaming: String?
     @MacMCPState private var deleting: ChatSummary?
+    @MacMCPState private var showArchived = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 2) {
                 Spacer()
+                Button(action: switchChat) {
+                    Image(systemName: "rectangle.stack").font(.system(size: 13)).foregroundStyle(.secondary)
+                        .frame(width: 28, height: 24).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("Switch to a recent chat (⌘K)")
                 SidebarToggle(action: hide).help("Hide the sidebar (⌃⌘S)")
             }
             .frame(height: ChatStyle.headerHeight)
@@ -145,18 +160,45 @@ private struct ChatSidebar: View {
             ScrollView {
                 // A plain stack, as for the transcript: a lazy one changes height while scrolling.
                 VStack(alignment: .leading, spacing: 0) {
+                    let pinned = model.pinnedChats
+                    if !pinned.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            SectionTitle(symbol: "pin.fill", title: "Pinned")
+                            ForEach(pinned) { chat in
+                                ChatListRow(chat: chat, model: model, renaming: $renaming, deleting: $deleting)
+                                    .help(chat.projectName)
+                            }
+                        }
+                        .padding(.top, 18)
+                    }
                     ForEach(model.shownProjects) { project in
                         ProjectSection(project: project, model: model, renaming: $renaming, deleting: $deleting)
                     }
-                    if model.shownProjects.isEmpty && !model.search.isEmpty {
+                    if pinned.isEmpty && model.shownProjects.isEmpty && model.archivedChats.isEmpty && !model.search.isEmpty {
                         Text("No chats match “\(model.search)”").font(.caption).foregroundStyle(.secondary)
                             .padding(.horizontal, 10).padding(.top, 18)
                     }
+                    archivedSection
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 16)
             }
+            if let archived = model.lastArchived {
+                // Undo for the chat just archived: it comes back where it was.
+                HStack(spacing: 8) {
+                    Image(systemName: "archivebox").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("Archived “\(archived.title)”").font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Button("Undo") { model.unarchive(archived.id) }.buttonStyle(.link).font(.system(size: 12, weight: .medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ChatStyle.raised))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(VisualTokens.hairline))
+                .padding(.horizontal, 10).padding(.bottom, 10)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: model.lastArchived?.id)
         .background(ChatStyle.sidebar)
         .overlay(alignment: .trailing) { Rectangle().fill(VisualTokens.hairline).frame(width: 1) }
         .alert("Delete “\(deleting?.title ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
@@ -167,6 +209,90 @@ private struct ChatSidebar: View {
             Button("Cancel", role: .cancel) { deleting = nil }
         } message: {
             Text("The conversation and its history are removed from Mac MCP. The files the agent changed stay as they are.")
+        }
+    }
+
+    /// Archived chats, folded away at the end of the list; open while searching, so a match shows.
+    @ViewBuilder private var archivedSection: some View {
+        let archived = model.archivedChats
+        if !archived.isEmpty {
+            let open = showArchived || !model.search.isEmpty
+            VStack(alignment: .leading, spacing: 2) {
+                Button { showArchived.toggle() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "archivebox").font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 16)
+                        Text("Archived").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                        Text("\(archived.count)").font(.system(size: 11)).foregroundStyle(.tertiary).monospacedDigit()
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10).padding(.bottom, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(open ? "Hide archived chats" : "Show archived chats")
+                if open {
+                    ForEach(archived) { chat in
+                        HStack(spacing: 2) {
+                            ChatRow(chat: chat, selected: chat.id == model.selectedID, dimmed: true) { model.select(chat.id) }
+                            Button { model.unarchive(chat.id) } label: {
+                                Image(systemName: "arrow.uturn.backward").font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary).frame(width: 24, height: 24).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).help("Unarchive: back to the list")
+                        }
+                        .contextMenu {
+                            Button("Unarchive") { model.unarchive(chat.id) }
+                            Divider()
+                            Button("Delete Chat…", role: .destructive) { deleting = chat }
+                        }
+                        .help(chat.projectName)
+                    }
+                }
+            }
+            .padding(.top, 22)
+        }
+    }
+}
+
+private struct SectionTitle: View {
+    let symbol: String
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 16)
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+    }
+}
+
+/// A chat in the list, or its name being edited; right-click pins, renames, archives or deletes it.
+private struct ChatListRow: View {
+    let chat: ChatSummary
+    @ObservedObject var model: ChatModel
+    @Binding var renaming: String?
+    @Binding var deleting: ChatSummary?
+
+    var body: some View {
+        if renaming == chat.id {
+            RenameField(title: chat.title) { title in
+                if let title { model.rename(chat.id, to: title) }
+                renaming = nil
+            }
+            .padding(.leading, 24)
+        } else {
+            ChatRow(chat: chat, selected: chat.id == model.selectedID) { model.select(chat.id) }
+                .contextMenu {
+                    Button(chat.pinned ? "Unpin" : "Pin") { model.pin(chat.id, !chat.pinned) }
+                    Button("Rename…") { renaming = chat.id }
+                    Button("Archive") { model.archive(chat) }
+                    Divider()
+                    Button("Delete Chat…", role: .destructive) { deleting = chat }
+                }
         }
     }
 }
@@ -190,20 +316,7 @@ private struct ProjectSection: View {
             .padding(.bottom, 6)
             .help(project.id)
             ForEach(project.chats) { chat in
-                if renaming == chat.id {
-                    RenameField(title: chat.title) { title in
-                        if let title { model.rename(chat.id, to: title) }
-                        renaming = nil
-                    }
-                    .padding(.leading, 24)
-                } else {
-                    ChatRow(chat: chat, selected: chat.id == model.selectedID) { model.select(chat.id) }
-                        .contextMenu {
-                            Button("Rename…") { renaming = chat.id }
-                            Divider()
-                            Button("Delete Chat…", role: .destructive) { deleting = chat }
-                        }
-                }
+                ChatListRow(chat: chat, model: model, renaming: $renaming, deleting: $deleting)
             }
         }
         .padding(.top, 18)
@@ -241,6 +354,7 @@ struct RenameField: View {
 private struct ChatRow: View {
     let chat: ChatSummary
     let selected: Bool
+    var dimmed = false
     let open: () -> Void
 
     var body: some View {
@@ -248,7 +362,7 @@ private struct ChatRow: View {
             HStack(spacing: 8) {
                 status.frame(width: 16)
                 Text(chat.title).font(.system(size: 13, weight: selected ? .medium : .regular))
-                    .foregroundStyle(Color.primary.opacity(selected ? 1 : 0.85))
+                    .foregroundStyle(Color.primary.opacity(selected ? 1 : dimmed ? 0.6 : 0.85))
                     .lineLimit(1)
                 Spacer(minLength: 6)
                 Text(ChatTime.short(chat.updatedAt)).font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -450,6 +564,11 @@ private struct ChatHeaderBar: View {
                             Label("Not saved", systemImage: "eye.slash")
                                 .help("Private mode was on when this chat started: it is kept only until Mac MCP quits.")
                         }
+                        if chat.archived {
+                            Label("Archived", systemImage: "archivebox")
+                            Button("Unarchive") { model.unarchive(chat.id) }.buttonStyle(.link)
+                                .help("Back to the chat list")
+                        }
                     }
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -522,6 +641,118 @@ private struct ChatWelcome: View {
     }
 }
 
+// MARK: Quick switch
+
+/// ⌘K: the recent chats across projects, newest first; type to narrow (archived ones too), ↑ ↓ and Return to open.
+private struct ChatSwitcher: View {
+    @ObservedObject var model: ChatModel
+    @Environment(\.dismiss) private var dismiss
+    @MacMCPState private var keys: Any?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let found = chats
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
+                TextField("Switch to a chat", text: $model.switcherQuery).textFieldStyle(.plain).font(.system(size: 15))
+                    .focused($focused)
+                    .onSubmit { open(found) }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            Divider()
+            if found.isEmpty {
+                Text(model.switcherQuery.isEmpty ? "No other chats yet" : "No chats match “\(model.switcherQuery)”")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(Array(found.enumerated()), id: \.element.id) { index, chat in
+                                row(chat, highlighted: index == highlighted(found)) { open(found, at: index) }
+                                    .id(chat.id)
+                                    .onHover { inside in if inside { model.switcherIndex = index } }
+                            }
+                        }
+                        .padding(6)
+                    }
+                    .onChange(of: model.switcherIndex) { index in
+                        if found.indices.contains(index) { proxy.scrollTo(found[index].id) }
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Text("↑↓ to choose · ↩ to open · esc to close").font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(ChatStyle.code.opacity(0.5))
+        }
+        .frame(width: 480, height: 400)
+        .background(ChatStyle.canvas)
+        .background(Button("") { dismiss() }.keyboardShortcut(.cancelAction).hidden())
+        .onChange(of: model.switcherQuery) { _ in model.switcherIndex = 0 }
+        .onAppear {
+            model.switcherQuery = ""
+            model.switcherIndex = 0
+            focused = true
+            installKeys()
+        }
+        .onDisappear {
+            if let keys { NSEvent.removeMonitor(keys) }
+            keys = nil
+        }
+    }
+
+    private var chats: [ChatSummary] { model.switcherChats }
+
+    private func highlighted(_ found: [ChatSummary]) -> Int { min(model.switcherIndex, max(found.count - 1, 0)) }
+
+    private func open(_ found: [ChatSummary], at index: Int? = nil) {
+        let index = index ?? highlighted(found)
+        guard found.indices.contains(index) else { return }
+        model.select(found[index].id)
+        dismiss()
+    }
+
+    private func row(_ chat: ChatSummary, highlighted: Bool, open: @escaping () -> Void) -> some View {
+        Button(action: open) {
+            HStack(spacing: 10) {
+                AgentAvatar(agent: chat.agent, size: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(chat.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    Text(chat.projectName).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                if chat.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(.tertiary) }
+                if chat.archived { Image(systemName: "archivebox").font(.system(size: 10)).foregroundStyle(.tertiary) }
+                Text(ChatTime.short(chat.updatedAt)).font(.system(size: 11)).foregroundStyle(.tertiary).monospacedDigit()
+                if highlighted { Text("↩").font(.system(size: 11)).foregroundStyle(.tertiary) }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(highlighted ? ChatStyle.selection : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(chat.title), \(chat.projectName)")
+    }
+
+    /// ↑ ↓ move through the list while the search field has the keys (a text field keeps them for itself).
+    private func installKeys() {
+        guard keys == nil else { return }
+        let model = model
+        keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                  event.keyCode == 125 || event.keyCode == 126 else { return event }
+            let count = model.switcherChats.count
+            model.switcherIndex = ChatLibrary.move(model.switcherIndex, by: event.keyCode == 125 ? 1 : -1, count: count)
+            return nil
+        }
+    }
+}
+
 // MARK: Composer
 
 struct ChatComposer: View {
@@ -589,6 +820,16 @@ struct ChatComposer: View {
                     .help("Add files or images (or drop or paste them here)")
                     ChatSettingsBar(model: model)
                     Spacer(minLength: 8)
+                    if focused && canSend && suggestions.isEmpty && !waiting {
+                        // Only where it fits beside the agent's settings; it never pushes them.
+                        ViewThatFits(in: .horizontal) {
+                            Text(ChatLibrary.sendHint(running: running)).font(.system(size: 10.5))
+                                .foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+                            Color.clear.frame(width: 0, height: 0)
+                        }
+                        .accessibilityLabel(running ? "Return sends when this answer ends, Option-Return starts a new line"
+                                            : "Return sends, Option-Return starts a new line")
+                    }
                     sendOrStop
                 }
             }

@@ -51,7 +51,7 @@ struct ChatConfigOption: Hashable, Identifiable {
     var currentName: String { options.first { $0.value == current }?.name ?? current }
 }
 
-struct ChatSummary: Identifiable, Hashable {
+struct ChatSummary: Identifiable, Hashable, ChatListed {
     let id: String
     var title: String
     var project: String
@@ -73,6 +73,8 @@ struct ChatSummary: Identifiable, Hashable {
     var takesImages: Bool?
     /// Started in private mode: kept only in memory, gone when Mac MCP stops.
     var isPrivate: Bool
+    var pinnedAt: Double
+    var archivedAt: Double
 
     init(_ object: [String: Any]) {
         id = object["id"] as? String ?? ""
@@ -101,6 +103,8 @@ struct ChatSummary: Identifiable, Hashable {
         }
         takesImages = object["takes_images"] as? Bool
         isPrivate = object["private"] as? Bool ?? false
+        pinnedAt = (object["pinned_at"] as? NSNumber)?.doubleValue ?? 0
+        archivedAt = (object["archived_at"] as? NSNumber)?.doubleValue ?? 0
     }
 
     var projectName: String { (project as NSString).lastPathComponent }
@@ -271,6 +275,16 @@ final class ChatModel: ObservableObject {
     }
 
     var allChats: [ChatSummary] { projects.flatMap(\.chats) }
+    /// The chats in the sidebar's own order (pinned, then each project's), archived ones left out.
+    var listedChats: [ChatSummary] { pinnedChats + shownProjects.flatMap(\.chats) }
+    var pinnedChats: [ChatSummary] { ChatLibrary.pinned(allChats, search: search) }
+    var archivedChats: [ChatSummary] { ChatLibrary.archived(allChats, search: search) }
+    /// The chat just archived, for the sidebar's Undo; it goes after a few seconds.
+    @Published var lastArchived: ChatSummary?
+    /// The quick switcher (⌘K): what is typed in it, its highlighted row, and the chats it lists.
+    @Published var switcherQuery = ""
+    @Published var switcherIndex = 0
+    var switcherChats: [ChatSummary] { ChatLibrary.recent(allChats, search: switcherQuery, current: selectedID) }
 
     func refreshList() async {
         let result = await api("dashboard/api/chats", nil)
@@ -576,16 +590,45 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// The sidebar's projects with only the chats whose title or project matches the search.
+    /// The sidebar's projects with only the chats whose title or project matches the search; pinned chats sit
+    /// above them and archived ones below, so neither is here.
     var shownProjects: [ChatProjectGroup] {
-        let words = search.lowercased().split(separator: " ").map(String.init)
-        guard !words.isEmpty else { return projects }
-        return projects.compactMap { project in
-            let chats = project.chats.filter { chat in
-                let text = (chat.title + " " + project.name).lowercased()
-                return words.allSatisfy { text.contains($0) }
-            }
+        projects.compactMap { project in
+            let chats = ChatLibrary.listed(project.chats, search: search)
             return chats.isEmpty ? nil : ChatProjectGroup(id: project.id, name: project.name, chats: chats)
+        }
+    }
+
+    /// Pin a chat on top of the list, or let it go back to its project.
+    func pin(_ chatID: String, _ pinned: Bool) {
+        organize(chatID, ["pinned": pinned])
+    }
+
+    /// Archive a chat out of the list (Undo brings it back for a few seconds; the Archived section always can).
+    /// The open chat makes way for the next one in the list.
+    func archive(_ chat: ChatSummary) {
+        if selectedID == chat.id { select(ChatLibrary.next(after: chat.id, in: listedChats.map(\.id))) }
+        lastArchived = chat
+        organize(chat.id, ["archived": true])
+        Task {
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            if lastArchived?.id == chat.id { lastArchived = nil }
+        }
+    }
+
+    func unarchive(_ chatID: String) {
+        if lastArchived?.id == chatID { lastArchived = nil }
+        organize(chatID, ["archived": false])
+    }
+
+    private func organize(_ chatID: String, _ change: [String: Any]) {
+        Task {
+            let result = await api("dashboard/api/chats/\(chatID)/organize", change)
+            if result.ok, chatID == selectedID, let meta = result.object["chat"] as? [String: Any] {
+                chat = ChatSummary(meta)
+            }
+            if !result.ok { error = result.object["message"] as? String ?? "Could not change the chat." }
+            await refreshList()
         }
     }
 
@@ -1040,26 +1083,13 @@ private struct SearchablePicker: View {
                     .textFieldStyle(.roundedBorder).padding(10)
                 Divider()
                 List {
-                    ForEach(matches) { choice in
-                        Button {
-                            choose(choice.value)
-                            open = false
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(choice.name).lineLimit(1)
-                                    if !choice.group.isEmpty || choice.name != choice.value {
-                                        Text(choice.value).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                }
-                                Spacer()
-                                if choice.value == option.current {
-                                    Image(systemName: "checkmark").foregroundStyle(VisualTokens.accent)
-                                }
-                            }
-                            .contentShape(Rectangle())
+                    // Under the provider or group the agent names, so two models of the same name tell apart.
+                    ForEach(sections, id: \.name) { section in
+                        Section {
+                            ForEach(section.choices) { row($0) }
+                        } header: {
+                            if !section.name.isEmpty { Text(section.name) }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
                 .listStyle(.plain)
@@ -1068,11 +1098,51 @@ private struct SearchablePicker: View {
         }
     }
 
+    private func row(_ choice: ChatConfigChoice) -> some View {
+        Button {
+            choose(choice.value)
+            open = false
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(choice.name).lineLimit(1)
+                    let provider = ChatLibrary.provider(group: choice.group, value: choice.value)
+                    let detail = [provider, choice.name != choice.value ? choice.value : ""].filter { !$0.isEmpty }
+                    if !detail.isEmpty {
+                        Text(detail.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer()
+                if choice.value == option.current {
+                    Image(systemName: "checkmark").foregroundStyle(VisualTokens.accent)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(choice.description)
+    }
+
+    /// The matching models by provider, in the order the agent lists them.
+    private var sections: [(name: String, choices: [ChatConfigChoice])] {
+        var out: [(name: String, choices: [ChatConfigChoice])] = []
+        for choice in matches {
+            let name = ChatLibrary.provider(group: choice.group, value: choice.value)
+            if let index = out.firstIndex(where: { $0.name == name }) {
+                out[index].choices.append(choice)
+            } else {
+                out.append((name, [choice]))
+            }
+        }
+        return out
+    }
+
     private var matches: [ChatConfigChoice] {
         let words = query.lowercased().split(separator: " ").map(String.init)
         guard !words.isEmpty else { return option.options }
         return option.options.filter { choice in
-            let text = "\(choice.name) \(choice.value) \(choice.group)".lowercased()
+            let provider = ChatLibrary.provider(group: choice.group, value: choice.value)
+            let text = "\(choice.name) \(choice.value) \(provider)".lowercased()
             return words.allSatisfy { text.contains($0) }
         }
     }
@@ -1152,12 +1222,14 @@ struct NewChatSheet: View {
                 } else {
                     Picker("Agent", selection: $agent) {
                         ForEach(model.agents) { option in
-                            Text(option.label).tag(option.id)
+                            Text(option.ready ? option.label : "\(option.label) (not ready)").tag(option.id)
                         }
                     }
                     .labelsHidden()
                     if let option = selectedAgent, !option.ready {
-                        Text(option.reason).font(.caption).foregroundStyle(VisualTokens.warning)
+                        Label(option.reason.isEmpty ? "\(option.label) is not ready." : option.reason,
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(VisualTokens.warning)
                     }
                 }
             }
@@ -1179,7 +1251,8 @@ struct NewChatSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(folder == nil || agent.isEmpty || starting)
+                // An agent that is not ready cannot start one; the reason shows above.
+                .disabled(folder == nil || selectedAgent?.ready != true || starting)
             }
         }
         .padding(VisualTokens.Space.l)
@@ -1189,6 +1262,11 @@ struct NewChatSheet: View {
             if let first = model.agents.first(where: \.ready) ?? model.agents.first {
                 agent = first.id
             }
+        }
+        .task {
+            // Whether each agent is ready now (the owner may have just installed one).
+            await model.refreshList()
+            if selectedAgent?.ready != true, let ready = model.agents.first(where: \.ready) { agent = ready.id }
         }
     }
 
