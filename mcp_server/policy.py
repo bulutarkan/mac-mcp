@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from mcp.types import ToolAnnotations
 
+from .data_guard import browser_call_actions
 from .policy_scope import (
     AccessMode, ResourceScope, ScopeDecision, ScopeRequest,
     access_mode_allows, evaluate_scope, normalize_access_mode,
@@ -1245,14 +1246,12 @@ def _scope_paths(tool: str, arguments: Mapping[str, Any]) -> tuple[str, ...]:
                 value = item.get("path")
                 if isinstance(value, str) and value.strip():
                     paths.append(value)
-    raw_actions = arguments.get("actions")
-    if isinstance(raw_actions, (list, tuple)):
-        for item in raw_actions:
-            if isinstance(item, Mapping):
-                for key in ("path", "source", "destination"):
-                    value = item.get(key)
-                    if isinstance(value, str) and value.strip():
-                        paths.append(value)
+    # browser_call_actions also covers browser_do tabs=[{tab_handle, actions}] (#140).
+    for item in browser_call_actions(arguments):
+        for key in ("path", "source", "destination"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                paths.append(value)
     # browser_screenshot.path is intentionally included by the generic path key.
     return tuple(dict.fromkeys(paths))
 

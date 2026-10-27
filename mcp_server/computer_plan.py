@@ -204,6 +204,12 @@ def _action_units(tool: str, arguments: Mapping[str, Any]) -> int:
         count = len(actions) if isinstance(actions, list) else 0
         if tool == "browser_do" and arguments.get("url"):
             count += 1
+        pages = arguments.get("urls") or arguments.get("tabs") if tool == "browser_do" else None
+        if isinstance(pages, list):
+            # Several pages in one call (#140): each runs the shared actions (urls open a tab first) or its own.
+            shared = count + (1 if arguments.get("urls") else 0)
+            count = sum(len(page["actions"]) if isinstance(page, Mapping) and isinstance(page.get("actions"), list)
+                        else shared for page in pages)
         return max(1, count)
     return 1
 

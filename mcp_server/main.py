@@ -24,7 +24,7 @@ from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
 from .request_client import client_address
-from .workflow_checkpoints import clear_not_executed
+from .workflow_checkpoints import clear_not_executed, exception_not_executed
 from .log_retention import start_log_rotation
 from . import privacy_inventory, privacy_policy, recipes, run_evidence
 from . import scheduled_task_runner, scheduled_tasks
@@ -38,7 +38,7 @@ from .tool_summaries import ADVANCED_BROWSER_TOOLS, CORE_TOOL_NAMES, CORE_TOOL_S
 from . import tool_discovery
 from . import iphone
 from .browser_schemas import (
-    ActReturnState, BrowserActions, DoReturnState, ObserveScope, OptionalBrowserActions, VisualMode,
+    ActReturnState, BrowserActions, BrowserTabs, DoReturnState, ObserveScope, OptionalBrowserActions, VisualMode,
 )
 from mcp.server.fastmcp.exceptions import ToolError
 from .policy import (
@@ -2348,6 +2348,268 @@ def create_app():
                                     submit=submit, window_index=window_index, tab_index=tab_index, frame=frame),
         )
 
+    def _browser_do_page(browser: str, url: Optional[str], actions: Optional[List[Dict[str, Any]]],
+                         new_tab: bool, background: bool, window_index: int, tab_index: Optional[int],
+                         tab_handle: Optional[str], wait_after_open: bool, return_state: str,
+                         allow_foreground: bool, close_after: bool, debug: bool, extract: Optional[List[str]],
+                         preopened: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """One browser_do page. preopened is a tab browser_do(urls=...) already opened in the background:
+        it counts as opened by this call (wait after open, close_after, mutation_dispatched)."""
+        handle = tab_handle
+        opened = preopened
+        # Reject a malformed action before the tab is opened or navigated.
+        requested_actions = normalize_act_actions(list(actions)) if actions else []
+        work_actions = list(requested_actions)
+        scan_count = sum(1 for action in work_actions if action.get("type") == "scan")
+        if scan_count:
+            share = max(1_024, _BROWSER_DO_SCAN_BYTES // scan_count)
+            work_actions = [
+                {**action, "max_bytes": min(int(action.get("max_bytes") or share), share)}
+                if action.get("type") == "scan" else action
+                for action in work_actions
+            ]
+        semantic_fields = semantic_extract_fields(extract) if extract is not None else None
+        automatic_actions = (1 if semantic_fields else 0) + (1 if (url or opened) and wait_after_open else 0)
+        if len(work_actions) + automatic_actions > 20:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser_do transaction may contain at most 20 actions including automatic wait/extract actions.")
+        # close_after closes the tab this call opens: without a url no tab is opened, and finding that out after
+        # the actions ran reported a failure for work that was done (roadmap #32).
+        if close_after and opened is None and (not new_tab or not url):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                "close_after needs url and new_tab=true: it closes the tab browser_do opens.")
+        if url and opened is None:
+            opened = browser_open_url(
+                settings, browser=browser, url=url, new_tab=new_tab, background=background,
+                window_index=window_index, tab_index=(tab_index if not new_tab else None),
+                tab_handle=tab_handle,
+            )
+            if not new_tab and tab_handle and opened.get("tab_handle") != tab_handle:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    {"ok": False, "error": "browser_do_target_changed", "retryable": True, "tab_handle": tab_handle},
+                )
+        if opened is not None:
+            handle = opened.get("tab_handle") or handle
+            if wait_after_open:
+                work_actions.insert(0, {"type": "wait", "for": "network_idle", "timeout_s": 4, "stable_ms": 300, "required": False})
+        if semantic_fields:
+            work_actions.append({"type": "extract", "fields": semantic_fields, "max_chars": 6_000})
+        elif not requested_actions:
+            work_actions.append({
+                "type": "extract",
+                "fields": [
+                    {"name": "h1", "selector": "h1", "attr": "text"},
+                    {"name": "paragraphs", "selector": "p", "attr": "text", "all": True, "max_items": 20},
+                ],
+                "max_chars": 3000,
+            })
+        try:
+            result = browser_act(
+                settings, browser=browser, actions=work_actions, window_index=window_index,
+                tab_index=tab_index, tab_handle=handle, return_state=return_state,
+                allow_foreground=allow_foreground,
+            )
+        except HTTPException as exc:
+            if opened:
+                # The tab was already opened or navigated, so this call did act.
+                clear_not_executed(exc)
+            raise
+        if opened:
+            result["opened"] = {k: opened.get(k) for k in ("url", "window_index", "tab_index", "tab_handle", "background") if k in opened}
+        closed = False
+        if close_after:
+            if not opened or not handle:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "close_after is only allowed for a tab newly opened by browser_do.")
+            browser_close_tab(settings, browser=browser, tab_handle=handle)
+            closed = True
+        if debug:
+            if closed:
+                result["closed"] = True
+            return result
+        data: Dict[str, Any] = {}
+        final_url = None
+        final_title = None
+        extraction_meta: Dict[str, Any] = {}
+        errors = []
+        scans: List[Dict[str, Any]] = []
+        read: Optional[Dict[str, Any]] = None
+        pdf: Optional[Dict[str, Any]] = None
+        network: Optional[Dict[str, Any]] = None
+        for item in result.get("actions") or []:
+            if item.get("type") == "pdf" and item.get("ok") is not False:
+                pdf = {key: item[key] for key in (
+                    "path", "artifact_id", "sha256", "size", "method", "chrome_print_error") if key in item}
+            if item.get("type") == "network" and item.get("ok") is not False:
+                network = {key: value for key, value in item.items() if key not in {"ok", "type"}}
+            if item.get("type") == "read" and item.get("ok") is not False:
+                read = {key: item[key] for key in (
+                    "text", "offset", "returned_chars", "total_chars", "next_offset", "complete", "headings",
+                    "loaded", "coverage") if key in item}
+                final_url = item.get("url") or final_url
+                final_title = item.get("title") or final_title
+            if item.get("type") == "scan" and item.get("ok") is not False:
+                scans.append({key: item[key] for key in (
+                    "items", "count", "stopped", "complete", "has_more", "next_cursor", "total_seen",
+                    "steps", "key_field", "coverage", "duration_ms") if key in item})
+            if item.get("type") == "extract" and isinstance(item.get("data"), dict):
+                data.update(item["data"])
+                for key in ("matched_counts", "fields"):
+                    extraction_meta.setdefault(key, {}).update(item.get(key) or {})
+                extraction_meta["truncated"] = bool(extraction_meta.get("truncated") or item.get("truncated"))
+                extraction_meta["complete"] = not extraction_meta["truncated"]
+                extraction_meta["coverage"] = "currently_rendered_matches"
+                final_url = item.get("url") or final_url
+                final_title = item.get("title") or final_title
+            if item.get("ok") is False or item.get("matched") is False:
+                errors.append({k: item.get(k) for k in ("type", "error", "for", "timed_out") if item.get(k) is not None})
+        progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+        compact: Dict[str, Any] = {
+            "ok": bool(result.get("ok")),
+            "data": data,
+            "url": final_url or ((result.get("state") or {}).get("url") if isinstance(result.get("state"), dict) else None) or progress.get("url"),
+            "title": final_title or ((result.get("state") or {}).get("title") if isinstance(result.get("state"), dict) else None) or progress.get("title"),
+            "tab_handle": handle,
+            "action_count": result.get("action_count"),
+            "internal_js_calls": result.get("internal_js_calls"),
+            "duration_ms": result.get("duration_ms"),
+            "closed": closed,
+            "mutation_dispatched": bool(result.get("mutation_dispatched") or opened),
+        }
+        compact.update(extraction_meta)
+        if read is not None:
+            compact["read"] = read
+        if pdf is not None:
+            compact["pdf"] = pdf
+        if network is not None:
+            compact["network"] = network
+        if len(scans) == 1:
+            compact["scan"] = scans[0]
+        elif scans:
+            compact["scans"] = scans
+        if progress:
+            compact["progress"] = progress
+        if errors:
+            compact["errors"] = errors
+        # A click nothing confirmed is not done: say which actions, as browser_act does.
+        for key in ("unconfirmed_actions", "confirm_hint"):
+            if result.get(key):
+                compact[key] = result[key]
+        if return_state != "none" and result.get("state") is not None:
+            compact["state"] = result.get("state")
+        return _fit_browser_do_output(compact)
+
+    def _browser_do_failure(exc: HTTPException, **known: Any) -> Dict[str, Any]:
+        """One page's refusal or failure in a several-page browser_do, reported in place of its result."""
+        detail = exc.detail if isinstance(exc.detail, dict) else {"error": "browser_do_failed", "message": str(exc.detail)}
+        return {"ok": False, **known, **{key: detail[key] for key in (
+            "error", "message", "reason_code", "retryable", "owner", "owner_took_over", "human_priority") if key in detail},
+            # False: the page may have changed before the failure; never replay it blindly.
+            "not_executed": exception_not_executed(exc)}
+
+    async def _browser_do_many(browser: str, urls: Optional[List[str]], tabs: Optional[List[Any]],
+                               actions: Optional[List[Dict[str, Any]]], *, url: Optional[str],
+                               tab_handle: Optional[str], new_tab: bool, background: bool,
+                               allow_foreground: bool, wait_after_open: bool, return_state: str,
+                               close_after: bool, debug: bool, extract: Optional[List[str]]) -> Dict[str, Any]:
+        """browser_do over several pages in one call: urls=[...] opens each in a new background tab (#140),
+        tabs=[...] works in tabs that are already open (#137). Each page is its own browser_do or browser_act
+        with its own tab lease, so a tab another agent holds or the owner took over is reported for that tab,
+        never taken. One page failing never stops the others, and nothing is retried. Chrome pages run at the
+        same time over the companion; Safari runs them one after another (its do JavaScript is serial)."""
+        b = _norm_browser(browser)
+        if urls is not None and tabs is not None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Pass urls or tabs, not both.")
+        shared_read_only = all(item["type"] in _NON_MUTATING_ACT_TYPES for item in normalize_act_actions(list(actions or [])))
+        jobs: List[Any] = []
+        if urls is not None:
+            targets = list(dict.fromkeys(str(item or "").strip() for item in urls if str(item or "").strip()))
+            if not targets or len(targets) > 10:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "urls takes 1-10 URLs.")
+            if url or tab_handle:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "urls opens its own tabs: leave url and tab_handle unset.")
+            if not new_tab or not background or allow_foreground:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    "urls opens every page in a new background tab: leave new_tab, background and allow_foreground unset.")
+            # Open every tab first, one after another (opening is serial per browser anyway); then the pages
+            # are worked on, at the same time in Chrome.
+            # The actions may change these pages: they are this call's own new tabs.
+            for target in targets:
+                try:
+                    opened = await asyncio.to_thread(_log, audit_logger, "browser_do", lambda target=target: browser_open_url(
+                        settings, browser=b, url=target, new_tab=True, background=True))
+                except HTTPException as exc:
+                    jobs.append(_browser_do_failure(exc, requested_url=target))
+                    continue
+                handle = opened.get("tab_handle")
+                if not handle:
+                    jobs.append({"ok": False, "requested_url": target, "error": "no_tab_handle",
+                                 "message": "The tab opened without a tab_handle, so it was not used."})
+                    continue
+                jobs.append((target, handle, lambda opened=opened: _browser_do_page(
+                    b, None, actions, True, True, 1, None, None, wait_after_open, return_state, False,
+                    close_after, debug, extract, preopened=opened)))
+        else:
+            entries: List[Any] = []
+            for item in tabs or []:
+                if isinstance(item, str):
+                    item = item.strip()
+                    if not item or item in entries:
+                        continue
+                entries.append(item)
+            handles = [item if isinstance(item, str) else item["tab_handle"] for item in entries]
+            if not handles or len(handles) > 10:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "tabs takes 1-10 tab handles from browser_list_tabs.")
+            if len(set(handles)) != len(handles):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "tabs names each tab once.")
+            if url or tab_handle or close_after:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    "tabs works in tabs that are already open: leave url, tab_handle and close_after unset.")
+            if not shared_read_only and any(isinstance(item, str) or "actions" not in item for item in entries):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    "Shared actions for tabs are read-only (extract, read, wait, network, pdf); "
+                                    "to act in a tab give it its own: {tab_handle, actions}.")
+            for item in entries:
+                if isinstance(item, dict) and "actions" in item:
+                    # Its own actions: one browser_act on that tab, with the same lease and owner
+                    # take-over rules as a single call, and its full result.
+                    jobs.append((None, item["tab_handle"], lambda item=item: {**browser_act(
+                        settings, browser=b, actions=item["actions"], tab_handle=item["tab_handle"],
+                        return_state=return_state), "tab_handle": item["tab_handle"]}))
+                    continue
+                handle = item if isinstance(item, str) else item["tab_handle"]
+                jobs.append((None, handle, lambda handle=handle: _browser_do_page(
+                    b, None, actions, False, True, 1, None, handle, False, return_state, False,
+                    False, debug, extract)))
+
+        async def run(job: Any) -> Dict[str, Any]:
+            if isinstance(job, dict):
+                return job  # the tab never opened
+            target, handle, call = job
+            try:
+                page = await asyncio.to_thread(_log, audit_logger, "browser_do", call)
+            except HTTPException as exc:
+                page = _browser_do_failure(exc, tab_handle=handle)
+                if target and close_after:
+                    # This call opened the tab: close it as asked, also when its actions failed.
+                    try:
+                        await asyncio.to_thread(_log, audit_logger, "browser_close_tab", lambda: browser_close_tab(
+                            settings, browser=b, tab_handle=handle))
+                        page["closed"] = True
+                    except HTTPException:
+                        page["closed"] = False
+            if target:
+                page.setdefault("requested_url", target)
+            return page
+
+        concurrent = b == "Google Chrome"
+        if concurrent:
+            pages = list(await asyncio.gather(*(run(job) for job in jobs)))
+        else:
+            pages = [await run(job) for job in jobs]
+        return {"ok": all(page.get("ok") for page in pages), "tabs": pages, "tab_count": len(pages),
+                "failed_count": sum(1 for page in pages if not page.get("ok")),
+                "dispatch": "concurrent" if concurrent and len(jobs) > 1 else "sequential"}
+
     @mcp.tool(
         name="browser_do",
         description=(
@@ -2359,8 +2621,12 @@ def create_app():
             "Leave return_state='none' normally; debug=true can expose raw/full state. "
             "For selector reads use actions=[{type:'extract',fields:[{name:'reviews',selector:'.review',all:true}]}]. "
             "fields in the result reports counts and exact continuation offsets; partial output never means a full-page read. "
-            "tabs=[handles] runs the same read-only actions (extract/read/wait/network/pdf) on several open tabs in one call, "
-            "in the background; a tab another agent holds is reported, not taken. "
+            "Several pages in one call (results in tabs[], each with its tab_handle; one failing page never stops the others): "
+            "urls=[1-10 URLs] opens each in a new background tab and runs the same actions there (close_after closes each); "
+            "tabs=[handles] runs the same read-only actions (extract/read/wait/network/pdf) on open tabs; "
+            "tabs=[{tab_handle, actions}] acts in each tab with its own actions and returns that tab's browser_act result. "
+            "A tab another agent holds or the owner took over is reported, not taken. Chrome runs the pages at the same "
+            "time; Safari one after another. "
             "save_as_recipe='name' keeps a successful run as a recipe draft (review and activate it with recipe)."
         ),
     )
@@ -2373,174 +2639,18 @@ def create_app():
                           close_after: bool = False, debug: bool = False,
                           extract: Optional[List[str]] = None,
                           save_as_recipe: Optional[str] = None,
-                          tabs: Optional[List[str]] = None) -> Dict[str, Any]:
+                          tabs: BrowserTabs = None,
+                          urls: Optional[List[str]] = None) -> Dict[str, Any]:
         call_arguments = dict(locals())  # read before anything else is bound here
-        if tabs is not None:
-            # Several already-open tabs in one call (#137): each is read where it is, never brought
-            # forward, with the same lease rules as a single read.
-            handles = list(dict.fromkeys(str(item or "").strip() for item in tabs if str(item or "").strip()))
-            if not handles or len(handles) > 10:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "tabs takes 1-10 tab handles from browser_list_tabs.")
-            if url or tab_handle or close_after:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                    "tabs reads tabs that are already open: leave url, tab_handle and close_after unset.")
-            if any(item["type"] not in _NON_MUTATING_ACT_TYPES for item in normalize_act_actions(list(actions or []))):
-                raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                    "tabs runs read-only actions only: extract, read, wait, network, pdf.")
-            pages: List[Dict[str, Any]] = []
-            for handle in handles:
-                try:
-                    page = await _browser_do(
-                        browser, actions=actions, new_tab=False, tab_handle=handle, wait_after_open=False,
-                        return_state=return_state, debug=debug, extract=extract,
-                    )
-                except HTTPException as exc:
-                    detail = exc.detail if isinstance(exc.detail, dict) else {"error": "browser_do_failed", "message": str(exc.detail)}
-                    page = {"ok": False, "tab_handle": handle, **{key: detail[key] for key in (
-                        "error", "message", "reason_code", "retryable", "owner") if key in detail}}
-                pages.append(page)
-            return {"ok": all(page.get("ok") for page in pages), "tabs": pages, "tab_count": len(pages),
-                    "failed_count": sum(1 for page in pages if not page.get("ok"))}
-
-        def work() -> Dict[str, Any]:
-            handle = tab_handle
-            opened = None
-            # Reject a malformed action before the tab is opened or navigated.
-            requested_actions = normalize_act_actions(list(actions)) if actions else []
-            work_actions = list(requested_actions)
-            scan_count = sum(1 for action in work_actions if action.get("type") == "scan")
-            if scan_count:
-                share = max(1_024, _BROWSER_DO_SCAN_BYTES // scan_count)
-                work_actions = [
-                    {**action, "max_bytes": min(int(action.get("max_bytes") or share), share)}
-                    if action.get("type") == "scan" else action
-                    for action in work_actions
-                ]
-            semantic_fields = semantic_extract_fields(extract) if extract is not None else None
-            automatic_actions = (1 if semantic_fields else 0) + (1 if url and wait_after_open else 0)
-            if len(work_actions) + automatic_actions > 20:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser_do transaction may contain at most 20 actions including automatic wait/extract actions.")
-            # close_after closes the tab this call opens: without a url no tab is opened, and finding that out after
-            # the actions ran reported a failure for work that was done (roadmap #32).
-            if close_after and (not new_tab or not url):
-                raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                    "close_after needs url and new_tab=true: it closes the tab browser_do opens.")
-            if url:
-                opened = browser_open_url(
-                    settings, browser=browser, url=url, new_tab=new_tab, background=background,
-                    window_index=window_index, tab_index=(tab_index if not new_tab else None),
-                    tab_handle=tab_handle,
-                )
-                if not new_tab and tab_handle and opened.get("tab_handle") != tab_handle:
-                    raise HTTPException(
-                        status.HTTP_409_CONFLICT,
-                        {"ok": False, "error": "browser_do_target_changed", "retryable": True, "tab_handle": tab_handle},
-                    )
-                handle = opened.get("tab_handle") or handle
-                if wait_after_open:
-                    work_actions.insert(0, {"type": "wait", "for": "network_idle", "timeout_s": 4, "stable_ms": 300, "required": False})
-            if semantic_fields:
-                work_actions.append({"type": "extract", "fields": semantic_fields, "max_chars": 6_000})
-            elif not requested_actions:
-                work_actions.append({
-                    "type": "extract",
-                    "fields": [
-                        {"name": "h1", "selector": "h1", "attr": "text"},
-                        {"name": "paragraphs", "selector": "p", "attr": "text", "all": True, "max_items": 20},
-                    ],
-                    "max_chars": 3000,
-                })
-            try:
-                result = browser_act(
-                    settings, browser=browser, actions=work_actions, window_index=window_index,
-                    tab_index=tab_index, tab_handle=handle, return_state=return_state,
-                    allow_foreground=allow_foreground,
-                )
-            except HTTPException as exc:
-                if opened:
-                    # The tab was already opened or navigated, so this call did act.
-                    clear_not_executed(exc)
-                raise
-            if opened:
-                result["opened"] = {k: opened.get(k) for k in ("url", "window_index", "tab_index", "tab_handle", "background") if k in opened}
-            closed = False
-            if close_after:
-                if not opened or not handle:
-                    raise HTTPException(status.HTTP_400_BAD_REQUEST, "close_after is only allowed for a tab newly opened by browser_do.")
-                browser_close_tab(settings, browser=browser, tab_handle=handle)
-                closed = True
-            if debug:
-                if closed:
-                    result["closed"] = True
-                return result
-            data: Dict[str, Any] = {}
-            final_url = None
-            final_title = None
-            extraction_meta: Dict[str, Any] = {}
-            errors = []
-            scans: List[Dict[str, Any]] = []
-            read: Optional[Dict[str, Any]] = None
-            pdf: Optional[Dict[str, Any]] = None
-            network: Optional[Dict[str, Any]] = None
-            for item in result.get("actions") or []:
-                if item.get("type") == "pdf" and item.get("ok") is not False:
-                    pdf = {key: item[key] for key in (
-                        "path", "artifact_id", "sha256", "size", "method", "chrome_print_error") if key in item}
-                if item.get("type") == "network" and item.get("ok") is not False:
-                    network = {key: value for key, value in item.items() if key not in {"ok", "type"}}
-                if item.get("type") == "read" and item.get("ok") is not False:
-                    read = {key: item[key] for key in (
-                        "text", "offset", "returned_chars", "total_chars", "next_offset", "complete", "headings",
-                        "loaded", "coverage") if key in item}
-                    final_url = item.get("url") or final_url
-                    final_title = item.get("title") or final_title
-                if item.get("type") == "scan" and item.get("ok") is not False:
-                    scans.append({key: item[key] for key in (
-                        "items", "count", "stopped", "complete", "has_more", "next_cursor", "total_seen",
-                        "steps", "key_field", "coverage", "duration_ms") if key in item})
-                if item.get("type") == "extract" and isinstance(item.get("data"), dict):
-                    data.update(item["data"])
-                    for key in ("matched_counts", "fields"):
-                        extraction_meta.setdefault(key, {}).update(item.get(key) or {})
-                    extraction_meta["truncated"] = bool(extraction_meta.get("truncated") or item.get("truncated"))
-                    extraction_meta["complete"] = not extraction_meta["truncated"]
-                    extraction_meta["coverage"] = "currently_rendered_matches"
-                    final_url = item.get("url") or final_url
-                    final_title = item.get("title") or final_title
-                if item.get("ok") is False or item.get("matched") is False:
-                    errors.append({k: item.get(k) for k in ("type", "error", "for", "timed_out") if item.get(k) is not None})
-            progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
-            compact: Dict[str, Any] = {
-                "ok": bool(result.get("ok")),
-                "data": data,
-                "url": final_url or ((result.get("state") or {}).get("url") if isinstance(result.get("state"), dict) else None) or progress.get("url"),
-                "title": final_title or ((result.get("state") or {}).get("title") if isinstance(result.get("state"), dict) else None) or progress.get("title"),
-                "tab_handle": handle,
-                "action_count": result.get("action_count"),
-                "internal_js_calls": result.get("internal_js_calls"),
-                "duration_ms": result.get("duration_ms"),
-                "closed": closed,
-                "mutation_dispatched": bool(result.get("mutation_dispatched") or opened),
-            }
-            compact.update(extraction_meta)
-            if read is not None:
-                compact["read"] = read
-            if pdf is not None:
-                compact["pdf"] = pdf
-            if network is not None:
-                compact["network"] = network
-            if len(scans) == 1:
-                compact["scan"] = scans[0]
-            elif scans:
-                compact["scans"] = scans
-            if progress:
-                compact["progress"] = progress
-            if errors:
-                compact["errors"] = errors
-            if return_state != "none" and result.get("state") is not None:
-                compact["state"] = result.get("state")
-            return _fit_browser_do_output(compact)
-        outcome = await asyncio.to_thread(_log, audit_logger, "browser_do", work)
+        if tabs is not None or urls is not None:
+            return await _browser_do_many(
+                browser, urls, tabs, actions, url=url, tab_handle=tab_handle, new_tab=new_tab, background=background,
+                allow_foreground=allow_foreground, wait_after_open=wait_after_open, return_state=return_state,
+                close_after=close_after, debug=debug, extract=extract,
+            )
+        outcome = await asyncio.to_thread(_log, audit_logger, "browser_do", lambda: _browser_do_page(
+            browser, url, actions, new_tab, background, window_index, tab_index, tab_handle, wait_after_open,
+            return_state, allow_foreground, close_after, debug, extract))
         if save_as_recipe and str(save_as_recipe).strip() and isinstance(outcome, dict):
             params = {name: param.default for name, param in inspect.signature(_browser_do).parameters.items()
                       if name != "save_as_recipe"}

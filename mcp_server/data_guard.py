@@ -473,6 +473,17 @@ def scan_sensitive_source(tool: str, arguments: Mapping[str, Any], result: Any) 
     return SensitiveSourceScan(bool(reasons), tuple(sorted(reasons)), frozenset(fingerprints), source_class)
 
 
+def browser_call_actions(arguments: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Every action a call carries: its actions plus each browser_do tabs entry's own actions (#140)."""
+    raw = arguments.get("actions")
+    actions = [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, (list, tuple)) else []
+    tabs = arguments.get("tabs")
+    for entry in tabs if isinstance(tabs, (list, tuple)) else []:
+        if isinstance(entry, Mapping) and isinstance(entry.get("actions"), (list, tuple)):
+            actions.extend(item for item in entry["actions"] if isinstance(item, Mapping))
+    return actions
+
+
 def _browser_payload_strings(tool: str, arguments: Mapping[str, Any]) -> list[str]:
     name = str(tool or "")
     if name == "browser_type_selector":
@@ -489,9 +500,7 @@ def _browser_payload_strings(tool: str, arguments: Mapping[str, Any]) -> list[st
         return values
     if name in {"browser_act", "browser_do"}:
         values = []
-        for action in arguments.get("actions") or []:
-            if not isinstance(action, Mapping):
-                continue
+        for action in browser_call_actions(arguments):
             typ = str(action.get("type") or "").lower().replace("-", "_")
             if typ == "fill" and isinstance(action.get("values"), Mapping):
                 values.extend(str(value) for value in action["values"].values() if value is not None)
@@ -788,25 +797,32 @@ def sanitize_tool_arguments(tool: str, arguments: Mapping[str, Any]) -> dict[str
     if name == "browser_type_selector" and "text" in data:
         data["text"] = "[BROWSER INPUT REDACTED]"
     elif name in {"browser_act", "browser_do"}:
-        actions = []
-        for action in data.get("actions") or []:
-            if not isinstance(action, Mapping):
-                actions.append(action)
-                continue
-            copy = dict(action)
-            typ = str(copy.get("type") or "").lower().replace("-", "_")
-            if typ in {"type", "type_text", "paste", "post"}:
-                for key in ("text", "value", "content"):
-                    if key in copy:
-                        copy[key] = "[BROWSER INPUT REDACTED]"
-            if typ == "fill" and isinstance(copy.get("values"), Mapping):
-                # Field labels stay readable; what goes into them does not.
-                copy["values"] = {str(label): "[BROWSER INPUT REDACTED]" for label in copy["values"]}
-            if typ == "autocomplete_many" and isinstance(copy.get("values"), list):
-                copy["values"] = ["[BROWSER INPUT REDACTED]" for _ in copy["values"]]
-            actions.append(copy)
+        def redacted(items: Any) -> list[Any]:
+            actions = []
+            for action in items or []:
+                if not isinstance(action, Mapping):
+                    actions.append(action)
+                    continue
+                copy = dict(action)
+                typ = str(copy.get("type") or "").lower().replace("-", "_")
+                if typ in {"type", "type_text", "paste", "post"}:
+                    for key in ("text", "value", "content"):
+                        if key in copy:
+                            copy[key] = "[BROWSER INPUT REDACTED]"
+                if typ == "fill" and isinstance(copy.get("values"), Mapping):
+                    # Field labels stay readable; what goes into them does not.
+                    copy["values"] = {str(label): "[BROWSER INPUT REDACTED]" for label in copy["values"]}
+                if typ == "autocomplete_many" and isinstance(copy.get("values"), list):
+                    copy["values"] = ["[BROWSER INPUT REDACTED]" for _ in copy["values"]]
+                actions.append(copy)
+            return actions
+
         if "actions" in data:
-            data["actions"] = actions
+            data["actions"] = redacted(data.get("actions"))
+        if isinstance(data.get("tabs"), (list, tuple)):
+            # browser_do tabs=[{tab_handle, actions}] (#140): each tab's own actions too.
+            data["tabs"] = [{**entry, "actions": redacted(entry.get("actions"))}
+                            if isinstance(entry, Mapping) and "actions" in entry else entry for entry in data["tabs"]]
     elif name == "browser_execute_js" and "js" in data:
         data["js"] = "[JAVASCRIPT REDACTED]"
     elif name == "browser_open_url" and data.get("url"):

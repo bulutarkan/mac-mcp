@@ -198,13 +198,45 @@ BrowserActions = Annotated[
     AfterValidator(_validate_actions),
     WithJsonSchema({"type": "array", "minItems": 1, "maxItems": _MAX_ACTIONS, "items": ACTION_ITEM_SCHEMA}),
 ]
+# Same action objects as browser_act; only the type list is repeated to keep the catalog small.
+_COMPACT_ACTIONS_SCHEMA: Dict[str, Any] = {"type": "array", "maxItems": _MAX_ACTIONS, "items": {
+    "type": "object", "description": "Same action object as browser_act.",
+    "properties": {"type": {"type": "string", "enum": list(_ACT_TYPES)}},
+    "required": ["type"], "additionalProperties": True,
+}}
 OptionalBrowserActions = Annotated[
     Optional[List[Dict[str, Any]]],
     AfterValidator(_validate_optional_actions),
-    # Same action objects as browser_act; only the type list is repeated to keep the catalog small.
-    WithJsonSchema({"anyOf": [{"type": "array", "maxItems": _MAX_ACTIONS, "items": {
-        "type": "object", "description": "Same action object as browser_act.",
-        "properties": {"type": {"type": "string", "enum": list(_ACT_TYPES)}},
-        "required": ["type"], "additionalProperties": True,
-    }}, {"type": "null"}], "default": None}),
+    WithJsonSchema({"anyOf": [_COMPACT_ACTIONS_SCHEMA, {"type": "null"}], "default": None}),
+]
+
+
+def _validate_tabs(value: Optional[List[Any]]) -> Optional[List[Any]]:
+    """tabs entries: a tab_handle, or {tab_handle, actions} that runs that tab's own actions (#140)."""
+    if value is None:
+        return None
+    out: List[Any] = []
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            out.append(item)
+            continue
+        if not isinstance(item, dict) or not str(item.get("tab_handle") or "").strip():
+            raise ValueError(f"tabs[{index}] must be a tab_handle or {{tab_handle, actions}}")
+        entry: Dict[str, Any] = {"tab_handle": str(item["tab_handle"]).strip()}
+        if item.get("actions") is not None:
+            if not isinstance(item["actions"], list):
+                raise ValueError(f"tabs[{index}].actions must be a list of actions")
+            entry["actions"] = _validate_actions(item["actions"])
+        out.append(entry)
+    return out
+
+
+BrowserTabs = Annotated[
+    Optional[List[Any]],
+    AfterValidator(_validate_tabs),
+    WithJsonSchema({"anyOf": [{"type": "array", "maxItems": 10, "items": {"anyOf": [
+        {"type": "string"},
+        {"type": "object", "properties": {"tab_handle": {"type": "string"}, "actions": _COMPACT_ACTIONS_SCHEMA},
+         "required": ["tab_handle"], "additionalProperties": False},
+    ]}}, {"type": "null"}], "default": None}),
 ]

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from .data_guard import (
     action_fingerprint,
+    browser_call_actions,
     contains_direct_secret,
     safe_server_approval_target_summary,
     safe_target_summary,
@@ -331,6 +332,28 @@ class SecurityContextManager:
         return "untrusted_web"
 
     @classmethod
+    def _context_values(cls, value: Any, key: str, *, depth: int = 0) -> list[str]:
+        """Every value of key in a result, in order (the pages of a several-page browser_do)."""
+        if depth > 5:
+            return []
+        if isinstance(value, Mapping):
+            found = [str(value[key]).strip()] if value.get(key) is not None and str(value[key]).strip() else []
+            return found + [item for child in value.values() for item in cls._context_values(child, key, depth=depth + 1)]
+        if isinstance(value, (list, tuple)):
+            return [item for child in value[:12] for item in cls._context_values(child, key, depth=depth + 1)]
+        if isinstance(value, str) and value.strip()[:1] in {"{", "["}:
+            try:
+                return cls._context_values(json.loads(value), key, depth=depth + 1)
+            except json.JSONDecodeError:
+                return []
+        if hasattr(value, "model_dump"):
+            try:
+                return cls._context_values(value.model_dump(), key, depth=depth + 1)
+            except Exception:
+                return []
+        return []
+
+    @classmethod
     def _find_context_value(cls, value: Any, key: str, *, depth: int = 0) -> Optional[str]:
         if depth > 4:
             return None
@@ -367,13 +390,8 @@ class SecurityContextManager:
         if tool not in _BROWSER_PROGRESS_TOOLS:
             return None
         if tool in {"browser_act", "browser_do"}:
-            actions = arguments.get("actions") or []
-            if not isinstance(actions, list):
-                return None
             meaningful = []
-            for action in actions:
-                if not isinstance(action, Mapping):
-                    continue
+            for action in browser_call_actions(arguments):
                 typ = str(action.get("type") or "").lower().replace("-", "_")
                 if typ in _PROGRESS_EXEMPT_ACTIONS:
                     continue
@@ -387,6 +405,9 @@ class SecurityContextManager:
                 "tab_index": arguments.get("tab_index"),
                 "actions": meaningful,
             }
+            if isinstance(arguments.get("tabs"), list):
+                payload["tabs"] = [entry if isinstance(entry, str) else entry.get("tab_handle")
+                                   for entry in arguments["tabs"] if isinstance(entry, (str, Mapping))]
             return action_fingerprint(tool, payload)
         return action_fingerprint(tool, arguments)
 
@@ -636,6 +657,11 @@ class SecurityContextManager:
         ):
             return None
         url = self._find_context_value(result, "url") or self._find_context_value(arguments, "url")
+        if tool == "browser_do" and (arguments.get("urls") or arguments.get("tabs")):
+            # Several pages in one call (#140): an untrusted page marks the session, not only the first one found.
+            requested = arguments.get("urls") if isinstance(arguments.get("urls"), list) else []
+            pages = [*self._context_values(result, "url"), *[str(item) for item in requested]]
+            url = next((item for item in pages if self._trust_for_origin(self._origin(item)) == "untrusted_web"), url)
         origin = self._origin(url)
         tab_handle = self._find_context_value(result, "tab_handle") or self._find_context_value(arguments, "tab_handle")
         tab_title = self._find_context_value(result, "title")
@@ -796,6 +822,11 @@ class SecurityContextManager:
                 )
             fingerprint = action_fingerprint(tool, arguments)
             argument_origin = self._origin(arguments.get("url"))
+            if argument_origin is None and isinstance(arguments.get("urls"), list):
+                # browser_do(urls=...) (#140): judge the call by its least trusted page.
+                origins = [self._origin(item) for item in arguments["urls"]]
+                argument_origin = next((item for item in origins if self._trust_for_origin(item) == "untrusted_web"),
+                                       next((item for item in origins if item), None))
             current_target_origin = argument_origin or state.current_origin
             source_origin = state.provenance_origin or current_target_origin
             current_origin_is_untrusted = self._trust_for_origin(current_target_origin) == "untrusted_web"
