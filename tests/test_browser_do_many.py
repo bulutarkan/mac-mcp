@@ -163,6 +163,23 @@ class BrowserDoManyTests(unittest.TestCase):
         self.assertEqual("http://127.0.0.1/save", acted["actions"][1]["requests"][0]["url"])
         self.assertEqual(({"h1": "R"}, "t-read"), (read["data"], read["tab_handle"]))
 
+    def test_a_known_failure_in_one_tab_leaves_the_call_outcome_known(self) -> None:
+        # A delegated agent's checkpoint stops every later side effect after an unknown outcome; a fill
+        # that failed on one field it did not change is a known failure, not an unknown one.
+        known = {"ok": False, "error": "fill_incomplete", "outcome_unknown": False, "mutation_dispatched": True,
+                 "actions": [{"type": "fill", "ok": False, "outcome": "failed", "outcome_unknown": False}]}
+        unclear = {"ok": False, "error": "chrome_debugger_evaluate_failed", "mutation_dispatched": True, "actions": []}
+        for second, expected in ((known, False), (unclear, True)):
+            def fake_act(_settings, **kwargs):
+                if kwargs["tab_handle"] == "t-a":
+                    return {"ok": True, "actions": [{"type": "fill", "ok": True, "outcome": "confirmed"}]}
+                return dict(second)
+
+            with self.subTest(expected=expected), patch.object(main, "browser_act", side_effect=fake_act):
+                out = self._call({"tabs": [{"tab_handle": "t-a", "actions": [{"type": "fill", "values": {"A": "1"}}]},
+                                           {"tab_handle": "t-b", "actions": [{"type": "fill", "values": {"A": "2"}}]}]})
+            self.assertEqual((False, 1, expected), (out["ok"], out["failed_count"], out["outcome_unknown"]))
+
     def test_refusals_happen_before_anything_runs(self) -> None:
         cases = [
             {"urls": [], "actions": [{"type": "read"}]},

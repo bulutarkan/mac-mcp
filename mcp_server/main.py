@@ -2606,9 +2606,15 @@ def create_app():
             pages = list(await asyncio.gather(*(run(job) for job in jobs)))
         else:
             pages = [await run(job) for job in jobs]
-        return {"ok": all(page.get("ok") for page in pages), "tabs": pages, "tab_count": len(pages),
-                "failed_count": sum(1 for page in pages if not page.get("ok")),
-                "dispatch": "concurrent" if concurrent and len(jobs) > 1 else "sequential"}
+        failed = [page for page in pages if not page.get("ok")]
+        outcome = {"ok": not failed, "tabs": pages, "tab_count": len(pages), "failed_count": len(failed),
+                   "dispatch": "concurrent" if concurrent and len(jobs) > 1 else "sequential"}
+        if failed:
+            # A page whose failure is known (nothing ran, or the failing step changed nothing) leaves the
+            # call's outcome known, so a delegated agent's checkpoint does not stop every later action.
+            outcome["outcome_unknown"] = any(
+                page.get("not_executed") is not True and page.get("outcome_unknown") is not False for page in failed)
+        return outcome
 
     @mcp.tool(
         name="browser_do",
