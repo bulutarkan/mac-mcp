@@ -370,7 +370,8 @@ def format_check(info: UpdateInfo) -> str:
 
 
 def _tracked_files(repo: Path, commit: str) -> list[str]:
-    out = _git(repo, "ls-tree", "-r", "--name-only", commit, "--", "mcp_server", "menu_app")
+    # requirements.lock lives at the repository root: the dependency install below reads the runtime's copy.
+    out = _git(repo, "ls-tree", "-r", "--name-only", commit, "--", "mcp_server", "menu_app", "requirements.lock")
     return [line for line in out.splitlines() if line and not line.endswith("/")]
 
 
@@ -1331,6 +1332,21 @@ def _deps_changed(repo: Path, deployed: str, target: str) -> bool:
     return bool(changed.strip())
 
 
+def _runtime_lock_stale(repo: Path, runtime: Path, target: str) -> bool:
+    """Whether the runtime's dependency lock differs from the release's.
+
+    Updaters before 2.3.1 r3 never copied the root requirements.lock, so a dependency change they
+    installed left the old set in place; the next update installs the release's set.
+    """
+    wanted = _git(repo, "rev-parse", "--verify", "--quiet", f"{target}:requirements.lock", check=False).strip()
+    if not wanted:
+        return False
+    lock = runtime / "requirements.lock"
+    if not lock.is_file():
+        return True
+    return _git(repo, "hash-object", str(lock), check=False).strip() != wanted
+
+
 def _remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok=True)
@@ -1990,7 +2006,8 @@ def apply_update(
             )
         _test_update_checkpoint_hook(status)
 
-    deps_changed = _deps_changed(repo_path, info.deployed_commit, info.target_commit)
+    deps_changed = (_deps_changed(repo_path, info.deployed_commit, info.target_commit)
+                    or _runtime_lock_stale(repo_path, runtime_path, info.target_commit))
     try:
         current_branch = _git(repo_path, "branch", "--show-current")
         if current_branch != expected_branch:

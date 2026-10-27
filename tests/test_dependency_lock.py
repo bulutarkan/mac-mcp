@@ -58,6 +58,35 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn('--require-hashes \\\n      -r "$RUNTIME_DIR/requirements.lock"', text)
         self.assertIn("--no-deps --no-build-isolation", text)
 
+    def test_updater_copies_the_root_lock_and_heals_a_stale_one(self) -> None:
+        # Updaters before 2.3.1 r3 synced only mcp_server/ and menu_app/: the root requirements.lock never
+        # reached the runtime, so a dependency change "installed" the old set again.
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo, runtime = Path(td) / "repo", Path(td) / "runtime"
+            (repo / "mcp_server").mkdir(parents=True)
+            runtime.mkdir()
+            git = lambda *args: subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            (repo / "mcp_server" / "x.py").write_text("x = 1\n", encoding="utf-8")
+            (repo / "requirements.lock").write_text("mcp==1.28.1\n", encoding="utf-8")
+            git("add", "-A")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "old")
+            old = git("rev-parse", "HEAD")
+            (repo / "requirements.lock").write_text("mcp==1.30.0\n", encoding="utf-8")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "new")
+            new = git("rev-parse", "HEAD")
+
+            self.assertIn("requirements.lock", update_helper._tracked_files(repo, new))
+            (runtime / "requirements.lock").write_text("mcp==1.28.1\n", encoding="utf-8")
+            self.assertTrue(update_helper._runtime_lock_stale(repo, runtime, new))
+            self.assertFalse(update_helper._runtime_lock_stale(repo, runtime, old))
+            (runtime / "requirements.lock").write_text("mcp==1.30.0\n", encoding="utf-8")
+            self.assertFalse(update_helper._runtime_lock_stale(repo, runtime, new))
+            (runtime / "requirements.lock").unlink()
+            self.assertTrue(update_helper._runtime_lock_stale(repo, runtime, new))
+
     def test_updater_watches_and_installs_the_lock(self) -> None:
         with patch.object(update_helper, "_git", return_value="requirements.lock\n") as git:
             self.assertTrue(update_helper._deps_changed(ROOT, "a", "b"))
