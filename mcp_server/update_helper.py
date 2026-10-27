@@ -409,6 +409,11 @@ def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str
             before = dst.read_bytes() if dst.exists() else None
             data = src.read_bytes()
             if before != data:
+                # The lock is generated, never a local customization: a different copy is one an updater
+                # before 2.3.1 r3 left behind, and the release's lock replaces it.
+                if rel == "requirements.lock":
+                    source_copies.append(rel)
+                    continue
                 # A file copied from newer source (on the way to this release) is not a local
                 # customization: it takes the update's version instead of conflicting with it.
                 if _git(repo, "hash-object", "--", str(src), check=False).strip() in _source_versions(repo, deployed, target, rel):

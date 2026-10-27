@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import re
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -86,6 +88,40 @@ class DependencyLockTests(unittest.TestCase):
             self.assertFalse(update_helper._runtime_lock_stale(repo, runtime, new))
             (runtime / "requirements.lock").unlink()
             self.assertTrue(update_helper._runtime_lock_stale(repo, runtime, new))
+
+    def test_a_stale_runtime_lock_is_not_a_local_customization(self) -> None:
+        # 2.3.1 r2 runtimes kept the original lock while their deployed commit had a newer one: the merge
+        # must take the release's lock, not try to keep the old one as an overlay.
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo, runtime = Path(td) / "repo", Path(td) / "runtime"
+            (repo / "mcp_server").mkdir(parents=True)
+            (runtime / "mcp_server").mkdir(parents=True)
+            git = lambda *args: subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+            commit = lambda message: git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", message)
+            git("init", "-q")
+            (repo / "mcp_server" / "x.py").write_text("x = 1\n", encoding="utf-8")
+            (repo / "requirements.lock").write_text("mcp==1.28.1\n", encoding="utf-8")
+            git("add", "-A")
+            commit("original")
+            (repo / "requirements.lock").write_text("mcp==1.30.0\n", encoding="utf-8")
+            commit("deployed")
+            deployed = git("rev-parse", "HEAD")
+            (repo / "mcp_server" / "x.py").write_text("x = 2\n", encoding="utf-8")
+            commit("target")
+            target = git("rev-parse", "HEAD")
+            (runtime / "mcp_server" / "x.py").write_text("x = 1\n", encoding="utf-8")
+            (runtime / "requirements.lock").write_text("mcp==1.28.1\n", encoding="utf-8")
+
+            temp_root = Path(td) / "tmp"
+            temp_root.mkdir()
+            with redirect_stdout(io.StringIO()):
+                stage, overlays = update_helper._prepare_runtime_merge(repo, runtime, deployed, target, temp_root)
+            self.assertEqual(0, overlays)
+            self.assertEqual("mcp==1.30.0\n", (stage / "requirements.lock").read_text(encoding="utf-8"))
+            self.assertEqual("x = 2\n", (stage / "mcp_server" / "x.py").read_text(encoding="utf-8"))
+            self.assertTrue(update_helper._runtime_lock_stale(repo, runtime, target))
 
     def test_updater_watches_and_installs_the_lock(self) -> None:
         with patch.object(update_helper, "_git", return_value="requirements.lock\n") as git:
