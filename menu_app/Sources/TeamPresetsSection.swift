@@ -543,10 +543,21 @@ struct TeamPresetBuilder: View {
             Text(original == nil ? "New team" : "Edit team")
                 .font(SettingsType.meta).foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                TextField("Team name", text: $preset.name, prompt: Text("Name your team"))
+                // The placeholder is drawn here: a plain field's own prompt showed nearly as dark as a typed
+                // name in this large font, so an empty field read as already named or as having no hint.
+                TextField("", text: $preset.name)
                     .textFieldStyle(.plain)
                     .font(.system(size: 22, weight: .semibold, design: .rounded))
                     .accessibilityLabel("Team name")
+                    .background(alignment: .leading) {
+                        if preset.name.isEmpty {
+                            Text("Team name")
+                                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.tertiary)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                 Text("\(preset.members.count) of \(TeamPreset.maxMembers)")
                     .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -754,6 +765,10 @@ private struct BenchChip: View {
 
     @MacMCPState private var hovering = false
 
+    /// A rounded rectangle at full radius, not Capsule: Capsule drew a short line on each side of the chip,
+    /// just outside its curve.
+    private static let shape = RoundedRectangle(cornerRadius: 100, style: .circular)
+
     var body: some View {
         HStack(spacing: 7) {
             ProviderToken(provider: provider, size: 22)
@@ -761,11 +776,11 @@ private struct BenchChip: View {
                 .font(.system(size: 12, weight: .medium))
         }
         .padding(.leading, 5).padding(.trailing, 11).padding(.vertical, 5)
-        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(Capsule().strokeBorder(ProviderTokenStyle.tint(provider).opacity(hovering ? 0.7 : 0.25)))
+        .background(Self.shape.fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(Self.shape.strokeBorder(ProviderTokenStyle.tint(provider).opacity(hovering ? 0.7 : 0.25)))
         .shadow(color: .black.opacity(hovering ? 0.12 : 0.05), radius: hovering ? 3 : 1, y: 1)
         .opacity(full ? 0.5 : 1)
-        .contentShape(Capsule())
+        .contentShape(Self.shape)
         .onHover { inside in withAnimation(AppMotion.micro) { hovering = inside } }
         .onTapGesture { if !full { add() } }
         .draggable(TeamPresetBuilder.providerPayload + provider) {

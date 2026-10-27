@@ -68,6 +68,19 @@ class TeamPresetsSourceTests(unittest.TestCase):
         self.assertNotRegex(code, re.compile(r"Binding\(\$"))
         self.assertIn("Binding(get: { draft ?? current }, set: { draft = $0 })", section)
 
+    def test_builder_name_placeholder_and_bench_chip_outline(self) -> None:
+        section = source("TeamPresetsSection.swift")
+        builder = section[section.index("private func nameField"):section.index("// MARK: Bench")]
+        # The empty team name shows a faint "Team name" (the plain field's prompt read like a typed name).
+        self.assertIn('Text("Team name")', builder)
+        self.assertIn("if preset.name.isEmpty {", builder)
+        self.assertIn(".foregroundStyle(.tertiary)", builder)
+        self.assertIn('.accessibilityLabel("Team name")', builder)
+        # Capsule drew a short line just outside each bench chip's sides; a full-radius rounded rectangle does not.
+        chip = section[section.index("private struct BenchChip"):section.index("private struct EmptySlot")]
+        self.assertNotIn("Capsule()", chip)
+        self.assertIn("RoundedRectangle(cornerRadius: 100, style: .circular)", chip)
+
     def test_section_is_accessible_and_uses_the_state_alias(self) -> None:
         section = source("TeamPresetsSection.swift")
         self.assertNotRegex(section, re.compile(r"(?<![A-Za-z0-9_])@State\b"))
