@@ -15,7 +15,7 @@ from .agent_admission import (
     release as admission_release,
     request_resource_lease,
 )
-from . import decision_engine
+from . import ax_watch, decision_engine
 from .workspace_arbitration import native_app_resource_id, native_window_resource_id
 
 _ALLOWED_TOOLS = frozenset({
@@ -30,13 +30,17 @@ _ALLOWED_TOOLS = frozenset({
     "browser_find",
     "browser_act",
     "browser_do",
+    # Download -> upload in one plan; the nested call keeps every identity, egress and Safari owner check.
+    "browser_upload_artifact",
 })
 _READ_ONLY_RECOVERY_TOOLS = frozenset({
     "mac_snapshot", "mac_observe", "browser_list_tabs", "browser_observe", "browser_find",
 })
 _MUTATING_TOOLS = frozenset({
-    "open_app", "mac_act", "mac_app", "browser_close_tab", "browser_act", "browser_do",
+    "open_app", "mac_act", "mac_app", "browser_close_tab", "browser_act", "browser_do", "browser_upload_artifact",
 })
+# A failed upload may already have asked the owner or brought Safari forward: never retry, rebind or fall back.
+_NEVER_REPLAYED_TOOLS = frozenset({"browser_upload_artifact"})
 _CLIPBOARD_BACKED_NATIVE_ACTIONS = frozenset({"type", "type_text", "paste"})
 _READ_ONLY_MAC_APP_ACTIONS = frozenset({
     "capabilities",
@@ -51,6 +55,14 @@ _READ_ONLY_MAC_APP_ACTIONS = frozenset({
     "read_messages",
     "search_messages",
 })
+# A native wait_until reads again as soon as the app posts an Accessibility notification instead of every
+# poll_ms; a read never starts sooner than _AX_WAKE_MIN_GAP_S (or poll_ms when smaller) after the last one
+# ended, so a busy app costs no more reads than default polling. Without a notification it still reads every
+# max(poll_ms, _AX_WAKE_FALLBACK_S), so a missed notification costs latency, never the result; without a
+# watcher (not enabled, app refuses notifications, another wait holds it) it polls every poll_ms as before.
+_AX_WAKE_TOOLS = frozenset({"mac_observe", "mac_snapshot"})
+_AX_WAKE_FALLBACK_S = 0.5
+_AX_WAKE_MIN_GAP_S = 0.15
 _MAX_STEPS = 8
 _MAX_EXPANDED_STEPS = 16
 _MAX_ACTION_UNITS = 24
@@ -647,7 +659,7 @@ def _uncertain_or_terminal(payload: Any) -> bool:
 
 
 def _safe_recovery_candidate(tool: str, payload: Any) -> bool:
-    if _uncertain_or_terminal(payload):
+    if tool in _NEVER_REPLAYED_TOOLS or _uncertain_or_terminal(payload):
         return False
     if tool in _READ_ONLY_RECOVERY_TOOLS:
         return isinstance(payload, Mapping) and bool(payload.get("retryable") or payload.get("observe_again"))
@@ -1053,6 +1065,33 @@ def _semantic_target_match(target: Mapping[str, Any], payload: Any) -> tuple[boo
     return True, dict(candidates[0][1]), "target_found"
 
 
+async def _pause_before_next_read(
+    tool_name: str, payload: Any, *, poll_s: float, deadline: float, wake: dict[str, Any],
+) -> None:
+    read_ended = time.monotonic()
+    remaining = deadline - read_ended
+    if remaining <= 0:
+        return
+    pid = payload.get("app_pid") if tool_name in _AX_WAKE_TOOLS and isinstance(payload, Mapping) else None
+    if isinstance(pid, int) and pid > 0:
+        if wake.get("pid") != pid:
+            wake.update(pid=pid, since=None)
+        reply = await asyncio.to_thread(
+            ax_watch.wait_for_change, pid, wake.get("since"), min(max(poll_s, _AX_WAKE_FALLBACK_S), remaining),
+        )
+        if reply is not None:
+            wake["since"] = reply["gen"]
+            if reply["changed"]:
+                wake["woken"] = int(wake.get("woken") or 0) + 1
+                gap = min(poll_s, _AX_WAKE_MIN_GAP_S) - (time.monotonic() - read_ended)
+                if gap > 0:
+                    await asyncio.sleep(min(gap, max(0.0, deadline - time.monotonic())))
+            else:
+                wake["fallback_reads"] = int(wake.get("fallback_reads") or 0) + 1
+            return
+    await asyncio.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
+
 async def _execute_wait_until(
     call_tool: NestedCaller,
     *,
@@ -1066,6 +1105,7 @@ async def _execute_wait_until(
     last_reason = "wait_condition_not_met"
     last_payload: Any = None
     last_material_payload: Any = None
+    wake: dict[str, Any] = {}
     while time.monotonic() < deadline:
         budget.check_time(str(step.get("id")))
         arguments = _resolve_refs(step.get("arguments") or {}, outputs)
@@ -1113,6 +1153,8 @@ async def _execute_wait_until(
                 return payload, {
                     "attempts": attempts,
                     "status": "condition_met",
+                    **({"ax_wake": {key: int(wake.get(key) or 0) for key in ("woken", "fallback_reads")}}
+                       if wake.get("since") is not None else {}),
                     "wait_strategy": (
                         ((payload.get("wait") or {}).get("strategy"))
                         if isinstance(payload, Mapping) and isinstance(payload.get("wait"), Mapping)
@@ -1125,7 +1167,9 @@ async def _execute_wait_until(
             last_reason = reason
             if _uncertain_or_terminal(payload):
                 raise _PlanStop(reason, "wait_until nested read failed terminally", str(step.get("id")))
-        await asyncio.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+        await _pause_before_next_read(
+            tool_name, payload, poll_s=poll_s, deadline=deadline, wake=wake,
+        )
     raise _PlanStop(
         "WAIT_UNTIL_TIMEOUT",
         f"wait_until timed out after {float(step.get('timeout_s') or 5.0):g}s: {last_reason}",

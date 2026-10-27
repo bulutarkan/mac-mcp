@@ -267,8 +267,26 @@ def _public(manifest: Mapping[str, Any], *, full: bool = False) -> Dict[str, Any
     return out
 
 
+def browser_do_steps(arguments: Mapping[str, Any], defaults: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """The one-step plan that replays a browser_do call, so a successful run can become a recipe draft.
+
+    Only arguments the caller set (not None, not the tool's default) are kept, so the review lists what matters.
+    """
+    kept = {key: copy.deepcopy(value) for key, value in arguments.items()
+            if value is not None and (key not in defaults or defaults[key] != value)}
+    steps = [{"id": "browse", "tool": "browser_do", "arguments": json.loads(json.dumps(kept, default=str))}]
+    from .computer_plan import ComputerPlanError, _validate_steps
+
+    try:
+        _validate_steps(copy.deepcopy(steps), version=2)
+    except ComputerPlanError as exc:
+        raise RecipeError("RECIPE_PLAN_INVALID", f"This browser_do call cannot be replayed as a plan: {exc}") from exc
+    return steps
+
+
 def capture_draft(
     name: str, *, steps: Any, plan_version: int, budgets: Mapping[str, Any], plan_result: Mapping[str, Any],
+    captured_from: str = "computer_plan",
 ) -> Dict[str, Any]:
     """Save a successful plan as a draft that must be reviewed before it can run."""
     if not plan_result.get("ok"):
@@ -289,7 +307,7 @@ def capture_draft(
         "budgets": {key: budgets[key] for key in _BUDGET_KEYS if key in budgets},
         "consequential": _consequential(steps),
         "source": {
-            "captured_from": "computer_plan",
+            "captured_from": captured_from,
             "captured_at": now,
             "steps_executed": (plan_result.get("plan_stats") or {}).get("steps_executed"),
         },

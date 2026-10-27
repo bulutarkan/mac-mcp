@@ -3933,6 +3933,18 @@
                     "default": null,
                     "title": "Extract"
                   },
+                  "save_as_recipe": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Save As Recipe"
+                  },
                   "idempotency_key": {
                     "type": "string",
                     "minLength": 8,

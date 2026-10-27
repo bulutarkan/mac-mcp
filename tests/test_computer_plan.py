@@ -400,5 +400,115 @@ class ComputerPlanPolicyTests(unittest.TestCase):
         asyncio.run(run())
 
 
+    def test_download_then_upload_run_in_one_plan(self) -> None:
+        async def run() -> None:
+            calls: list[tuple[str, dict]] = []
+
+            async def caller(tool: str, arguments: dict):
+                calls.append((tool, dict(arguments)))
+                if tool == "browser_act":
+                    return {"ok": True, "tab_handle": "tab-src", "actions": [{
+                        "ok": True, "type": "click",
+                        "expect": {"download": {"artifact_id": "art_1", "path": "/tmp/report.pdf",
+                                                "filename": "report.pdf"}, "met": True},
+                    }]}
+                if tool == "browser_upload_artifact":
+                    return {"ok": True, "tab_handle": arguments["tab_handle"],
+                            "artifact": {"artifact_id": arguments["artifact_id"]}}
+                raise AssertionError(tool)
+
+            download = "dl.actions.0.expect.download"
+            steps = [
+                {"id": "dl", "tool": "browser_act", "arguments": {
+                    "browser": "Google Chrome", "tab_handle": "tab-src",
+                    "actions": [{"type": "click", "text": "Download", "expect": {"download": True}}]}},
+                {"id": "up", "tool": "browser_upload_artifact",
+                 "preconditions": [{"ref": "dl.actions.0.expect.met", "equals": True}],
+                 "arguments": {"browser": "Google Chrome", "tab_handle": "tab-dst", "css_selector": "#file",
+                               "artifact_id": {"$ref": f"{download}.artifact_id"},
+                               "path": {"$ref": f"{download}.path"}}},
+            ]
+            result = await execute_computer_plan(caller, steps=steps, plan_version=2)
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(["browser_act", "browser_upload_artifact"], [tool for tool, _ in calls])
+            self.assertEqual({"artifact_id": "art_1", "path": "/tmp/report.pdf"},
+                             {key: calls[1][1][key] for key in ("artifact_id", "path")})
+            self.assertEqual(1, result["plan_stats"]["model_tool_calls"])
+            # The upload claims its own tab for writing, like any other mutating browser step.
+            self.assertIn({"kind": "browser_tab", "id": "tab-dst", "mode": "write"},
+                          derive_computer_plan_resources(steps))
+
+        asyncio.run(run())
+
+    def test_failed_upload_is_never_retried_rebound_or_replaced_by_a_fallback(self) -> None:
+        async def run() -> None:
+            calls: list[str] = []
+
+            async def caller(tool: str, arguments: dict):
+                calls.append(tool)
+                if tool == "browser_upload_artifact":
+                    # Even a code that is normally safe to rebind and retry must not replay an upload.
+                    return {"ok": False, "reason_code": "STALE_OBSERVATION", "error": "stale_observation"}
+                return {"ok": True, "observation_id": "obs", "elements": []}
+
+            result = await execute_computer_plan(caller, plan_version=2, steps=[{
+                "id": "up", "tool": "browser_upload_artifact", "retry": {"max_attempts": 4},
+                "arguments": {"browser": "Safari", "tab_handle": "tab-a", "css_selector": "#f",
+                              "artifact_id": "art_1", "path": "/tmp/a.pdf"},
+                "fallback": {"tool": "browser_upload_artifact", "arguments": {
+                    "browser": "Safari", "tab_handle": "tab-a", "css_selector": "#g",
+                    "artifact_id": "art_1", "path": "/tmp/a.pdf"}},
+            }])
+            self.assertFalse(result["ok"])
+            self.assertEqual("STALE_OBSERVATION", result["reason_code"])
+            self.assertEqual(["browser_upload_artifact"], calls)
+            self.assertEqual(0, result["plan_stats"]["recoveries_used"])
+
+        asyncio.run(run())
+
+    def test_nested_upload_keeps_the_web_to_host_gate(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                telemetry = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+                context = PolicyContext(profile="standard", actor="test")
+                mcp = ObservedFastMCP(
+                    name="computer-plan-upload-security",
+                    telemetry=telemetry,
+                    policy_context_provider=lambda: context,
+                )
+                executed: list[str] = []
+                upload_file = Path(td) / "report.txt"
+                upload_file.write_text("quarterly numbers", encoding="utf-8")
+
+                @mcp.tool(name="browser_observe", structured_output=False)
+                def browser_observe(browser: str = "Safari") -> dict:
+                    executed.append("browser_observe")
+                    return {"ok": True, "url": "https://untrusted.example/page", "tab_handle": "tab-test"}
+
+                @mcp.tool(name="browser_upload_artifact", structured_output=False)
+                def browser_upload_artifact(browser: str, css_selector: str, artifact_id: str, path: str,
+                                            tab_handle: str = "") -> dict:
+                    executed.append("browser_upload_artifact")
+                    return {"ok": True}
+
+                @mcp.tool(name="computer_plan", structured_output=False)
+                async def computer_plan(steps: list[dict], max_seconds: float = 45.0) -> dict:
+                    return await execute_computer_plan(mcp.call_tool, steps=steps, max_seconds=max_seconds)
+
+                result_blocks = await mcp.call_tool("computer_plan", {"steps": [
+                    {"id": "web", "tool": "browser_observe", "arguments": {"browser": "Safari"}},
+                    {"id": "up", "tool": "browser_upload_artifact", "arguments": {
+                        "browser": "Safari", "tab_handle": "tab-test", "css_selector": "#f",
+                        "artifact_id": "art_1", "path": str(upload_file)}},
+                ]})
+                payload = json.loads(result_blocks[-1].text)
+                self.assertFalse(payload["ok"])
+                self.assertEqual("STEP_CALL_FAILED", payload["reason_code"])
+                self.assertEqual(["browser_observe"], executed)
+                self.assertIn("approval", payload["error"])
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     unittest.main()

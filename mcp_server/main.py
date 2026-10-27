@@ -5,6 +5,7 @@ import concurrent.futures
 import contextlib
 from pathlib import Path
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -1835,6 +1836,23 @@ def create_app():
             ),
         )
 
+    def _save_recipe_draft(name: str, result: Dict[str, Any], plan: Any, *, captured_from: str) -> Dict[str, Any]:
+        """Opt-in capture: only a successful run is saved, and only as a draft that must be reviewed and
+        activated before it can run. plan() returns (steps, plan_version, budgets)."""
+        if not result.get("ok"):
+            return {"saved": False, "reason": "The run did not finish successfully."}
+        if not _caller_may_write():
+            # A caller that may only read (a read-only profile, another Mac with read-only access) writes
+            # nothing here, a draft included (#79).
+            return {"saved": False, "reason_code": "read_only_caller",
+                    "reason": "This caller may only read here, so no recipe draft is saved."}
+        try:
+            steps, plan_version, budgets = plan()
+            return recipes.capture_draft(name, steps=steps, plan_version=plan_version, budgets=budgets,
+                                         plan_result=result, captured_from=captured_from)
+        except recipes.RecipeError as exc:
+            return {"saved": False, "reason_code": exc.code, "reason": str(exc)}
+
     def _computer_plan_resources(steps: List[Dict[str, Any]], resources: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
         # Model-supplied resources may add constraints, but cannot remove static
         # safety claims derived from the actual plan steps (for example clipboard).
@@ -1872,6 +1890,8 @@ def create_app():
             "Mac MCP policy, scope, telemetry, leases and action verification. Use {'$ref':'step_id.path'} to reuse outputs. "
             "A step is {'id': 'open_note', 'tool': 'mac_app', 'arguments': {'app': 'Notes', 'action': 'create_note', "
             "'title': 'Plan'}}; kind 'wait_until' (read-only tool) and 'branch' add control flow. "
+            "A browser_upload_artifact step can take a browser_act download in the same plan: artifact_id "
+            "{'$ref':'dl.actions.0.expect.download.artifact_id'} and path (.path); it is never retried. "
             "Every run gets a run_id (dashboard timeline). A step may set evidence: before|after|both to keep a checkpoint "
             "screenshot of its tab or window when the owner turned run evidence on; never kept while a password field shows."
         ),
@@ -1908,25 +1928,12 @@ def create_app():
         if run_evidence.record_run(run_id, kind="plan", name=save_as_recipe, started_at=run_started, result=result):
             result["run_id"] = run_id
         if save_as_recipe and str(save_as_recipe).strip():
-            # Opt-in capture: only a successful plan is saved, and only as a draft
-            # that must be reviewed and activated before it can run.
-            if not result.get("ok"):
-                result["recipe_draft"] = {"saved": False, "reason": "The plan did not finish successfully."}
-            elif not _caller_may_write():
-                # A caller that may only read (a read-only profile, another Mac with read-only access) writes
-                # nothing here, a draft included (#79).
-                result["recipe_draft"] = {"saved": False, "reason_code": "read_only_caller",
-                                          "reason": "This caller may only read here, so no recipe draft is saved."}
-            else:
-                try:
-                    result["recipe_draft"] = recipes.capture_draft(
-                        str(save_as_recipe), steps=steps, plan_version=plan_version,
-                        budgets={"max_seconds": max_seconds, "max_recoveries": max_recoveries,
-                                 "max_recovery_seconds": max_recovery_seconds, "max_action_units": max_action_units},
-                        plan_result=result,
-                    )
-                except recipes.RecipeError as exc:
-                    result["recipe_draft"] = {"saved": False, "reason_code": exc.code, "reason": str(exc)}
+            result["recipe_draft"] = _save_recipe_draft(
+                str(save_as_recipe), result, lambda: (steps, plan_version, {
+                    "max_seconds": max_seconds, "max_recoveries": max_recoveries,
+                    "max_recovery_seconds": max_recovery_seconds, "max_action_units": max_action_units}),
+                captured_from="computer_plan",
+            )
         return result
 
     @mcp.tool(
@@ -2347,7 +2354,8 @@ def create_app():
             "For interactive, multi-step work on a page use browser_observe -> batched browser_act -> verify instead. "
             "Leave return_state='none' normally; debug=true can expose raw/full state. "
             "For selector reads use actions=[{type:'extract',fields:[{name:'reviews',selector:'.review',all:true}]}]. "
-            "fields in the result reports counts and exact continuation offsets; partial output never means a full-page read."
+            "fields in the result reports counts and exact continuation offsets; partial output never means a full-page read. "
+            "save_as_recipe='name' keeps a successful run as a recipe draft (review and activate it with recipe)."
         ),
     )
     async def _browser_do(browser: str, url: Optional[str] = None,
@@ -2357,7 +2365,10 @@ def create_app():
                           tab_handle: Optional[str] = None, wait_after_open: bool = True,
                           return_state: DoReturnState = "none", allow_foreground: bool = False,
                           close_after: bool = False, debug: bool = False,
-                          extract: Optional[List[str]] = None) -> Dict[str, Any]:
+                          extract: Optional[List[str]] = None,
+                          save_as_recipe: Optional[str] = None) -> Dict[str, Any]:
+        call_arguments = dict(locals())  # read before anything else is bound here
+
         def work() -> Dict[str, Any]:
             handle = tab_handle
             opened = None
@@ -2485,7 +2496,17 @@ def create_app():
             if return_state != "none" and result.get("state") is not None:
                 compact["state"] = result.get("state")
             return _fit_browser_do_output(compact)
-        return await asyncio.to_thread(_log, audit_logger, "browser_do", work)
+        outcome = await asyncio.to_thread(_log, audit_logger, "browser_do", work)
+        if save_as_recipe and str(save_as_recipe).strip() and isinstance(outcome, dict):
+            params = {name: param.default for name, param in inspect.signature(_browser_do).parameters.items()
+                      if name != "save_as_recipe"}
+            used = {name: call_arguments.get(name) for name in params}
+            outcome["recipe_draft"] = _save_recipe_draft(
+                str(save_as_recipe), outcome,
+                lambda: (recipes.browser_do_steps(used, params), 2, {}),
+                captured_from="browser_do",
+            )
+        return outcome
 
     @mcp.tool(name="browser_execute_js",
               description="Execute JavaScript in a browser tab and return the result.")
