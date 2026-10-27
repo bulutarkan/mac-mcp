@@ -1,3 +1,9 @@
+## 2.3.1 r4 - 2026-10-27
+
+**In short:** a signed checkpoint on the 2.3.1 line; the version stays 2.3.1. It fixes r3's updater: updates after r3 would have stopped on the dependency lock that older updaters left behind.
+
+- `mac-mcp update` no longer treats an old `requirements.lock` in Mac MCP's folder as a local change: the release's lock replaces it and the release's dependencies are installed. Installs on 2.3.1 r2 or earlier go straight to this checkpoint. An install already updated to r3 whose next update stops with "runtime overlay": move the old lock aside (`mv ~/mac-mcp/requirements.lock ~/mac-mcp/requirements.lock.old`) and run `mac-mcp update` again.
+
 ## 2.3.1 r3 - 2026-10-27
 
 **In short:** a signed checkpoint on the 2.3.1 line; the version stays 2.3.1. Updates now really install new dependencies, and an agent can pick several suggestions in one browser step.
