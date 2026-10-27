@@ -78,6 +78,16 @@
     return SAFE_DETAILS.has(detail) ? detail : '';
   }
 
+  // Who is acting (#124): "Research team · Compare prices", set by Mac MCP for a delegated agent.
+  function safeWho(value) {
+    return String(value || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80);
+  }
+
+  function whoParts(who) {
+    const at = who.indexOf(' · ');
+    return at < 0 ? { name: who, task: '' } : { name: who.slice(0, at), task: who.slice(at + 3) };
+  }
+
   function historyLabel(action) {
     return HISTORY_LABELS[action] || 'Worked';
   }
@@ -124,7 +134,7 @@
         .cursor.active { opacity: 1; }
         .cursor svg { display: block; width: 30px; height: 30px; overflow: visible; filter: drop-shadow(0 2px 5px rgba(0,0,0,.34)) drop-shadow(0 0 .5px rgba(0,0,0,.45)); transform-origin: 3.5px 3.5px; transition: transform .14s ease; }
         .cursor.press svg { transform: scale(.84); }
-        .tip { position: absolute; left: 27px; top: 28px; max-width: 220px; padding: 5px 9px 6px; border-radius: 8px; background: rgba(28,28,30,.9); color: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.26), inset 0 0 0 1px rgba(255,255,255,.2); backdrop-filter: blur(12px) saturate(140%); -webkit-backdrop-filter: blur(12px) saturate(140%); font: 600 11.5px/1.2 -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; letter-spacing: -.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transform: translateY(-3px); transition: opacity .18s ease, transform .18s ease; }
+        .tip { position: absolute; left: 27px; top: 28px; max-width: 260px; padding: 5px 9px 6px; border-radius: 8px; background: rgba(28,28,30,.9); color: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.26), inset 0 0 0 1px rgba(255,255,255,.2); backdrop-filter: blur(12px) saturate(140%); -webkit-backdrop-filter: blur(12px) saturate(140%); font: 600 11.5px/1.2 -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; letter-spacing: -.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transform: translateY(-3px); transition: opacity .18s ease, transform .18s ease; }
         .cursor.active .tip.show { opacity: 1; transform: translateY(0); }
         .cursor.flip-x .tip { left: auto; right: 27px; }
         .cursor.flip-y .tip { top: auto; bottom: 28px; }
@@ -145,6 +155,12 @@
         .history-rail.has-history .rail-count { display: flex; }
         .companion.sidebar-open .history-rail { right: calc(var(--panel-w) + 12px); opacity: 1; }
         .companion.sidebar-open .history-rail .rail-chevron { transform: translateX(-1px) rotate(225deg); }
+        /* Idle (#124): once the work ends the rail folds to a thin edge marker; hover or focus opens it again. */
+        .companion.idle:not(.sidebar-open) .history-rail { width: 5px; min-height: 34px; padding: 0; gap: 0; opacity: .38; box-shadow: none; border-radius: 6px 0 0 6px; backdrop-filter: none; -webkit-backdrop-filter: none; }
+        .companion.idle:not(.sidebar-open) .history-rail > * { display: none; }
+        .companion.idle:not(.sidebar-open) .history-rail:hover, .companion.idle:not(.sidebar-open) .history-rail:focus-visible { width: 30px; min-height: 78px; padding: 10px 0 8px; gap: 6px; opacity: .9; }
+        .companion.idle:not(.sidebar-open) .history-rail:hover > .rail-icon, .companion.idle:not(.sidebar-open) .history-rail:hover > .rail-chevron, .companion.idle:not(.sidebar-open) .history-rail:focus-visible > .rail-icon, .companion.idle:not(.sidebar-open) .history-rail:focus-visible > .rail-chevron { display: flex; }
+        .companion.idle:not(.sidebar-open) .history-rail.has-history:hover > .rail-count, .companion.idle:not(.sidebar-open) .history-rail.has-history:focus-visible > .rail-count { display: flex; }
 
         .history-panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: var(--panel-w); pointer-events: none; overflow: hidden; display: flex; flex-direction: column; border-radius: 22px; border: 1px solid var(--line); background: linear-gradient(180deg, var(--surface), var(--surface-2)); color: var(--fg); box-shadow: 0 24px 68px var(--shadow), inset 0 1px 0 rgba(255,255,255,.07); backdrop-filter: none; -webkit-backdrop-filter: none; visibility: hidden; opacity: 0; transform: translate3d(34px,0,0) scale(.985); transform-origin: right center; transition: opacity .23s ease, transform .38s cubic-bezier(.22,.8,.2,1); }
         .companion.sidebar-open .history-panel { pointer-events: auto; visibility: visible; opacity: 1; transform: translate3d(0,0,0) scale(1); backdrop-filter: blur(28px) saturate(135%); -webkit-backdrop-filter: blur(28px) saturate(135%); }
@@ -338,8 +354,10 @@
     const ripple = ui.querySelector('.ripple');
     const live = ui.querySelector('.history-live-status');
     const liveCopy = ui.querySelector('.history-live-copy');
+    const companion = ui.querySelector('.companion');
     const phase = String(event.phase || 'working');
     const action = String(event.action || 'Working');
+    const who = whoParts(safeWho(event.who));
 
     recordHistory(event, ui);
     clearTimeout(hideTimer);
@@ -348,9 +366,13 @@
     clearTimeout(pressTimer);
     frame.classList.toggle('attention', phase === 'attention');
     frame.classList.add('active');
+    companion.classList.remove('idle');
     live.classList.add('active');
     liveCopy.textContent = historyLabel(action);
-    const text = tipLabel(action, safeDetail(event.detail));
+    ui.querySelector('.history-title').textContent = who.name || 'Mac MCP';
+    ui.querySelector('.history-subtitle').textContent = who.task || 'Tab activity';
+    const step = tipLabel(action, safeDetail(event.detail));
+    const text = who.name ? `${who.name} · ${step}` : step;
 
     const x = Number(event.x), y = Number(event.y);
     if (Number.isFinite(x) && Number.isFinite(y)) {
@@ -399,6 +421,7 @@
       cursorAt = null;
       live.classList.remove('active');
       liveCopy.textContent = 'Ready';
+      companion.classList.add('idle');
     };
     hideTimer = setTimeout(finish, phase === 'done' ? 450 : ttl);
     updateAnnouncements(ui, phase, ttl);

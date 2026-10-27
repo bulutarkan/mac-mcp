@@ -18,7 +18,7 @@ from fastapi import HTTPException, status
 
 from .process_supervision import run_osascript
 from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
-from . import applescript_host, browser_tabs, context_handoff, native_focus, privacy_policy
+from . import applescript_host, browser_activity, browser_tabs, context_handoff, native_focus, privacy_policy
 from .chrome_background_bridge import chrome_background_bridge
 from .artifact_pipeline import (
     ArtifactError, drive_native_file_dialog, register_artifact, resolve_artifact, wait_for_file_dialog,
@@ -383,6 +383,9 @@ def _raise_applescript_error(msg: str) -> None:
 
 def _visual_claim_event_js(expected_url: str) -> str:
     expected = json.dumps(str(expected_url or ""))
+    # The agent's short name for the overlay (#124); a chat's tabs keep the plain "Mac MCP".
+    who = browser_activity.visual_label()
+    who_field = f",who:{json.dumps(who)}" if who else ""
     return (
         "(()=>{try{"
         f"const expected={expected};"
@@ -390,7 +393,7 @@ def _visual_claim_event_js(expected_url: str) -> str:
         "const want=new URL(expected),current=new URL(location.href);"
         "if(want.origin!==current.origin||want.pathname!==current.pathname)return false;"
         "const p={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),"
-        "claim:true,phase:'working',action:'Opened',target_kind:'Page',ttl_ms:1800};"
+        f"claim:true,phase:'working',action:'Opened',target_kind:'Page',ttl_ms:1800{who_field}}};"
         "const raw=btoa(unescape(encodeURIComponent(JSON.stringify(p))));"
         "(document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);"
         "try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(_){}"

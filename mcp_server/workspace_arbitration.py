@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextvars
 import ctypes
 import os
 import subprocess
+import threading
+import time
+from contextlib import contextmanager
 from ctypes import c_double, c_uint32
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional
 
 from .agent_admission import AdmissionError, claim_agent_resources
 from .policy import current_policy_context
@@ -153,15 +157,79 @@ def native_app_human_takeover(app: str) -> Optional[Dict[str, Any]]:
 
 
 def browser_human_takeover(browser: str, row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    """Browser tabs never yield to the user being on them.
+    """Browser tabs yield only to the owner's explicit Take over, never to the user being on them.
 
     Delegated agents used to stop whenever their tab was the visible tab of the
     frontmost browser, which also blocked them while the user was only watching
     the work. The owner asked for agents to keep acting on the page they are
-    on, so browser mutations are no longer gated on human presence.
+    on, so presence alone gates nothing; Take over in the menu (#124) does.
     """
-    _ = (browser, row)
-    return None
+    _ = browser
+    return owner_takeover_block(str((row or {}).get("tab_handle") or ""))
+
+
+# Tabs the owner took over from Mac MCP in the menu (#124), by tab handle. In memory: a server
+# restart hands every tab back. The owner's own clicks (owner_action) still reach these tabs.
+_OWNER_TAKEOVERS: Dict[str, Dict[str, Any]] = {}
+_OWNER_TAKEOVER_LOCK = threading.Lock()
+_OWNER_ACTION: contextvars.ContextVar[bool] = contextvars.ContextVar("mac_mcp_owner_browser_action", default=False)
+
+
+@contextmanager
+def owner_action() -> Iterator[None]:
+    """The owner's own click in the menu or dashboard: it may act on a tab they took over."""
+    token = _OWNER_ACTION.set(True)
+    try:
+        yield
+    finally:
+        _OWNER_ACTION.reset(token)
+
+
+def record_owner_takeover(tab_handle: str, record: Mapping[str, Any]) -> Dict[str, Any]:
+    handle = str(tab_handle or "").strip()
+    stored = {key: value for key, value in dict(record).items() if value not in (None, "")}
+    stored.setdefault("taken_at", time.time())
+    with _OWNER_TAKEOVER_LOCK:
+        _OWNER_TAKEOVERS[handle] = stored
+    return dict(stored)
+
+
+def release_owner_takeover(tab_handle: str) -> bool:
+    with _OWNER_TAKEOVER_LOCK:
+        return _OWNER_TAKEOVERS.pop(str(tab_handle or "").strip(), None) is not None
+
+
+def owner_takeover_snapshot() -> Dict[str, Dict[str, Any]]:
+    with _OWNER_TAKEOVER_LOCK:
+        return {handle: dict(record) for handle, record in _OWNER_TAKEOVERS.items()}
+
+
+def owner_takeover_block(tab_handle: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The refusal every Mac MCP caller gets on a tab the owner took over; None when it is free."""
+    handle = str(tab_handle or "").strip()
+    if not handle or _OWNER_ACTION.get():
+        return None
+    with _OWNER_TAKEOVER_LOCK:
+        taken = handle in _OWNER_TAKEOVERS
+    if not taken:
+        return None
+    return {
+        "ok": False,
+        "error": "owner_took_over",
+        "reason_code": "OWNER_TOOK_OVER",
+        "retryable": False,
+        "automatic_retry": False,
+        "human_priority": True,
+        "yielded": True,
+        "owner_took_over": True,
+        "resource_kind": "browser_tab",
+        "tab_handle": handle,
+        "message": (
+            "The owner took over this browser tab in Mac MCP. Do not act on it again and do not retry: "
+            "tell the owner what is left, or go on in another tab if the task allows. "
+            "The owner can hand the tab back from the Mac MCP menu."
+        ),
+    }
 
 
 def native_app_resource_id(

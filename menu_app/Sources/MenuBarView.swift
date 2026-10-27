@@ -84,6 +84,7 @@ struct MenuBarView: View {
         .overlayPreferenceValue(MenuHoverTipKey.self) { target in MenuHoverTipLayer(target: target) }
         .background(HostWindowReader { window in
             host.window = window
+            if state.menuWindow !== window { state.menuWindow = window }
             fitWindow(animated: false)
         })
         .onChange(of: menuHeight) { _ in fitWindow(animated: false) }
@@ -566,7 +567,9 @@ struct MenuBarView: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
 
-                if let browserEvent = state.activeBrowserEvents.first,
+                if !state.browserTabs.isEmpty {
+                    browserTabsCard(state.browserTabs)
+                } else if let browserEvent = state.activeBrowserEvents.first,
                    let context = state.resolvedBrowserContext(for: browserEvent) {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
@@ -1102,32 +1105,56 @@ struct MenuBarView: View {
             }
             .padding(.vertical, 2)
             Divider()
+            // Chrome in the same layout as Safari (#124): connected, needs a reload, or not set up.
+            let chrome = state.chromeCompanion
+            let chromeReady = chrome.connected && !chrome.needsReload
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(.quaternary)
                         .frame(width: 34, height: 34)
                     Image(systemName: "globe")
-                        .foregroundStyle(Color.secondary)
+                        .foregroundStyle(chromeReady ? Color.accentColor : (chrome.connected ? Color.orange : Color.secondary))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Chrome Visual Companion").font(.caption.weight(.semibold))
-                    Text("Chrome companion enables focus-safe background tabs plus DOM/page actions and background-safe visual capture.")
+                    Text(chromeReady ? "Chrome Visual Companion · Connected"
+                         : (chrome.connected ? "Chrome Visual Companion · Needs a reload" : "Chrome Visual Companion"))
+                        .font(.caption.weight(.semibold))
+                    Text(chromeReady
+                         ? "Chrome tabs work in the background: page actions and background-safe visual capture."
+                         : (chrome.connected
+                            ? "Older than this Mac MCP: reload it once at chrome://extensions."
+                            : "Not connected. Chrome Setup loads the companion once."))
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("Chrome Setup…") { state.openChromeExtensionSetup() }
-                    .controlSize(.small)
+                if chromeReady {
+                    Button { Task { await state.refreshChromeCompanion() } } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.borderless).help("Refresh companion status")
+                } else if chrome.connected {
+                    Button("Reload in Chrome…") { state.openChromeExtensionSetup() }
+                        .controlSize(.small)
+                } else {
+                    Button("Chrome Setup…") { state.openChromeExtensionSetup() }
+                        .controlSize(.small)
+                }
             }
             .padding(.vertical, 2)
         } label: {
             HStack {
                 Label("Browser Activity", systemImage: "sparkles.rectangle.stack")
                 Spacer()
-                Text(state.safariExtensionStatus).font(.caption2).foregroundStyle(.secondary)
+                Text(browserCompanionHeader).font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// "Safari On · Chrome Connected": both companions at a glance.
+    private var browserCompanionHeader: String {
+        let chrome = state.chromeCompanion
+        let chromeText = chrome.connected ? (chrome.needsReload ? "Needs a reload" : "Connected") : "Not connected"
+        return "Safari \(state.safariExtensionStatus) · Chrome \(chromeText)"
     }
 
     private var securityCard: some View {
@@ -1520,6 +1547,93 @@ struct MenuBarView: View {
         if values == ["*"] { return "All" }
         if values.isEmpty { return "None" }
         return values.map(capabilityDisplayName).joined(separator: ", ")
+    }
+
+    // MARK: Browser tabs in use (#124)
+
+    /// One row per tab an agent or chat is using: who and what, then Take over, Show Tab and Stop.
+    private func browserTabsCard(_ tabs: [BrowserTabActivity]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                if state.activityStale {
+                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                } else if tabs.contains(where: \.running) {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "globe").foregroundStyle(.secondary).accessibilityHidden(true)
+                }
+                Text(browserTabsHeader(tabs)).font(.caption.weight(.semibold))
+                Spacer()
+            }
+            ForEach(tabs) { tab in browserTabRow(tab) }
+            Text(state.activityStale
+                 ? "Last known · not current. Mac MCP couldn't read its activity."
+                 : "Visible, non-focus-stealing browser automation · not headless.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func browserTabsHeader(_ tabs: [BrowserTabActivity]) -> String {
+        let inUse = tabs.filter { !$0.takenOver }.count
+        let yours = tabs.count - inUse
+        if inUse == 0 { return yours == 1 ? "You took over a browser tab" : "You took over \(yours) browser tabs" }
+        return inUse == 1 ? "Browser automation active" : "\(inUse) browser tabs in use"
+    }
+
+    private func browserTabRow(_ tab: BrowserTabActivity) -> some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(state.browserTabTitle(tab)).font(.caption.weight(.medium)).lineLimit(1)
+                Text(browserTabDetail(tab)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            if tab.takenOver {
+                Button("Hand back") { state.handBackBrowserTab(tab) }
+                    .controlSize(.mini)
+                    .help("Let agents use this tab again")
+            } else {
+                Button("Take over") { state.takeOverBrowserTab(tab) }
+                    .controlSize(.mini)
+                    .help("Take this tab: the agent stops acting in it, and the tab comes to the front")
+            }
+            if tab.browser != nil {
+                Button { state.showBrowserTab(tab) } label: {
+                    Image(systemName: "arrow.up.forward.app").font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .help("Show Tab: bring this real browser tab to the front")
+                .accessibilityLabel("Show tab")
+            }
+            if tab.canStop, let agentID = tab.agentID {
+                if state.cancellingAgentIDs.contains(agentID) {
+                    ProgressView().controlSize(.mini).frame(width: 16 * glyphScale, height: 16 * glyphScale)
+                        .accessibilityLabel("Stopping the agent")
+                } else {
+                    Button { state.stopBrowserTabAgent(tab) } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 7 * glyphScale, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16 * glyphScale, height: 16 * glyphScale)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop Agent: end this agent's whole task")
+                    .accessibilityLabel("Stop agent")
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// "Safari · github.com · Clicking", or that the owner has the tab.
+    private func browserTabDetail(_ tab: BrowserTabActivity) -> String {
+        let status = tab.takenOver ? "You have this tab" : (tab.action ?? (tab.running ? "Working" : "Waiting"))
+        return [tab.browserName, tab.site ?? "tab", status].joined(separator: " · ")
     }
 
     private func browserActivityLabel(_ context: BrowserContext) -> String {

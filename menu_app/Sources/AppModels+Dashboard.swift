@@ -390,6 +390,55 @@ struct BrowserShowTabEnvelope: Decodable {
     let ok: Bool
 }
 
+/// One browser tab an agent or chat is using, or one the owner took over (#124).
+struct BrowserTabActivity: Decodable, Identifiable, Equatable, Sendable {
+    let tabHandle: String
+    let browser: String?
+    let site: String?
+    let action: String?
+    let agentID: String?
+    let teamID: String?
+    let sessionID: String?
+    let client: String?
+    /// The agent's team or "Codex agent"; nil for a chat, which the app names itself.
+    let who: String?
+    /// The agent's own short task title.
+    let task: String?
+    let running: Bool
+    let takenOver: Bool
+    let canStop: Bool
+    var id: String { tabHandle }
+
+    enum CodingKeys: String, CodingKey {
+        case browser, site, action, client, who, task, running
+        case tabHandle = "tab_handle"
+        case agentID = "agent_id"
+        case teamID = "team_id"
+        case sessionID = "session_id"
+        case takenOver = "taken_over"
+        case canStop = "can_stop"
+    }
+
+    /// "Chrome" or "Safari" for the row's second line.
+    var browserName: String {
+        switch (browser ?? "").lowercased() {
+        case "google chrome", "chrome", "chromium": return "Chrome"
+        case "safari": return "Safari"
+        default: return browser ?? "Browser"
+        }
+    }
+}
+
+struct BrowserTabsEnvelope: Decodable {
+    let ok: Bool
+    let tabs: [BrowserTabActivity]
+}
+
+struct BrowserTakeOverEnvelope: Decodable {
+    let ok: Bool
+    let shown: Bool?
+}
+
 /// Where an agent's tab sits in the tab bar, for the tab pulse (#79); no frame when the tab is on show.
 struct BrowserTabFrameEnvelope: Decodable {
     struct Frame: Decodable {

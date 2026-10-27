@@ -67,7 +67,7 @@ function __mcpVisualTarget(el){
 function __mcpVisual(action,el,effect,ttl,detail){
   try{var payload={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),claim:true,phase:'working',action:String(action||'Working').slice(0,40),target_kind:__mcpVisualTarget(el),ttl_ms:Math.max(500,Math.min(Number(ttl||1800),30000))};
     if(el&&el.nodeType===1){var r=__mcpTopRect(el);if(isFinite(r.left)&&isFinite(r.top)&&isFinite(r.width)&&isFinite(r.height)){payload.x=Math.max(0,Math.min(innerWidth,Math.round(r.left+r.width/2)));payload.y=Math.max(0,Math.min(innerHeight,Math.round(r.top+r.height/2)));}}
-    if(effect==='click')payload.effect='click';if(['Up','Down','Into view'].indexOf(String(detail||''))>=0)payload.detail=String(detail);
+    if(effect==='click')payload.effect='click';if(['Up','Down','Into view'].indexOf(String(detail||''))>=0)payload.detail=String(detail);if(typeof window.__mcpVisualWho==='string'&&window.__mcpVisualWho)payload.who=window.__mcpVisualWho.slice(0,80);
     var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));(document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
   }catch(e){}}
 function __mcpId(el,s){var id=s.ids.get(el);if(!id){id='e_'+s.pageToken+'_'+(++s.counter);s.ids.set(el,id);}s.elements[id]=el;return id;}

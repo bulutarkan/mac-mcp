@@ -648,7 +648,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Agent cursor on the desktop")
                                     .font(SettingsType.body.weight(.medium))
-                                Text("Shows where an agent clicks or types in another app's window while it works in the background. It sits with that window, so whatever you have in front covers it, and it never appears in screenshots.")
+                                Text("Shows where an agent clicks or types in another app's window while it works in the background. It floats above all windows on whichever desktop you are looking at, so you see every step, and it never appears in screenshots.")
                                     .font(SettingsType.note)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)

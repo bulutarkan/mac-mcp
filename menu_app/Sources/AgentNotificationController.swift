@@ -26,10 +26,35 @@ struct AgentTerminalNotification: Equatable {
         case needsAttention
     }
 
+    /// How it ended, said in the title (#124): "Agent timed out", not just "needs attention".
+    enum Category: String {
+        case done
+        case failed
+        case timedOut
+        case stuck
+        case doneWithFailures
+        case checkFailed
+        case outOfBudget
+    }
+
     let targetKind: TargetKind
     let targetID: String
     let outcome: Outcome
     let label: String
+    var category: Category = .done
+
+    var title: String {
+        let who = targetKind == .team ? "Agent team" : "Agent"
+        switch category {
+        case .done: return "\(who) finished"
+        case .failed: return "\(who) failed"
+        case .timedOut: return "\(who) timed out"
+        case .stuck: return "\(who) is stuck"
+        case .doneWithFailures: return "\(who) finished with failures"
+        case .checkFailed: return "\(who) finished, but its check failed"
+        case .outOfBudget: return "\(who) ran out of budget"
+        }
+    }
 
     var requestIdentifier: String {
         "mac-mcp.\(targetKind.rawValue).\(targetID).\(outcome.rawValue)"
@@ -90,7 +115,8 @@ final class AgentNotificationTransitionTracker {
                 targetKind: .team,
                 targetID: team.id,
                 outcome: outcome,
-                label: AgentNotificationSanitizer.label(team.title, fallback: fallback)
+                label: AgentNotificationSanitizer.label(team.title, fallback: fallback),
+                category: Self.teamCategory(team, outcome: outcome)
             ))
         }
 
@@ -104,7 +130,8 @@ final class AgentNotificationTransitionTracker {
                 targetKind: .agent,
                 targetID: agent.id,
                 outcome: outcome,
-                label: AgentNotificationSanitizer.label(agent.title, fallback: fallback)
+                label: AgentNotificationSanitizer.label(agent.title, fallback: fallback),
+                category: Self.agentCategory(agent.status)
             ))
         }
         return output
@@ -139,6 +166,27 @@ final class AgentNotificationTransitionTracker {
         case "completed": return .completed
         case "failed", "timeout", "stalled": return .needsAttention
         default: return nil
+        }
+    }
+
+    static func agentCategory(_ status: String?) -> AgentTerminalNotification.Category {
+        switch status?.lowercased() {
+        case "timeout": return .timedOut
+        case "stalled": return .stuck
+        case "failed": return .failed
+        default: return .done
+        }
+    }
+
+    static func teamCategory(
+        _ team: AgentNotificationTeamState,
+        outcome: AgentTerminalNotification.Outcome
+    ) -> AgentTerminalNotification.Category {
+        guard outcome == .needsAttention else { return .done }
+        switch team.status?.lowercased() {
+        case "quality_failed": return .checkFailed
+        case "budget_exhausted": return .outOfBudget
+        default: return .doneWithFailures
         }
     }
 
@@ -209,6 +257,9 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
     private var openHandler: ((AgentTerminalNotification.TargetKind, String) -> Void)?
     private var updateHandler: (() -> Void)?
     private var fleetHandler: (() -> Void)?
+    /// True when the owner is already looking at what the notification is about (the menu, or the
+    /// dashboard in front): then it goes quietly to Notification Center, without a banner (#124).
+    var isTargetVisible: (@MainActor (AgentTerminalNotification) -> Bool)?
     static let updateReadyIdentifier = "mac-mcp.update-ready"
     static let fleetRequestPrefix = "mac-mcp.fleet-request."
 
@@ -257,16 +308,13 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         guard await authorizationState() == .authorized else { return }
 
         let content = UNMutableNotificationContent()
-        switch (event.targetKind, event.outcome) {
-        case (.agent, .completed):
-            content.title = "Agent completed"
-        case (.agent, .needsAttention):
-            content.title = "Agent needs attention"
-            content.sound = .default
-        case (.team, .completed):
-            content.title = "Agent team completed"
-        case (.team, .needsAttention):
-            content.title = "Agent team needs attention"
+        content.title = event.title
+        let check = isTargetVisible
+        let visible = await MainActor.run { check?(event) ?? false }
+        if visible {
+            // Already in view: listed in Notification Center, no banner and no sound.
+            content.interruptionLevel = .passive
+        } else if event.outcome == .needsAttention {
             content.sound = .default
         }
         content.body = event.label
@@ -389,7 +437,8 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner])
+        let quiet = notification.request.content.interruptionLevel == .passive
+        completionHandler(quiet ? [.list] : [.banner])
     }
 
     func userNotificationCenter(

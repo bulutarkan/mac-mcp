@@ -16,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from . import decision_engine
+from . import browser_activity, decision_engine
 from .chrome_background_bridge import chrome_background_bridge
 from .foreground_guard import foreground_authorization
 from .file_transactions import (
@@ -68,6 +68,7 @@ from .tools_agents import (
     team_message_history,
 )
 from .tools_browser import browser_activate_tab
+from .workspace_arbitration import owner_action, owner_takeover_snapshot
 from .version import __version__
 
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
@@ -1739,14 +1740,7 @@ def create_dashboard_routes(
         if not browser or not tab_handle:
             return JSONResponse({"ok": False, "error": "browser_and_tab_handle_required"}, status_code=400)
         try:
-            with foreground_authorization("dashboard_show_tab"):
-                result = await asyncio.to_thread(
-                    browser_activate_tab,
-                    settings,
-                    browser=browser,
-                    tab_handle=tab_handle,
-                    allow_foreground=True,
-                )
+            result = await asyncio.to_thread(_owner_show_tab, browser, tab_handle)
         except Exception as exc:
             status_code = int(getattr(exc, "status_code", 500) or 500)
             detail = getattr(exc, "detail", None) or str(exc)
@@ -1760,6 +1754,69 @@ def create_dashboard_routes(
             "tab_handle": result.get("tab_handle"),
             "foreground_forced": bool(result.get("foreground_forced")),
         })
+
+    def _owner_show_tab(browser: str, tab_handle: str) -> Dict[str, Any]:
+        # The owner's own click: it reaches a tab they took over, which agents may no longer use (#124).
+        with foreground_authorization("dashboard_show_tab"), owner_action():
+            return browser_activate_tab(settings, browser=browser, tab_handle=tab_handle, allow_foreground=True)
+
+    async def browser_active_tabs(request: Request) -> Response:
+        """One row per browser tab an agent or chat is using, and the tabs the owner took over (#124)."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import browser_tabs
+        rows = await asyncio.to_thread(
+            browser_activity.active_tab_rows,
+            events=list(telemetry.active_calls()) + telemetry.recent_events(60),
+            leases=browser_tabs.logical_lease_snapshot(),
+            takeovers=owner_takeover_snapshot(),
+            registry=browser_tabs.registry_snapshot(),
+            context_for=browser_event_context,
+        )
+        return JSONResponse({"ok": True, "tabs": rows})
+
+    async def _browser_tab_body(request: Request) -> Tuple[str, str, Dict[str, Any]]:
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        return str(body.get("browser") or "").strip(), str(body.get("tab_handle") or "").strip(), body
+
+    async def browser_take_over(request: Request) -> Response:
+        """The owner takes a tab from Mac MCP (#124): no confirmation, the agent stops before its next step there."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        browser, tab_handle, body = await _browser_tab_body(request)
+        if not browser or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,100}", tab_handle):
+            return JSONResponse({"ok": False, "error": "browser_and_tab_handle_required"}, status_code=400)
+        from . import browser_tabs
+        who = {key: body.get(key) for key in ("agent_id", "team_id", "session_id", "who", "task")
+               if isinstance(body.get(key), str)}
+        record = browser_tabs.take_over(browser, tab_handle, who=who)
+        # Then bring the tab forward for the owner (unless asked not to); the takeover holds even when that fails.
+        shown = False
+        if body.get("show", True) is not False:
+            try:
+                shown = bool((await asyncio.to_thread(_owner_show_tab, browser, tab_handle)).get("ok", True))
+            except Exception:
+                shown = False
+        return JSONResponse({
+            "ok": True, "tab_handle": tab_handle, "shown": shown,
+            "agent_id": record.get("agent_id"), "team_id": record.get("team_id"),
+        })
+
+    async def browser_hand_back(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        _, tab_handle, _ = await _browser_tab_body(request)
+        if not tab_handle:
+            return JSONResponse({"ok": False, "error": "tab_handle_required"}, status_code=400)
+        from . import browser_tabs
+        return JSONResponse({"ok": True, "released": browser_tabs.hand_back(tab_handle)})
 
     async def browser_tab_frame(request: Request) -> Response:
         """Where an agent's tab sits in the tab bar, for the menu app's tab pulse (#79). Read-only."""
@@ -2114,6 +2171,9 @@ def create_dashboard_routes(
         Route("/dashboard/api/transactions/undo", undo_transaction_route, methods=["POST"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/browser/tab-frame", browser_tab_frame, methods=["POST"]),
+        Route("/dashboard/api/browser/active-tabs", browser_active_tabs, methods=["GET"]),
+        Route("/dashboard/api/browser/take-over", browser_take_over, methods=["POST"]),
+        Route("/dashboard/api/browser/hand-back", browser_hand_back, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),
         Route("/dashboard/api/agent-catalog", agent_catalog_data, methods=["GET"]),
         Route("/dashboard/api/agents/history", agents_history, methods=["GET"]),

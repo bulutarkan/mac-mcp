@@ -31,8 +31,9 @@ final class BrowserTabPulseController {
     nonisolated static let sweepSeconds: Double = 0.65
     nonisolated static let sweeps: Float = 2
     nonisolated static let fadeSeconds: Double = 0.3
-    /// How often the tab's place is read again while the glow shows.
-    nonisolated static let followSeconds: Double = 0.15
+    /// How often the tab's place is read again while the glow shows. Each read is a server call and
+    /// an Accessibility walk of the tab bar, so it is sparse (#124): twice in a 1.3 s pulse, not nine times.
+    nonisolated static let followSeconds: Double = 0.6
 
     /// The tab button's AX frame (origin top-left of the primary display, y down) in AppKit
     /// screen coordinates (origin bottom-left of the primary display, y up).
@@ -48,7 +49,7 @@ final class BrowserTabPulseController {
     // MARK: Drawing
 
     /// One pulse over the tab at `axFrame`, above the browser window `windowID`. `follow` gives the
-    /// tab's frame again (nil once it is gone or on show); it is asked about every 150 ms.
+    /// tab's frame again (nil once it is gone or on show); it is asked about every `followSeconds`.
     func pulse(axFrame: CGRect, windowID: Int, reduceMotion: Bool, follow: @escaping () async -> CGRect?) {
         guard axFrame.width > 8, axFrame.height > 8, NSScreen.screens.first != nil else { return }
         let panel = self.panel ?? makePanel()

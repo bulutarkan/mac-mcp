@@ -21,7 +21,11 @@ from .process_supervision import run_osascript
 from .workspace_arbitration import (
     browser_human_takeover,
     claim_delegated_resource,
+    owner_takeover_block,
+    owner_takeover_snapshot,
+    record_owner_takeover,
     recent_user_input,
+    release_owner_takeover,
 )
 
 
@@ -553,6 +557,7 @@ def list_tabs(browser: str) -> List[Dict[str, Any]]:
     app = _browser_key(browser)
     stale_handles: List[str] = []
     with _LOCK:
+        known = set(_REGISTRY)
         used: set[str] = set()
         for row in rows:
             if app == "Google Chrome":
@@ -572,11 +577,62 @@ def list_tabs(browser: str) -> List[Dict[str, Any]]:
             handle for handle, record in list(_REGISTRY.items())
             if record.get("browser") == app and handle not in used
         ]
-        for handle in stale_handles:
-            _REGISTRY.pop(handle, None)
+        gone = {handle: _REGISTRY.pop(handle, None) or {} for handle in stale_handles}
     for handle in stale_handles:
         _retire_logical_lease(handle)
+    _carry_owner_takeovers(gone, rows, known)
     return rows
+
+
+def _carry_owner_takeovers(gone: Dict[str, Dict[str, Any]], rows: List[Dict[str, Any]], known: set[str]) -> None:
+    """A tab the owner took over keeps that state when it gets a new handle or closes (#124).
+
+    Safari gives a tab a new identity when a navigation swaps its web process, which the owner's own
+    browsing in a taken-over tab does. A brand-new handle at the exact place of a taken-over handle
+    that just went away is that same tab, so the takeover moves to it; otherwise the tab closed.
+    """
+    taken = owner_takeover_snapshot()
+    for handle, record in gone.items():
+        if handle not in taken:
+            continue
+        release_owner_takeover(handle)
+        successors = [
+            row for row in rows
+            if str(row.get("tab_handle") or "") not in known
+            and int(row.get("window_index") or 0) == int(record.get("window_index") or -1)
+            and int(row.get("tab_index") or 0) == int(record.get("tab_index") or -1)
+        ]
+        if len(successors) == 1:
+            record_owner_takeover(str(successors[0]["tab_handle"]), taken[handle])
+
+
+def take_over(browser: str, tab_handle: str, *, who: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The owner takes this tab from Mac MCP (#124): no caller acts on it again until it is handed back.
+
+    The tab's delegated lease ends at once and every leased access to the tab, read or write, is refused
+    from here on; a delegated batch already running stops before its next page action.
+    """
+    handle = str(tab_handle or "").strip()
+    if not handle:
+        raise ValueError("tab_handle is required")
+    with _LEASE_LOCK:
+        _prune_logical_leases_locked()
+        lease = _LOGICAL_LEASES.pop(handle, None)
+        if lease is not None:
+            _LEASE_HISTORY[handle] = dict(lease)
+    record: Dict[str, Any] = {"browser": _browser_key(browser), "taken_at": time.time()}
+    for key in ("agent_id", "team_id"):
+        if (lease or {}).get(key):
+            record[key] = lease[key]
+    for key, value in (who or {}).items():
+        if key in {"agent_id", "team_id", "session_id", "who", "task"} and value and key not in record:
+            record[key] = str(value)[:120]
+    return record_owner_takeover(handle, record)
+
+
+def hand_back(tab_handle: str) -> bool:
+    """The owner gives a taken-over tab back; callers may use it again."""
+    return release_owner_takeover(str(tab_handle or ""))
 
 
 def rebind_safari_handle(tab_handle: str, row: Dict[str, Any]) -> Dict[str, Any]:
@@ -699,6 +755,10 @@ def revalidate_mutation_lease(
     Return the freshly resolved target on success so the caller can execute the
     side effect against that exact identity without performing a second tab scan.
     """
+    # Before the delegated-owner check: the owner taking a tab over stops every caller (#124).
+    taken = owner_takeover_block(tab_handle)
+    if taken is not None:
+        return None, dict(taken)
     owner, _, _ = _logical_owner()
     if not owner:
         return None, None
@@ -851,6 +911,11 @@ def tab_lease(
         _, _, row = resolve_location(browser, window_index, tab_index)
         handle = str(row["tab_handle"])
 
+    # The owner took this tab over (#124): nobody but the owner's own clicks may use it.
+    taken = owner_takeover_block(handle)
+    if taken is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=taken)
+
     lock = _resource_lock(browser, handle)
     acquired = lock.acquire(blocking=False)
     if not acquired:
@@ -971,6 +1036,7 @@ def forget(tab_handle: Optional[str]) -> None:
     with _LOCK:
         _REGISTRY.pop(handle, None)
     _retire_logical_lease(handle)
+    release_owner_takeover(handle)
 
 
 def registry_snapshot() -> Dict[str, Dict[str, Any]]:

@@ -201,6 +201,12 @@ final class AppState: ObservableObject {
     private var tabPulseEvents: Set<String> = []
     private var tabPulseAskedAt: [String: Date] = [:]
     @Published var browserActionStatus = ""
+    /// The menu's popover window, to tell whether the owner is looking at the agent list (#124).
+    weak var menuWindow: NSWindow?
+    /// One row per browser tab in use, and the tabs the owner took over (#124).
+    @Published private(set) var browserTabs: [BrowserTabActivity] = []
+    private var browserTabsAskedAt: Date?
+    private var browserTabsRefreshTask: Task<Void, Never>?
     @Published var securitySemantics: SecuritySemanticsEnvelope?
     @Published var permissionProfileChanging = false
     @Published var serverApprovalProfileChanging = false
@@ -331,6 +337,9 @@ final class AppState: ObservableObject {
                     Task { @MainActor in self?.presentFleetRequests?() }
                 }
             )
+            AgentNotificationController.shared.isTargetVisible = { [weak self] _ in
+                self?.agentNotificationTargetInView() ?? false
+            }
             startTasks()
             startUpdateWatch()
             // This app may have been reopened by an update that is still finishing, or just finished (#78).
@@ -1196,6 +1205,7 @@ final class AppState: ObservableObject {
 
         if kind == "call_started" || kind == "call_finished" {
             pulseBrowserTab(for: payload)
+            if payload.toolEvent?.browserContext != nil { scheduleBrowserTabsRefresh() }
         }
 
         guard let eventID = payload.eventID, !eventID.isEmpty else { return }
@@ -1383,6 +1393,9 @@ final class AppState: ObservableObject {
                 secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
             }
             setIfChanged(\.activeAgents, resolvedActiveAgents)
+            if hasActiveWork || !activeBrowserEvents.isEmpty || !browserTabs.isEmpty {
+                await refreshBrowserTabs()
+            }
             await announceScheduledTaskRuns()
             do {
                 let steeringEnvelope = try await steeringFetch
@@ -1420,6 +1433,7 @@ final class AppState: ObservableObject {
             // Mac MCP answered with an error: keep the last good activity, marked not current.
             // Not answering at all: nothing runs through it, so nothing is shown as live.
             if state == .disconnected { setIfChanged(\.activeEvents, []) }
+            if state == .disconnected { setIfChanged(\.browserTabs, []) }
             setIfChanged(\.activityStale, true)
             setIfChanged(\.steeringSnapshotStale, true)
             setIfChanged(\.serverRunning, state == .degraded)
@@ -1510,14 +1524,17 @@ final class AppState: ObservableObject {
 
     /// Stops a delegated agent on the user's behalf; the orchestrator sees it as cancelled by the user.
     func cancelAgent(_ agent: AgentInfo) async {
-        guard !cancellingAgentIDs.contains(agent.agentID),
+        await cancelAgent(id: agent.agentID, name: agent.title ?? "the agent")
+    }
+
+    func cancelAgent(id agentID: String, name: String) async {
+        guard !cancellingAgentIDs.contains(agentID),
               let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
-        cancellingAgentIDs.insert(agent.agentID)
-        defer { cancellingAgentIDs.remove(agent.agentID) }
-        let name = agent.title ?? "the agent"
+        cancellingAgentIDs.insert(agentID)
+        defer { cancellingAgentIDs.remove(agentID) }
         do {
             let result: AgentCancelEnvelope = try await post(
-                base.appendingPathComponent("dashboard/api/agents/cancel"), body: ["agent_id": agent.agentID], timeout: 15.0
+                base.appendingPathComponent("dashboard/api/agents/cancel"), body: ["agent_id": agentID], timeout: 15.0
             )
             if result.cancellation?.state == "unconfirmed" {
                 showNotice(ActionNotice(kind: .error, message: "Stopped \(name), but it has not exited yet; Mac MCP keeps trying."))
@@ -2256,6 +2273,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The owner already sees agents: the menu is open, or the dashboard is the window in front (#124).
+    private func agentNotificationTargetInView() -> Bool {
+        if menuWindow?.isVisible == true { return true }
+        guard let front = NSWorkspace.shared.frontmostApplication else { return false }
+        // Window names need Screen Recording; without it this says no and the banner shows.
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return false }
+        let frontWindow = windows.first {
+            ($0[kCGWindowOwnerPID as String] as? pid_t) == front.processIdentifier
+                && ($0[kCGWindowLayer as String] as? Int) == 0
+        }
+        let title = frontWindow?[kCGWindowName as String] as? String ?? ""
+        return title.hasPrefix("Mac MCP — Operations")
+    }
+
     private func openDashboardNotificationTarget(
         kind: AgentTerminalNotification.TargetKind,
         targetID: String
@@ -2333,6 +2365,108 @@ final class AppState: ObservableObject {
         }
     }
 
+
+    /// Reads the browser rows (#124); quiet on failure, the last rows stay.
+    func refreshBrowserTabs() async {
+        browserTabsAskedAt = Date()
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)"),
+              let envelope: BrowserTabsEnvelope = try? await fetch(
+                base.appendingPathComponent("dashboard/api/browser/active-tabs"), query: [:]
+              ), envelope.ok else { return }
+        setIfChanged(\.browserTabs, envelope.tabs)
+    }
+
+    /// A browser call started or ended: read the rows soon, at most about once a second.
+    private func scheduleBrowserTabsRefresh() {
+        guard browserTabsRefreshTask == nil else { return }
+        let wait = max(0, 1.0 - Date().timeIntervalSince(browserTabsAskedAt ?? .distantPast))
+        browserTabsRefreshTask = Task { [weak self] in
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            guard let self, !Task.isCancelled else { return }
+            await self.refreshBrowserTabs()
+            self.browserTabsRefreshTask = nil
+        }
+    }
+
+    /// The row's first line: the agent's team or kind and its task, or the chat's number.
+    func browserTabTitle(_ tab: BrowserTabActivity) -> String {
+        let who = tab.who ?? browserTabChatLabel(tab) ?? "Mac MCP"
+        guard let task = tab.task, !task.isEmpty else { return who }
+        return "\(who) · \(task)"
+    }
+
+    private func browserTabChatLabel(_ tab: BrowserTabActivity) -> String? {
+        if let sessionID = tab.sessionID,
+           let session = steeringSessions.first(where: { $0.sessionID == sessionID }) {
+            return "Chat \(session.flowNumber)"
+        }
+        return tab.client.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+    }
+
+    func showBrowserTab(_ tab: BrowserTabActivity) {
+        guard let browser = tab.browser, !browser.isEmpty,
+              let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        Task {
+            do {
+                let response: BrowserShowTabEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/browser/show-tab"),
+                    body: ["browser": browser, "tab_handle": tab.tabHandle]
+                )
+                if !response.ok { showNotice(ActionNotice(kind: .error, message: "Could not open that browser tab.")) }
+            } catch {
+                showNotice(ActionNotice(kind: .error, message: "That browser tab is closed or unavailable."))
+                await refreshBrowserTabs()
+            }
+        }
+    }
+
+    /// Take over (#124): no question asked. The agent stops before its next step in this tab and the
+    /// tab comes forward; the owner hands it back from the same row.
+    func takeOverBrowserTab(_ tab: BrowserTabActivity) {
+        guard let browser = tab.browser, !browser.isEmpty,
+              let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        var body: [String: Any] = ["browser": browser, "tab_handle": tab.tabHandle, "who": browserTabTitle(tab)]
+        if let agentID = tab.agentID { body["agent_id"] = agentID }
+        if let teamID = tab.teamID { body["team_id"] = teamID }
+        if let sessionID = tab.sessionID { body["session_id"] = sessionID }
+        if let task = tab.task { body["task"] = task }
+        let name = tab.who ?? browserTabChatLabel(tab) ?? "Mac MCP"
+        Task {
+            do {
+                let _: BrowserTakeOverEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/browser/take-over"), body: body, timeout: 8.0
+                )
+                showNotice(ActionNotice(kind: .success, message: "You have this tab. \(name) won’t act in it again."))
+            } catch {
+                showNotice(ActionNotice(kind: .error, message: "Couldn’t take over that tab: \(Self.issueText(for: error))"))
+            }
+            await refreshBrowserTabs()
+        }
+    }
+
+    func handBackBrowserTab(_ tab: BrowserTabActivity) {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        Task {
+            do {
+                let _: BrowserShowTabEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/browser/hand-back"), body: ["tab_handle": tab.tabHandle]
+                )
+                showNotice(ActionNotice(kind: .info, message: "Handed the tab back. Agents may use it again."))
+            } catch {
+                showNotice(ActionNotice(kind: .error, message: "Couldn’t hand the tab back: \(Self.issueText(for: error))"))
+            }
+            await refreshBrowserTabs()
+        }
+    }
+
+    func stopBrowserTabAgent(_ tab: BrowserTabActivity) {
+        guard let agentID = tab.agentID else { return }
+        let name = tab.task ?? tab.who ?? "the agent"
+        Task {
+            await cancelAgent(id: agentID, name: name)
+            await refreshBrowserTabs()
+        }
+    }
 
     /// Hands how long idle conversations stay listed to the running server, which reads the
     /// saved setting only when it starts. False when the server could not take it now.

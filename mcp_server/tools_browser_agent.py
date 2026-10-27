@@ -26,10 +26,10 @@ from .computer_use_perf import record_computer_use_sample
 from . import decision_engine
 from .data_guard import redact_sensitive_text
 from .perception import estimate_payload_tokens, finalize_perception_telemetry, json_bytes, refresh_perception_size
-from . import browser_tabs
+from . import browser_activity, browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
-from .workspace_arbitration import delegated_agent_identity
+from .workspace_arbitration import delegated_agent_identity, owner_takeover_block
 from .workflow_checkpoints import mark_not_executed
 from .tools_browser import (
     current_frame_scope,
@@ -874,6 +874,11 @@ def _execute_js_for_target(browser: str, js: str, target: browser_tabs.TabTarget
     """Run page JavaScript, sending the helper library only when the document lacks it."""
     light = _with_binding_only(js)
     key = _document_key(browser, target)
+    if light is not None:
+        # The overlay names the agent acting here (#124); a chat's scripts are unchanged.
+        who = browser_activity.visual_who_prefix(key)
+        if who:
+            js, light = who + js, who + light
     if light is not None:
         with _AGENT_API_LOCK:
             warm = key in _WARM_DOCUMENTS
@@ -4607,7 +4612,9 @@ def _browser_act_locked(
         action_type: str,
     ) -> Tuple[Optional[browser_tabs.TabTarget], Optional[Dict[str, Any]]]:
         if not delegated_transaction:
-            return None, None
+            # The owner may take the tab over mid-batch (#124): no caller acts on it after that.
+            taken = owner_takeover_block(tab_handle)
+            return None, ({**taken, "type": str(action_type or "mutation")} if taken else None)
         cancellation_checkpoint()
         fresh_target, blocked = browser_tabs.revalidate_mutation_lease(
             browser,
