@@ -3188,16 +3188,13 @@ struct SettingsView: View {
     @ViewBuilder
     private func settingsDataStateRow(_ dataState: SettingsDataState, retry: (() -> Void)? = nil) -> some View {
         let presentation = settingsDataPresentation(dataState)
-        if dataState.phase == .fresh || dataState.phase == .loading {
-            // Fresh is the normal case: a quiet line, not a banner.
+        if dataState.phase == .fresh {
+            // Fresh is the normal case and says nothing; only loading or a problem earns a line.
+            EmptyView()
+        } else if dataState.phase == .loading {
             HStack(spacing: 6) {
-                if dataState.phase == .loading {
-                    ProgressView().controlSize(.mini)
-                    Text("Loading…")
-                } else {
-                    Circle().fill(Color.green).frame(width: 6, height: 6)
-                    Text(dataState.lastUpdatedAt.map { "Up to date, " + $0.formatted(date: .omitted, time: .shortened) } ?? "Up to date")
-                }
+                ProgressView().controlSize(.mini)
+                Text("Loading…")
             }
             .font(SettingsType.meta)
             .foregroundStyle(.secondary)
