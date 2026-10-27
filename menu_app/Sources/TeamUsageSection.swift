@@ -201,6 +201,8 @@ private struct TeamUsageRow: View {
             .accessibilityLabel("\(team.name), \(UsageFormat.compact(team.tokens)) tokens, \(UsageFormat.share(team.tokens, of: total)), \(meta)")
             .accessibilityHint(open ? "Hides the details" : "Shows the details")
             .accessibilityAddTraits(.isButton)
+            // children: .ignore drops the button's own press, so VoiceOver and AXPress get it back here.
+            .accessibilityAction { toggle() }
             if open {
                 TeamUsageDetail(team: team, period: period, colors: colors)
                     .padding(.horizontal, 14).padding(.bottom, 14)
@@ -435,6 +437,7 @@ private struct TeamUsageDetail: View {
         .accessibilityLabel("\(title), \(run.startedAt.formatted(date: .abbreviated, time: .shortened)), \(outcome.text), \(TeamUsageFormat.duration(run.durationSeconds)), \(UsageFormat.compact(run.tokens)) tokens")
         .accessibilityHint(open ? "Hides each member" : "Shows each member")
         .accessibilityAddTraits(.isButton)
+        .accessibilityAction { if open { openRuns.remove(run.id) } else { openRuns.insert(run.id) } }
     }
 
     /// Column titles over the members (six) or the runs (five and the chevron).
