@@ -3424,7 +3424,8 @@
                             "hover",
                             "drag",
                             "post",
-                            "fill"
+                            "fill",
+                            "autocomplete_many"
                           ],
                           "type": "string"
                         },
@@ -3469,6 +3470,14 @@
                         },
                         "option": {
                           "description": "select: option label or value.",
+                          "type": "string"
+                        },
+                        "option_selector": {
+                          "description": "autocomplete_many: options; values: label list",
+                          "type": "string"
+                        },
+                        "selected_selector": {
+                          "description": "autocomplete_many chips",
                           "type": "string"
                         },
                         "key": {
@@ -3819,7 +3828,8 @@
                                 "hover",
                                 "drag",
                                 "post",
-                                "fill"
+                                "fill",
+                                "autocomplete_many"
                               ],
                               "type": "string"
                             }

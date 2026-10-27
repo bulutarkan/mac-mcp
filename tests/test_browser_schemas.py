@@ -41,7 +41,8 @@ class BrowserSchemaTests(unittest.TestCase):
             self.assertNotIn("$ref", text)
             # #215 adds the actual extraction object contract and bounded continuation.
             # Keep the shared action schema compact instead of repeating every action variant.
-            self.assertLess(len(text), 5_500)
+            # #383's autocomplete_many (its type and two selectors) took the budget from 5 500 to 5 750.
+            self.assertLess(len(text), 5_750)
 
     def test_action_items_expose_types_and_per_type_requirements(self) -> None:
         actions = self.tools["browser_act"].inputSchema["properties"]["actions"]

@@ -104,7 +104,7 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
     ),
     "browser_act": (
         "BATCH-FIRST: observe once->one browser_act->verify from its changes. Form:{type:'fill',values:{label:value}}; "
-        "comment: {type:'post',text}. Multi-topic: {type:'autocomplete_many',selector,values,selected_selector,option_selector}; exact matching with per-item verification. query/role/text_match +intent/within. Split only for dependencies."
+        "comment: {type:'post',text}. query/role/text_match +intent/within, no find first. Split only for dependencies."
     ),
     "browser_do": (
         "One-shot workflow: open URL -> actions -> extract -> close_after. Read a whole page: actions=[{type:'read'}] "
