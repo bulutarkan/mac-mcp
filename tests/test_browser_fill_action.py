@@ -90,11 +90,13 @@ class FillFlowTests(unittest.TestCase):
 
         def verified(_settings, _browser, item, *_args, **_kwargs):
             calls.append((item["type"], item["element_id"], item.get("text")))
-            return {"ok": True, "type": item["type"], "element_id": item["element_id"], "_js_calls": 1}
+            # A typed field reads back what it holds, as _verified_dom_action does.
+            read_back = {"value": item["text"], "verification": "value_applied"} if item["type"] == "type" else {}
+            return {"ok": True, "type": item["type"], "element_id": item["element_id"], "_js_calls": 1, **read_back}
 
         def select(_settings, _browser, item, *_args, **_kwargs):
             calls.append(("select", item["element_id"], item.get("option")))
-            return {"ok": True, "type": "select", "_js_calls": 1}
+            return {"ok": True, "type": "select", "selected": item.get("option"), "_js_calls": 1}
 
         with patch.object(agent, "_resolve_tab_target", return_value=(1, 1)), \
              patch.object(agent, "browser_find", side_effect=find), \
@@ -150,6 +152,34 @@ class FillFlowTests(unittest.TestCase):
         acted = [call for call in calls if call[0] != "find"]
         self.assertEqual([("type", "e_name", "Tarkan"), ("select", "e_cty", "Turkey"), ("click", "e_terms", None)], acted)
         self.assertTrue(result["mutation_dispatched"])
+
+    def test_each_field_reports_what_it_now_holds_and_a_password_is_never_echoed(self) -> None:
+        result, _calls = self._fill(
+            {"Name": "Ada", "Password": "s3cret-pass", "Country": "Turkey", "Newsletter": True, "Terms": True},
+            {
+                "Name": self._found({"element_id": "e_name", "tag": "input", "role": "textbox", "confidence": 1.0,
+                                     "association_text": "Name"}),
+                # The label route, as on a real form: the password input itself is not a fill candidate.
+                "Password": self._found({"element_id": "e_pw_label", "tag": "label", "role": "", "text": "Password",
+                                         "confidence": 1.0, "associated_control": {
+                                             "element_id": "e_pw", "tag": "input", "role": "textbox",
+                                             "input_type": "password"}}),
+                "Country": self._found({"element_id": "e_cty", "tag": "select", "role": "combobox", "confidence": 1.0,
+                                        "association_text": "Country"}),
+                "Newsletter": self._found({"element_id": "e_news", "tag": "input", "input_type": "checkbox",
+                                           "role": "checkbox", "checked": True, "confidence": 1.0, "text": "Newsletter"}),
+                "Terms": self._found({"element_id": "e_terms", "tag": "input", "input_type": "checkbox",
+                                      "role": "checkbox", "confidence": 1.0, "association_text": "Terms"}),
+            },
+        )
+        rows = {row["field"]: row for row in result["actions"][0]["fields"]}
+        self.assertEqual("Ada", rows["Name"]["value"])
+        self.assertEqual("Turkey", rows["Country"]["value"])
+        self.assertTrue(rows["Newsletter"]["checked"])
+        self.assertTrue(rows["Terms"]["checked"])
+        self.assertTrue(rows["Password"]["value_set"])
+        self.assertNotIn("value", rows["Password"])
+        self.assertNotIn("s3cret-pass", json.dumps(result))
 
     def test_missing_field_is_reported_and_the_others_are_still_filled(self) -> None:
         result, calls = self._fill(

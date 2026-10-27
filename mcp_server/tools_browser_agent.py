@@ -5237,7 +5237,7 @@ def _browser_act_locked(
                 state = post_page_js(_element_effect_state_js(element_id))
                 checked = state.get("checked") if state.get("checked") is not None else target.get("checked")
                 if bool(checked) == wanted or (kind == "radio" and not wanted):
-                    fields.append({**row, "ok": True, "unchanged": True})
+                    fields.append({**row, "ok": True, "unchanged": True, "checked": bool(checked)})
                     continue
                 note_possible_navigation()
                 step = {"type": "click", "element_id": element_id}
@@ -5262,6 +5262,17 @@ def _browser_act_locked(
             changed = changed or ok
             if ok:
                 last_filled = element_id
+            if ok:
+                # What the field holds now, read back by the action itself, so the caller can verify the
+                # whole form from this result instead of observing it again. A password is never echoed.
+                if kind in {"checkbox", "radio"}:
+                    row["checked"] = wanted
+                elif kind == "select" and done.get("selected") is not None:
+                    row["value"] = str(done.get("selected"))[:200]
+                elif str(target.get("input_type") or "").lower() == "password":
+                    row["value_set"] = True
+                elif done.get("value") is not None:
+                    row["value"] = str(done.get("value"))[:200]
             fields.append({**row, "ok": ok, **({key: done.get(key) for key in ("error", "reason_code") if done.get(key)}
                                                  if not ok else {})})
         in_flight = []
