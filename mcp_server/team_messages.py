@@ -419,6 +419,17 @@ class Store:
                 "SUM(forwarded_from IS NOT NULL) FROM messages WHERE room_id = ?", (room_id,)).fetchone()
         return {"sent": int(row[0] or 0), "to_finished_recipients": int(row[1] or 0), "forwarded": int(row[2] or 0)}
 
+    def sent_counts(self, room_ids: Sequence[str]) -> Dict[str, int]:
+        """Messages sent in each room (copies passed on are not counted), in one query; absent rooms are 0."""
+        counts = {room_id: 0 for room_id in room_ids}
+        if not counts:
+            return counts
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT room_id, SUM(forwarded_from IS NULL) FROM messages WHERE room_id IN (%s) "
+                                "GROUP BY room_id" % ",".join("?" * len(counts)), list(counts)).fetchall()
+        counts.update({str(row[0]): int(row[1] or 0) for row in rows})
+        return counts
+
     def _unheard(self, conn: sqlite3.Connection, room_id: str, sender_id: str, recipient: Optional[str]) -> Optional[str]:
         """Say so when no one may see the message: its task or member has finished, or the room is empty."""
         active = conn.execute("SELECT member_id, task_id FROM members WHERE room_id = ? AND left_at IS NULL "

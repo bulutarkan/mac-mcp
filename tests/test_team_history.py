@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from mcp_server import provider_usage
+from mcp_server import team_messages as tm
 from mcp_server import tools_agents as agents
 from mcp_server.dashboard_routes import create_dashboard_routes
 from mcp_server.observability import TelemetryManager
@@ -34,6 +35,7 @@ class HistoryFixture(unittest.TestCase):
         self.patches = [
             patch.object(agents, "AGENTS_DIR", root / "agents"),
             patch.object(agents, "TEAMS_DIR", root / "teams"),
+            patch.object(tm, "_STORE", tm.Store(root / "team_messages.sqlite3")),
         ]
         for item in self.patches:
             item.start()
@@ -95,6 +97,7 @@ class TeamHistoryTests(HistoryFixture):
         self.assertEqual(2, newest["agent_count"])
         self.assertEqual(9, newest["tool_calls"])
         self.assertEqual(["security", "performance"], [agent["label"] for agent in newest["agents"]])
+        self.assertEqual(["task_1", "task_2"], [agent["task_id"] for agent in newest["agents"]])
         self.assertEqual(30000, newest["agents"][0]["duration_ms"])
         # An agent whose tool reported no usage is unknown (null), not zero, and stays out of the total.
         self.assertIsNone(newest["agents"][1]["tokens"]["total"])
@@ -135,6 +138,29 @@ class TeamHistoryTests(HistoryFixture):
         with patch.object(provider_usage, "agent_totals", return_value={}):
             title = agents.team_history()["teams"][0]["title"]
         self.assertNotIn("a" * 40, title)
+
+    def test_each_team_says_how_many_messages_its_agents_sent(self) -> None:
+        now = time.time()
+        self.agent("agt_q", started=now - 50)
+        self.team("team_quiet", title="Quiet", created=now - 60, members={"agt_q": "solo"})
+        self.agent("agt_t", started=now - 10)
+        self.team("team_talk", title="Talkative", created=now - 20, members={"agt_t": "writer"})
+        room = tm.team_room("team_talk")
+        store = tm.store()
+        writer = tm.Caller(member_id="agent:agt_t", label="task writer", agent_id="agt_t", team_id="team_talk")
+        store.set_lead(room, "session:lead", tasks=["writer", "research"])
+        store.join(room, "session:lead", label="Lead", kind="session")
+        store.join(room, writer.member_id, label=writer.label, kind="agent", task_id="writer")
+        store.send(room, writer, "schema is v3")
+        store.send(room, writer, "done with section 2")
+        with patch.object(provider_usage, "agent_totals", return_value={}):
+            teams = {team["team_id"]: team for team in agents.team_history()["teams"]}
+        self.assertEqual(2, teams["team_talk"]["message_count"])
+        self.assertEqual(0, teams["team_quiet"]["message_count"])
+        self.assertNotIn("schema is v3", json.dumps(teams))  # counts only; the bodies stay behind their own endpoint
+        with patch.object(tm, "store", side_effect=OSError("locked")), patch.object(provider_usage, "agent_totals", return_value={}):
+            unknown = agents.team_history()["teams"][0]
+        self.assertIsNone(unknown["message_count"])  # unknown, never a misleading 0
 
     def test_no_teams(self) -> None:
         history = agents.team_history()
@@ -235,6 +261,20 @@ class TeamHistoryAppSourceTests(unittest.TestCase):
         # A team card must stay a pressable button for VoiceOver: no ignore-children element on it.
         card = source[source.index("private struct TeamHistoryCard"):source.index("private struct TeamHistoryLegend")]
         self.assertNotIn(".accessibilityElement(children: .ignore)", card)
+
+    def test_team_messages_open_from_a_button_in_their_own_sheet(self) -> None:
+        card = (SOURCES / "TeamHistorySection.swift").read_text(encoding="utf-8")
+        view = (SOURCES / "TeamMessagesView.swift").read_text(encoding="utf-8")
+        self.assertIn("TeamMessagesButton(count: team.messageCount, action: openMessages)", card)
+        self.assertIn("TeamMessagesSheet(team: team, load: loadMessages)", card)
+        self.assertNotIn("TeamMessagesPanel", card)  # the conversation is no longer a log under the agents
+        # No messages: the button stays in place but faded and unclickable; an unknown count still opens.
+        self.assertIn(".disabled(empty)", view)
+        self.assertIn("private var empty: Bool { count == 0 }", view)
+        self.assertIn("@Environment(\\.accessibilityReduceMotion)", view)
+        self.assertNotRegex(view, re.compile(r"(?<![A-Za-z0-9_])@State\b"))
+        script = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
+        self.assertIn('"${SCRIPT_DIR}/Sources/TeamMessagesView.swift"', script)
 
     def test_build_script_and_search_know_the_section(self) -> None:
         script = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")

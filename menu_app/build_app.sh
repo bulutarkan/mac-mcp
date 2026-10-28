@@ -84,6 +84,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/TeamUsage.swift"
   "${SCRIPT_DIR}/Sources/TeamUsageSection.swift"
   "${SCRIPT_DIR}/Sources/TeamHistorySection.swift"
+  "${SCRIPT_DIR}/Sources/TeamMessagesView.swift"
   "${SCRIPT_DIR}/Sources/AgentChoice.swift"
   "${SCRIPT_DIR}/Sources/TeamPresets.swift"
   "${SCRIPT_DIR}/Sources/TeamPresetsSection.swift"

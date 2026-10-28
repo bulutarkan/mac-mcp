@@ -1185,7 +1185,7 @@ struct SettingsView: View {
                             history: state.teamHistory,
                             loading: state.teamHistoryLoading,
                             issue: state.teamHistoryIssue,
-                            loadMessages: { await state.teamMessages(teamID: $0) }
+                            loadMessages: { await state.teamMessages(teamID: $0, after: $1) }
                         ) {
                             let shown = state.teamHistory?.teams.count ?? 0
                             Task { await state.refreshTeamHistory(limit: shown + 10) }

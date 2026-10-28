@@ -510,12 +510,15 @@ struct TeamHistoryAgent: Decodable, Identifiable, Equatable {
     let toolCalls: Int
     let durationMS: Int?
     let tokens: TeamHistoryTokens
+    /// The task it ran: team messages name their sender "task <id>".
+    let taskID: String?
 
     var id: String { agentID }
 
     enum CodingKeys: String, CodingKey {
         case label, provider, model, status, outcome, tokens
         case agentID = "agent_id"
+        case taskID = "task_id"
         case toolCalls = "tool_calls"
         case durationMS = "duration_ms"
     }
@@ -537,6 +540,8 @@ struct TeamHistoryTeam: Decodable, Identifiable, Equatable {
     let toolCalls: Int
     let tokens: TeamHistoryTokens
     let tokensUnknownAgents: Int
+    /// Messages the agents sent each other; nil when the server could not count them (or predates the count).
+    let messageCount: Int?
     let agents: [TeamHistoryAgent]
 
     var id: String { teamID }
@@ -552,6 +557,7 @@ struct TeamHistoryTeam: Decodable, Identifiable, Equatable {
         case agentCount = "agent_count"
         case toolCalls = "tool_calls"
         case tokensUnknownAgents = "tokens_unknown_agents"
+        case messageCount = "message_count"
     }
 }
 

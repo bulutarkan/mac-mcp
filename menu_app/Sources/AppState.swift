@@ -1688,12 +1688,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// One team's messages for its Team History card (#104); nil when they cannot be loaded.
-    func teamMessages(teamID: String) async -> TeamMessagesEnvelope? {
+    /// One team's messages for its Team History card (#104), oldest first after message `after`; nil when they
+    /// cannot be loaded.
+    func teamMessages(teamID: String, after: Int = 0) async -> TeamMessagesEnvelope? {
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return nil }
         return try? await fetch(
             base.appendingPathComponent("dashboard/api/agents/teams/\(teamID)/messages"),
-            query: ["limit": "200"],
+            query: ["limit": "200", "after": String(after)],
             timeout: 4.0
         )
     }

@@ -2454,11 +2454,14 @@ def team_history(*, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
     teams.sort(key=lambda team: float(team.get("created_at") or 0), reverse=True)
     page = teams[offset: offset + limit]
     labels: Dict[str, str] = {}
+    task_ids: Dict[str, str] = {}  # so the app can tell which agent wrote a team message ("task <id>")
     for team in page:
         for index, task in enumerate(team.get("tasks") or []):
             label = _history_label(task.get("role"), _HISTORY_ROLE_CHARS) or str(task.get("id") or f"task {index + 1}")
             for agent_id in task.get("agent_ids") or []:
                 labels[str(agent_id)] = label[:_HISTORY_ROLE_CHARS]
+                if task.get("id"):
+                    task_ids[str(agent_id)] = str(task["id"])[:80]
     all_ids = [str(agent_id) for team in page for agent_id in (team.get("agent_ids") or [])]
     try:
         from .provider_usage import agent_totals
@@ -2466,6 +2469,11 @@ def team_history(*, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
         usage_rows = agent_totals(all_ids)
     except Exception:
         usage_rows = {}
+    try:
+        message_counts: Optional[Dict[str, int]] = team_messages.store().sent_counts(
+            [team_messages.team_room(str(team.get("team_id") or "")) for team in page])
+    except Exception:
+        message_counts = None  # unknown, not zero: the app still lets the owner open the conversation
     rows: List[Dict[str, Any]] = []
     for team in page:
         team_id = str(team.get("team_id") or "")
@@ -2473,6 +2481,8 @@ def team_history(*, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
             row for index, agent_id in enumerate(team.get("agent_ids") or [])
             if (row := _history_agent(str(agent_id), labels.get(str(agent_id)) or f"Agent {index + 1}", usage_rows))
         ]
+        for agent in agents:
+            agent["task_id"] = task_ids.get(agent["agent_id"])
         try:
             summary = _team_summary(team_id, team)
         except Exception:
@@ -2503,6 +2513,7 @@ def team_history(*, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
             "tool_calls": sum(agent["tool_calls"] for agent in agents),
             "tokens": {**kinds, "total": sum(known) if known else None},
             "tokens_unknown_agents": len(agents) - len(known),
+            "message_count": message_counts.get(team_messages.team_room(team_id), 0) if message_counts is not None else None,
             "agents": agents,
         })
     return {

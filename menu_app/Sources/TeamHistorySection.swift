@@ -51,10 +51,11 @@ struct TeamHistorySection: View {
     let history: TeamHistoryEnvelope?
     let loading: Bool
     let issue: String?
-    let loadMessages: (String) async -> TeamMessagesEnvelope?
+    let loadMessages: (String, Int) async -> TeamMessagesEnvelope?
     let showMore: () -> Void
 
     @MacMCPState private var expanded: Set<String> = []
+    @MacMCPState private var conversation: TeamHistoryTeam?
 
     private var teams: [TeamHistoryTeam] { history?.teams ?? [] }
 
@@ -94,7 +95,7 @@ struct TeamHistorySection: View {
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.04)))
             } else {
                 ForEach(teams) { team in
-                    TeamHistoryCard(team: team, isExpanded: expanded.contains(team.id), loadMessages: loadMessages) {
+                    TeamHistoryCard(team: team, isExpanded: expanded.contains(team.id), openMessages: { conversation = team }) {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             if expanded.contains(team.id) {
                                 expanded.remove(team.id)
@@ -113,6 +114,9 @@ struct TeamHistorySection: View {
                     .disabled(loading)
                 }
             }
+        }
+        .sheet(item: Binding(get: { conversation }, set: { conversation = $0 })) { team in
+            TeamMessagesSheet(team: team, load: loadMessages)
         }
     }
 }
@@ -145,7 +149,7 @@ private struct TeamOutcomeRing: View {
 private struct TeamHistoryCard: View {
     let team: TeamHistoryTeam
     let isExpanded: Bool
-    let loadMessages: (String) async -> TeamMessagesEnvelope?
+    let openMessages: () -> Void
     let toggle: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -170,36 +174,50 @@ private struct TeamHistoryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: toggle) {
-                HStack(spacing: 12) {
-                    TeamOutcomeRing(succeeded: succeeded, total: team.agentCount, tint: outcome.tint, progress: progress)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(team.title.isEmpty ? "Untitled team" : team.title)
-                            .font(.callout.weight(.semibold))
-                            .lineLimit(1)
-                        Text([started, "\(team.agentCount) \(team.agentCount == 1 ? "agent" : "agents")", modelText]
-                            .filter { !$0.isEmpty }.joined(separator: " · "))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+            // Two halves of one row that both fold the card, with the messages button between them:
+            // a button inside a button would swallow its clicks.
+            HStack(spacing: 12) {
+                Button(action: toggle) {
+                    HStack(spacing: 12) {
+                        TeamOutcomeRing(succeeded: succeeded, total: team.agentCount, tint: outcome.tint, progress: progress)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(team.title.isEmpty ? "Untitled team" : team.title)
+                                .font(.callout.weight(.semibold))
+                                .lineLimit(1)
+                            Text([started, "\(team.agentCount) \(team.agentCount == 1 ? "agent" : "agents")", modelText]
+                                .filter { !$0.isEmpty }.joined(separator: " · "))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
                     }
-                    Spacer(minLength: 8)
-                    statColumn(TeamHistoryFormat.tokens(team.tokens.total), "tokens")
-                    statColumn("\(team.toolCalls)", team.toolCalls == 1 ? "tool call" : "tool calls")
-                    statColumn(TeamHistoryFormat.duration(team.durationMS), "time")
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .contentShape(Rectangle())
                 }
-                .padding(12)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                // On the button itself, so it keeps its press action for VoiceOver.
+                .accessibilityLabel(teamSpokenSummary)
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                .accessibilityHint("Shows or hides this team's agents")
+
+                TeamMessagesButton(count: team.messageCount, action: openMessages)
+
+                Button(action: toggle) {
+                    HStack(spacing: 12) {
+                        statColumn(TeamHistoryFormat.tokens(team.tokens.total), "tokens")
+                        statColumn("\(team.toolCalls)", team.toolCalls == 1 ? "tool call" : "tool calls")
+                        statColumn(TeamHistoryFormat.duration(team.durationMS), "time")
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHidden(true)  // the first half already reads the numbers and folds the card
             }
-            .buttonStyle(.plain)
-            // On the button itself, so it keeps its press action for VoiceOver.
-            .accessibilityLabel(teamSpokenSummary)
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            .accessibilityHint("Shows or hides this team's agents")
+            .padding(12)
 
             if isExpanded {
                 Divider().padding(.horizontal, 12)
@@ -218,7 +236,6 @@ private struct TeamHistoryCard: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    TeamMessagesPanel(teamID: team.teamID, load: loadMessages)
                 }
                 .padding(12)
                 .transition(.opacity)
@@ -258,137 +275,6 @@ private struct TeamHistoryCard: View {
                 .foregroundStyle(.secondary)
         }
         .frame(minWidth: 56, alignment: .trailing)
-    }
-}
-
-/// What a team's agents wrote to each other (#104), who saw it, and whose results they read (#106).
-private struct TeamMessagesPanel: View {
-    let teamID: String
-    let load: (String) async -> TeamMessagesEnvelope?
-
-    @MacMCPState private var envelope: TeamMessagesEnvelope?
-    @MacMCPState private var loaded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-            HStack(spacing: 6) {
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                Text("Messages").font(.caption.weight(.semibold))
-                if let counts = envelope?.messageCounts, counts.sent > 0 {
-                    Text(Self.countsText(counts))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            if !loaded {
-                ProgressView().controlSize(.small)
-            } else if let envelope {
-                if envelope.messages.isEmpty {
-                    Text("The agents did not write to each other.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(envelope.messages) { message in
-                        TeamMessageRow(message: message)
-                    }
-                    if envelope.hasMore {
-                        Text("Older messages are not shown here.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                if let reads = envelope.dependencyReads, !reads.isEmpty {
-                    ForEach(Array(reads.enumerated()), id: \.offset) { _, read in
-                        Label("\(read.readerTask) read the full result of \(read.targetTask)\(read.count > 1 ? " (\(read.count)×)" : "")",
-                              systemImage: "doc.text.magnifyingglass")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Text("Could not load this team's messages.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-            }
-        }
-        .task(id: teamID) {
-            envelope = await load(teamID)
-            loaded = true
-        }
-    }
-
-    static func countsText(_ counts: TeamMessageCounts) -> String {
-        var parts = [TeamHistoryFormat.count(counts.sent, "message")]
-        if counts.toFinishedRecipients > 0 {
-            parts.append("\(counts.toFinishedRecipients) reached a finished agent")
-        }
-        if counts.forwarded > 0 {
-            parts.append("\(counts.forwarded) passed on")
-        }
-        return parts.joined(separator: " · ")
-    }
-}
-
-/// One message: who to whom, when, the text, and whether it was seen, opened or passed on.
-private struct TeamMessageRow: View {
-    let message: TeamMessageItem
-
-    private var time: String {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime]
-        let fixed = message.sentAt.replacingOccurrences(of: #"([+-]\d{2})(\d{2})$"#, with: "$1:$2", options: .regularExpression)
-        guard let date = parser.date(from: fixed) else { return message.sentAt }
-        return date.formatted(date: .omitted, time: .shortened)
-    }
-
-    private var delivery: (text: String, symbol: String, tint: Color) {
-        if message.deliveryNote == "recipient_finished" {
-            return ("Recipient had finished", "arrow.uturn.right.circle", .orange)
-        }
-        let opened = message.deliveries.filter { $0.readAt != nil }.map(\.label)
-        if !opened.isEmpty { return ("Opened by \(opened.joined(separator: ", "))", "envelope.open", .green) }
-        let shown = message.deliveries.map(\.label)
-        if !shown.isEmpty { return ("Seen by \(shown.joined(separator: ", "))", "eye", .secondary) }
-        return ("Not seen yet", "eye.slash", .secondary)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text("\(message.fromLead == true ? "Lead" : message.from) → \(message.toLabel ?? "everyone")")
-                    .font(.caption2.weight(.semibold))
-                    .lineLimit(1)
-                if message.kind != "update" {
-                    Text(message.kind.capitalized)
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.primary.opacity(0.08)))
-                }
-                if message.forwardedFrom != nil {
-                    Text("Passed on")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.orange)
-                }
-                Spacer(minLength: 4)
-                Text(time).font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
-            }
-            Text(message.body)
-                .font(.caption)
-                .lineLimit(4)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Label(delivery.text, systemImage: delivery.symbol)
-                .font(.caption2)
-                .foregroundStyle(delivery.tint)
-                .lineLimit(1)
-        }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.03)))
-        .accessibilityElement(children: .combine)
     }
 }
 
