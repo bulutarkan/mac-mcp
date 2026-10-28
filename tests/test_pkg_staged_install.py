@@ -16,7 +16,8 @@ import urllib.request
 from pathlib import Path
 
 STAGE = os.getenv("MAC_MCP_PKG_STAGE", "")
-PORT = 8878
+# Another isolated server may already hold 8878; MAC_MCP_PKG_TEST_PORT picks a free one.
+PORT = int(os.getenv("MAC_MCP_PKG_TEST_PORT", "8878"))
 
 
 @unittest.skipUnless(STAGE, "set MAC_MCP_PKG_STAGE to a staged package home tree")
