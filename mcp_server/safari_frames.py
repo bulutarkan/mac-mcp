@@ -4,14 +4,16 @@ Page scripts reach a cross-origin iframe only in Chrome, through the companion's
 has no such door, but it shows each child frame to Accessibility as a web area of its own, with its
 URL, inside the page's. browser_observe and browser_act with frame=... in Safari read and use that
 web area instead: the frame's labelled controls get element ids, and clicks, text, choices and
-check boxes go through Accessibility to the exact element that was observed. Safari is not
-brought forward; choosing from a list opens its menu on screen for a moment.
+check boxes go through Accessibility to the exact element that was observed; a page's custom
+combobox is opened and its option pressed. Safari is not brought forward; choosing in an HTML
+select opens its menu on screen for a moment.
 
 Accessibility sees only the tab a window shows, so the tab must be the current one in its window.
 """
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
@@ -28,6 +30,7 @@ _CONTROL_ROLES = {
 _TEXT_ROLES = {"AXStaticText": "text", "AXHeading": "heading"}
 _MAX_TEXTS = 80
 _SUPPORTED = ("click", "fill", "type", "select", "check", "uncheck")
+_SETTLE_S = 0.6
 
 _OBSERVATIONS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _LOCK = threading.Lock()
@@ -45,9 +48,9 @@ def _name(node: Dict[str, Any]) -> str:
     return ""
 
 
-def _element(node: Dict[str, Any], element_id: str) -> Dict[str, Any]:
+def _element(node: Dict[str, Any], element_id: str, name: str) -> Dict[str, Any]:
     role = _CONTROL_ROLES[node["role"]]
-    out: Dict[str, Any] = {"element_id": element_id, "role": role, "name": _name(node)}
+    out: Dict[str, Any] = {"element_id": element_id, "role": role, "name": name}
     value = str(node.get("value") or "")
     if role in {"checkbox", "radio"}:
         out["checked"] = value == "1"
@@ -95,15 +98,22 @@ def observe(page_url: str, frame: str, max_elements: int = 80) -> Dict[str, Any]
     texts: List[Dict[str, Any]] = []
     targets: Dict[str, Dict[str, Any]] = {}
     text_paths: List[str] = []
+    # The last text seen under each parent: a page's custom control often has no name of its own, only a
+    # label drawn just before it ("Country *" above a combobox).
+    label_before: Dict[str, str] = {}
     for node in nodes:
         role = str(node.get("role") or "")
         path = str(node.get("id") or "")
+        parent = path.rsplit("/", 1)[0]
+        if role in _TEXT_ROLES:
+            label_before[parent] = str(node.get("value") or node.get("title") or "").strip()
         if role in _CONTROL_ROLES and len(elements) < max(1, int(max_elements)):
             element_id = f"a{len(elements) + 1}"
-            elements.append(_element(node, element_id))
+            name = _name(node) or label_before.get(parent, "")
+            elements.append(_element(node, element_id, name))
             targets[element_id] = {"path": path, "role": role, "title": str(node.get("title") or ""),
                                    "description": str(node.get("description") or ""), "kind": _CONTROL_ROLES[role],
-                                   "name": _name(node), "value": str(node.get("value") or "")}
+                                   "name": name, "value": str(node.get("value") or "")}
         elif role in _TEXT_ROLES and len(texts) < _MAX_TEXTS:
             # A static text repeats the text of the one it sits in; keep the outer one.
             if any(path.startswith(outer + "/") for outer in text_paths):
@@ -124,7 +134,24 @@ def observe(page_url: str, frame: str, max_elements: int = 80) -> Dict[str, Any]
     }
 
 
-def _act_on(record: Dict[str, Any], element_id: str, op: str, text: Optional[str] = None) -> Dict[str, Any]:
+def _refresh_paths(record: Dict[str, Any]) -> bool:
+    """Read the frame again and move each target to where the same control (kind and name) now is.
+    Safari adds and removes small controls as focus moves (an AutoFill button beside the focused
+    field), which shifts the paths of the controls after them."""
+    fresh = observe(record["page_url"], record["frame"])
+    current = _recall(fresh.get("observation_id")) if fresh.get("ok") else None
+    if not current:
+        return False
+    for target in record["targets"].values():
+        same = [t for t in current["targets"].values() if t["kind"] == target["kind"] and t["name"] == target["name"]]
+        if len(same) == 1:
+            target.update({key: same[0][key] for key in ("path", "role", "title", "description", "value")})
+    record["pid"] = current["pid"]
+    return True
+
+
+def _act_on(record: Dict[str, Any], element_id: str, op: str, text: Optional[str] = None,
+            retried: bool = False) -> Dict[str, Any]:
     target = record["targets"].get(element_id)
     if target is None:
         return {"ok": False, "error": "unknown_element_id", "element_id": element_id,
@@ -135,6 +162,8 @@ def _act_on(record: Dict[str, Any], element_id: str, op: str, text: Optional[str
     if target["description"]:
         expect["description"] = target["description"]
     answer = ax_native.act(app_pid=record["pid"], element_id=target["path"], op=op, text=text, replace=True, expect=expect)
+    if answer and answer.get("reason_code") == "STALE_ELEMENT_PATH" and not retried and _refresh_paths(record):
+        return _act_on(record, element_id, op, text, retried=True)
     if answer is None:
         return {"ok": False, "error": "frame_accessibility_unavailable", "element_id": element_id}
     out = {"element_id": element_id, "name": target["name"], **answer}
@@ -157,8 +186,14 @@ def _set(record: Dict[str, Any], element_id: str, value: Any) -> Dict[str, Any]:
     if target is None:
         return _act_on(record, element_id, "press")
     kind = target["kind"]
-    if kind == "select" or (kind == "combobox" and target["role"] == "AXPopUpButton"):
+    if kind == "select":
         return _act_on(record, element_id, "select_option", str(value))
+    if kind == "combobox":
+        # A page's combobox usually opens a list to choose from; one that opens none takes typed text.
+        chosen = _act_on(record, element_id, "select_option", str(value))
+        if chosen.get("reason_code") != "MENU_NOT_FOUND":
+            return chosen
+        return _act_on(record, element_id, "set_text", str(value))
     if kind in {"checkbox", "radio"}:
         wanted = value if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "yes", "on", "checked"}
         if (target["value"] == "1") == wanted:
@@ -211,6 +246,8 @@ def act(page_url: str, frame: str, actions: List[Dict[str, Any]], observation_id
     ok = bool(results) and all(r.get("ok") for r in results) and len(results) == len(actions)
     response: Dict[str, Any] = {"ok": ok, "transport": "accessibility", "results": results, "url": record.get("frame_url")}
     if return_state != "none":
+        # Pages validate a moment after input (a submit button turns on); read the frame once that settled.
+        time.sleep(_SETTLE_S if results else 0)
         state = observe(page_url, frame)
         response["state"] = state if not state.get("ok") else {
             key: state.get(key) for key in ("observation_id", "url", "element_count", "elements", "texts")

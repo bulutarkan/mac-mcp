@@ -52,6 +52,15 @@ class SafariFrameObserveTests(unittest.TestCase):
         # The nested repeat of "First name" is not listed twice.
         self.assertEqual(["First name", "Thanks, Ada!"], [t["text"] for t in out["texts"]])
 
+    def test_an_unnamed_control_takes_the_label_drawn_before_it(self) -> None:
+        nodes = [{"id": "w1/2/9", "role": "AXStaticText", "value": "Country *"},
+                 {"id": "w1/2/10", "role": "AXComboBox", "actions": ["AXPress"]},
+                 {"id": "w1/3/1", "role": "AXComboBox"}]
+        answer = {"ok": True, "pid": 501, "frame_url": FRAME, "page_url": PAGE, "nodes": nodes}
+        with patch.object(safari_frames.ax_native, "observe_frame", return_value=answer):
+            out = safari_frames.observe(PAGE, "sdk.forms")
+        self.assertEqual(["Country *", ""], [e["name"] for e in out["elements"]])
+
     def test_failures_say_why_and_what_to_do(self) -> None:
         with patch.object(safari_frames.ax_native, "observe_frame", return_value=None):
             self.assertEqual("frame_accessibility_unavailable", safari_frames.observe(PAGE, "x")["error"])
@@ -67,6 +76,9 @@ class SafariFrameObserveTests(unittest.TestCase):
 
 class SafariFrameActTests(unittest.TestCase):
     def setUp(self) -> None:
+        settle = patch.object(safari_frames, "_SETTLE_S", 0)
+        settle.start()
+        self.addCleanup(settle.stop)
         with patch.object(safari_frames.ax_native, "observe_frame", return_value=_frame_answer()):
             self.observation = safari_frames.observe(PAGE, "sdk.forms")["observation_id"]
 
@@ -95,6 +107,24 @@ class SafariFrameActTests(unittest.TestCase):
         self.assertEqual({"role": "AXTextField", "title": "First name"}, calls[0]["expect"])
         self.assertEqual("Thanks, Ada!", out["state"]["texts"][-1]["text"])
 
+    def test_a_combobox_is_chosen_from_its_list_or_typed_when_it_has_none(self) -> None:
+        nodes = _nodes() + [{"id": f"{ROOT}/3", "role": "AXComboBox", "title": "Region"}]
+        with patch.object(safari_frames.ax_native, "observe_frame", return_value=_frame_answer(nodes=nodes)):
+            observation = safari_frames.observe(PAGE, "sdk.forms")["observation_id"]
+        for answers, ops in (({}, ["select_option"]),
+                             ({"select_option": {"ok": False, "reason_code": "MENU_NOT_FOUND"}}, ["select_option", "set_text"])):
+            calls = []
+
+            def act(**kwargs):
+                calls.append(kwargs["op"])
+                return answers.get(kwargs["op"], {"ok": True})
+
+            with self.subTest(ops=ops), patch.object(safari_frames.ax_native, "act", side_effect=act), \
+                    patch.object(safari_frames.ax_native, "observe_frame", return_value=_frame_answer(nodes=nodes)):
+                out = safari_frames.act(PAGE, "sdk.forms", [{"type": "fill", "values": {"Region": "Marmara"}}], observation)
+            self.assertTrue(out["ok"])
+            self.assertEqual(ops, calls)
+
     def test_a_box_already_in_the_wanted_state_is_left_alone(self) -> None:
         out, calls = self._act([{"type": "uncheck", "element_id": "a4"}])
         self.assertTrue(out["ok"])
@@ -106,6 +136,25 @@ class SafariFrameActTests(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(("select_option", "Germany"), (calls[0]["op"], calls[0]["text"]))
         self.assertEqual({"role": "AXButton", "title": "Register", "description": "Register now"}, calls[1]["expect"])
+
+    def test_a_control_that_moved_is_found_again_by_kind_and_name(self) -> None:
+        moved = [dict(n) for n in _nodes()]
+        for node in moved:
+            if node.get("title") == "Email":
+                node["id"] = f"{ROOT}/1/5"  # an AutoFill button now sits before it
+        answers = iter([{"ok": False, "reason_code": "STALE_ELEMENT_PATH"}, {"ok": True, "verified": True}])
+        calls = []
+
+        def act(**kwargs):
+            calls.append(kwargs["element_id"])
+            return next(answers)
+
+        with patch.object(safari_frames.ax_native, "act", side_effect=act), \
+                patch.object(safari_frames.ax_native, "observe_frame", return_value=_frame_answer(nodes=moved)):
+            out = safari_frames.act(PAGE, "sdk.forms", [{"type": "fill", "element_id": "a2", "text": "x@example.com"}],
+                                    self.observation)
+        self.assertTrue(out["ok"])
+        self.assertEqual([f"{ROOT}/1/4", f"{ROOT}/1/5"], calls)
 
     def test_stops_at_the_first_failure(self) -> None:
         out, calls = self._act([{"type": "select", "element_id": "a3", "option": "Narnia"},

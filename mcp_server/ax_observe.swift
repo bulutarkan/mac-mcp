@@ -470,9 +470,105 @@ func observeFrame(_ options: [String: String]) -> (Int32, String, String) {
                    "nodes": nodes, "truncated": budget <= 0])
 }
 
+/// The label of an option in a list: its title, else its value.
+func optionLabel(_ element: AXUIElement) -> String {
+    let a = attributes(element, ["AXTitle", "AXValue"])
+    let title = text(a["AXTitle"]).trimmingCharacters(in: .whitespaces)
+    return title.isEmpty ? text(a["AXValue"]).trimmingCharacters(in: .whitespaces) : title
+}
+
+/// The best match for `option` among `items`: exact, then ignoring case, then the one item containing it.
+func pickOption(_ items: [(AXUIElement, String)], _ option: String) -> (AXUIElement, String)? {
+    let wanted = option.lowercased()
+    return items.first { $0.1 == option } ?? items.first { $0.1.lowercased() == wanted }
+        ?? { let partial = items.filter { $0.1.lowercased().contains(wanted) }; return partial.count == 1 ? partial[0] : nil }()
+}
+
+/// The lists of options under `root` (a web page's custom combobox draws one when it opens), breadth first.
+/// A box can hold other small lists too (an icon, the chosen value), so every list is returned.
+func optionLists(under root: AXUIElement, budget: Int = 2500) -> [[(AXUIElement, String)]] {
+    var queue = [root]
+    var seen = 0
+    var lists: [[(AXUIElement, String)]] = []
+    while !queue.isEmpty, seen < budget {
+        let element = queue.removeFirst()
+        seen += 1
+        let a = attributes(element, ["AXRole", "AXChildren"])
+        let children = (a["AXChildren"] as? [AXUIElement]) ?? []
+        if ["AXList", "AXListBox", "AXMenu"].contains(text(a["AXRole"])) {
+            let items = children.map { ($0, optionLabel($0)) }.filter { !$0.1.isEmpty }
+            if !items.isEmpty { lists.append(items) }
+        }
+        queue += children
+    }
+    return lists
+}
+
+/// What a control shows: its value and the text inside it (a custom combobox shows the choice as text).
+func shownText(_ element: AXUIElement, depth: Int = 0) -> String {
+    if depth > 4 { return "" }
+    let a = attributes(element, ["AXRole", "AXValue", "AXTitle", "AXChildren"])
+    if ["AXList", "AXListBox", "AXMenu"].contains(text(a["AXRole"])) { return "" }
+    var out = [text(a["AXValue"]), text(a["AXTitle"])].filter { !$0.isEmpty }.joined(separator: " ")
+    for child in ((a["AXChildren"] as? [AXUIElement]) ?? []).prefix(20) { out += " " + shownText(child, depth: depth + 1) }
+    return out
+}
+
+/// Chooses `option` in a web page's custom combobox: opens it, presses the option in the list it draws,
+/// and reads the choice back from what the box shows. Nothing leaves the page.
+func selectFromList(_ element: AXUIElement, option: String) -> [String: Any] {
+    if shownText(element).contains(option) {
+        return ["ok": true, "op": "select_option", "verified": true, "effect_observed": false]
+    }
+    let parent = attributes(element, ["AXParent"])["AXParent"]
+    let scope = parent.flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil } ?? element
+    // The option, from the first list that has it, and the longest list seen (to name the choices if none has it).
+    func search() -> ((AXUIElement, String)?, [(AXUIElement, String)]) {
+        let lists = optionLists(under: element) + optionLists(under: scope)
+        let longest = lists.max { $0.count < $1.count } ?? []
+        for list in lists where list.count > 1 || list.first?.1 == option {
+            if let found = pickOption(list, option) { return (found, longest) }
+        }
+        return (nil, longest)
+    }
+    // A box that is already open keeps its list; pressing it again would close it.
+    var (chosen, longest) = search()
+    if chosen == nil, longest.count < 2, AXUIElementPerformAction(element, "AXPress" as CFString) != .success {
+        return ["ok": false, "reason_code": "ACCESSIBILITY_ACTION_FAILED", "error": "the box did not open"]
+    }
+    let deadline = Date().addingTimeInterval(1.5)
+    while chosen == nil && Date() < deadline {
+        usleep(80_000)
+        (chosen, longest) = search()
+        if chosen == nil && longest.count > 1 { break }  // the list is there and the option is not in it
+    }
+    guard !longest.isEmpty || chosen != nil else {
+        return ["ok": false, "reason_code": "MENU_NOT_FOUND", "error": "the box opened no list Accessibility could see"]
+    }
+    guard let chosen else {
+        AXUIElementPerformAction(element, "AXPress" as CFString)  // close it again
+        return ["ok": false, "reason_code": "OPTION_NOT_FOUND", "error": "no option named '\(option)'",
+                "options": longest.prefix(60).map { $0.1 }]
+    }
+    AXUIElementPerformAction(chosen.0, "AXPress" as CFString)
+    var shown = ""
+    let readBack = Date().addingTimeInterval(1.5)
+    repeat {
+        usleep(80_000)
+        shown = shownText(element)
+    } while !shown.contains(chosen.1) && Date() < readBack
+    let verified = shown.contains(chosen.1)
+    return ["ok": verified, "op": "select_option", "selected": chosen.1, "verified": verified, "effect_observed": verified]
+        .merging(verified ? [:] : ["reason_code": "ACTION_NO_EFFECT", "error": "the box does not show the choice"]) { a, _ in a }
+}
+
 /// Chooses `option` in a pop-up button (an HTML select): opens its menu, presses the item, and reads
 /// the choice back. The menu shows on screen for a moment; the app is not brought forward.
+/// Other controls (a page's custom combobox) go through selectFromList.
 func selectOption(_ element: AXUIElement, option: String) -> [String: Any] {
+    if text(attributes(element, ["AXRole"])["AXRole"]) != "AXPopUpButton" {
+        return selectFromList(element, option: option)
+    }
     let before = text(attributes(element, ["AXValue"])["AXValue"])
     if before == option { return ["ok": true, "op": "select_option", "verified": true, "effect_observed": false] }
     guard AXUIElementPerformAction(element, "AXPress" as CFString) == .success else {
@@ -502,10 +598,7 @@ func selectOption(_ element: AXUIElement, option: String) -> [String: Any] {
     }
     let items = ((attributes(menu, ["AXChildren"])["AXChildren"] as? [AXUIElement]) ?? [])
         .map { ($0, text(attributes($0, ["AXTitle"])["AXTitle"])) }.filter { !$0.1.isEmpty }
-    let wanted = option.lowercased()
-    let chosen = items.first { $0.1 == option } ?? items.first { $0.1.lowercased() == wanted }
-        ?? { let partial = items.filter { $0.1.lowercased().contains(wanted) }; return partial.count == 1 ? partial[0] : nil }()
-    guard let chosen else {
+    guard let chosen = pickOption(items, option) else {
         AXUIElementPerformAction(menu, "AXCancel" as CFString)
         return ["ok": false, "reason_code": "OPTION_NOT_FOUND", "error": "no option named '\(option)'",
                 "options": items.prefix(60).map { $0.1 }]
