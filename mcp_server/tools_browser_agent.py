@@ -1020,7 +1020,8 @@ return __mcpB64({{
   ok:true,
   known:known,
   compatible:compatible,
-  not_modified:known&&compatible&&previousRevision===currentRevision,
+  /* A typed or chosen value moves no DOM node: the controls' values must match too. */
+  not_modified:known&&compatible&&previousRevision===currentRevision&&(!meta||!meta.values||meta.values===__mcpValuesFp()),
   previous_observation_id:prev,
   dom_revision:currentRevision,
   url:String(location.href),

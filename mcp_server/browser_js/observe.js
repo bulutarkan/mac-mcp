@@ -86,7 +86,7 @@ for(var pi=0;pi<picked.length;pi++){
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);
 s.observations[obs]=s.mutationRevision;
 s.observationMeta[obs]={scope:scope,max_elements:__MAX_ELEMENTS__,view:{sx:scrollX,sy:scrollY,w:innerWidth,h:innerHeight},
-  ids:__mcpVisibleControls(s).map(function(x){return x.id;}),url:location.href};
+  ids:__mcpVisibleControls(s).map(function(x){return x.id;}),url:location.href,values:__mcpValuesFp()};
 s.lastSeen={ids:s.observationMeta[obs].ids,url:location.href,title:document.title};
 // Canvas apps draw their controls: say so, and where, instead of returning an empty-looking page.
 var canvasHint=(function(){var vw=innerWidth*innerHeight,best=null,area=0;

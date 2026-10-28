@@ -54,6 +54,9 @@ function __mcpStartMutationWatch(s,ttl){
    which both worlds share, so an id handed out in one world still finds its element in the other. */
 function __mcpPageToken(){var de=document.documentElement,t=de&&de.getAttribute('data-mac-mcp-page');if(!t||!/^[a-z0-9]{4,12}$/.test(t)){t=Math.random().toString(36).slice(2,10);try{de.setAttribute('data-mac-mcp-page',t);}catch(e){}}return t;}
 function __mcpNextId(s){var de=document.documentElement,n=Math.max(Number(de&&de.getAttribute('data-mac-mcp-n'))||0,s.counter)+1;s.counter=n;try{de.setAttribute('data-mac-mcp-n',String(n));}catch(e){}return n;}
+/* Typing or picking a value moves no DOM node, so the mutation revision misses it: a short
+   fingerprint of the form controls lets a repeat observe tell that the page did change. */
+function __mcpValuesFp(){var h=0,list=document.querySelectorAll('input,textarea,select');for(var i=0;i<list.length&&i<2000;i++){var el=list[i],v=String(el.value==null?'':el.value)+(el.checked?'1':'0');for(var j=0;j<v.length;j++){h=(h*31+v.charCodeAt(j))|0;}h=(h*31+i)|0;}return list.length+':'+h;}
 function __mcpState(){
   var s=window.__macMcpBrowserAgent;
   if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:__mcpPageToken(),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),observationMeta:Object.create(null),rootObservers:[],observerTimer:null};}
