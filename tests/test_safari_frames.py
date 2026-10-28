@@ -150,6 +150,21 @@ class SafariFrameRoutingTests(unittest.TestCase):
         self.assertEqual((PAGE, "sdk.forms", agent._DEFAULT_OBSERVE_ELEMENTS), observe.call_args.args)
         self.assertEqual({"selector": "sdk.forms", "url": FRAME, "transport": "accessibility"}, out["frame"])
 
+    def test_observing_may_bind_the_tab_and_acting_may_not(self) -> None:
+        leases = []
+
+        @contextmanager
+        def lease(*args, **kwargs):
+            leases.append(kwargs)
+            yield _target()
+
+        with patch.object(agent, "_tab_lease", lease), patch.object(agent, "_require_stable_handle_for_mutation"), \
+                patch.object(agent.safari_frames, "observe", return_value={"ok": True}), \
+                patch.object(agent.safari_frames, "act", return_value={"ok": True}):
+            agent.browser_observe(None, "Safari", tab_handle="safari:abc", frame="sdk.forms")
+            agent.browser_act(None, "Safari", [{"type": "click", "element_id": "a1"}], tab_handle="safari:abc", frame="sdk.forms")
+        self.assertEqual([{"allow_rebind": True, "mutation": False}, {"allow_rebind": False, "mutation": True}], leases)
+
     def test_a_tab_its_window_does_not_show_is_explained(self) -> None:
         with patch.object(agent, "_tab_lease", self._lease(_target(active=False))), \
                 patch.object(agent.safari_frames, "observe") as observe:

@@ -5821,7 +5821,8 @@ def _safari_frame_call(browser: str, frame: Optional[str], tab_handle: Optional[
         return None
     if mutation:
         _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
-    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=mutation) as target:
+    # An observation may (re)bind the tab to this agent, as a page observation does; an action may not.
+    with _tab_lease(b, tab_handle, window_index, tab_index, allow_rebind=not mutation, mutation=mutation) as target:
         if not target.active:
             payload = safari_frames.unavailable(
                 "Safari shows this tab's frames to Accessibility only while the tab is the one its window shows.",
