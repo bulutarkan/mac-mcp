@@ -32,6 +32,10 @@ CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, text TEXT, attribute
                       is_from_me INTEGER, service TEXT, cache_has_attachments INTEGER, handle_id INTEGER,
                       associated_message_type INTEGER DEFAULT 0, item_type INTEGER DEFAULT 0);
 CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER, message_date INTEGER);
+CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, guid TEXT, created_date INTEGER, filename TEXT, uti TEXT,
+                         mime_type TEXT, transfer_name TEXT, total_bytes INTEGER, is_sticker INTEGER DEFAULT 0,
+                         hide_attachment INTEGER DEFAULT 0, is_commsafety_sensitive INTEGER DEFAULT 0);
+CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
 """
 
 
@@ -97,6 +101,16 @@ class FakeDatabase:
         self.db.execute("INSERT INTO chat_message_join VALUES (?,?,?)", (chat, rowid, when))
         self.db.commit()
         return rowid
+
+    def attach(self, message: int, name: str, mime: str, size: int, *, uti: str = "", hidden: int = 0,
+               sensitive: int = 0, when: int = 0) -> None:
+        rowid = self.db.execute("SELECT count(*) FROM attachment").fetchone()[0] + 1
+        self.db.execute("INSERT INTO attachment (ROWID, guid, created_date, filename, uti, mime_type, transfer_name, "
+                        "total_bytes, hide_attachment, is_commsafety_sensitive) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (rowid, f"att-{rowid}", when, f"~/Library/Messages/Attachments/x/{name}", uti, mime, name,
+                         size, hidden, sensitive))
+        self.db.execute("INSERT INTO message_attachment_join VALUES (?, ?)", (message, rowid))
+        self.db.commit()
 
     def runner(self, sql, params, max_rows):
         """What Mac MCP Messages Reader returns, from a read-only connection."""
@@ -179,6 +193,42 @@ class ReadMessagesTests(ReaderFixture):
         self.assertNotIn("A" * 40, messages[0]["text"])
         self.assertEqual(messages_reader.TEXT_LIMIT, len(messages[1]["text"]))
         self.assertTrue(messages[1]["text_truncated"])
+
+
+    def test_attachments_come_with_name_kind_size_and_date_never_their_path(self) -> None:
+        # Only has_attachments used to come back (#132).
+        photo = self.fake.add(1, None, attachments=1, when=apple_ns(2026, 10, 1))
+        self.fake.attach(photo, "IMG_0001.HEIC", "image/heic", 2_400_000, uti="public.heic",
+                         when=int((datetime(2026, 10, 1, 12, tzinfo=timezone.utc) - EPOCH).total_seconds()))
+        self.fake.attach(photo, "link.pluginPayloadAttachment", "", 100)
+        self.fake.attach(photo, "hidden.bin", "", 5, hidden=1)
+        doc = self.fake.add(1, "sözleşme ekte", attachments=1, when=apple_ns(2026, 10, 2))
+        self.fake.attach(doc, "Sozlesme.pdf", "application/pdf", 88_000)
+        private = self.fake.add(1, None, attachments=1, when=apple_ns(2026, 10, 3))
+        self.fake.attach(private, "private.jpg", "image/jpeg", 10, sensitive=1)
+        many = self.fake.add(1, "çok foto", attachments=1, when=apple_ns(2026, 10, 4))
+        for index in range(messages_reader.ATTACHMENTS_PER_MESSAGE + 3):
+            self.fake.attach(many, f"p{index}.jpg", "image/jpeg", 1)
+        plain = self.fake.add(1, "eksiz", when=apple_ns(2026, 10, 5))
+        rows = {m["message_id"]: m for m in messages_reader.read_messages("any;-;+905551112233", None, limit=10)["messages"]}
+        self.assertEqual([{"kind": "image", "name": "IMG_0001.HEIC", "type": "image/heic", "bytes": 2_400_000,
+                           "date": rows[f"msg-{photo}"]["attachments"][0]["date"]}], rows[f"msg-{photo}"]["attachments"])
+        self.assertTrue(rows[f"msg-{photo}"]["attachments"][0]["date"].startswith("2026-10-01"))
+        self.assertEqual(("pdf", "Sozlesme.pdf"), (rows[f"msg-{doc}"]["attachments"][0]["kind"],
+                                                  rows[f"msg-{doc}"]["attachments"][0]["name"]))
+        self.assertNotIn("name", rows[f"msg-{private}"]["attachments"][0])
+        self.assertIn("sensitive", rows[f"msg-{private}"]["attachments"][0]["name_hidden"])
+        self.assertEqual(messages_reader.ATTACHMENTS_PER_MESSAGE, len(rows[f"msg-{many}"]["attachments"]))
+        self.assertNotIn("attachments", rows[f"msg-{plain}"])
+        self.assertNotIn("Library/Messages", json.dumps(rows))
+        found = messages_reader.search_messages("sözleşme", limit=5)["messages"]
+        self.assertEqual("Sozlesme.pdf", found[0]["attachments"][0]["name"])
+        # Files by name, across chats, for personal_search: never the sensitive one, never a path.
+        files = messages_reader.search_attachments("sozlesme", limit=5)["attachments"]
+        self.assertEqual([("Sozlesme.pdf", "pdf", f"msg-{doc}", "any;-;+905551112233")],
+                         [(row["name"], row["kind"], row["message_id"], row["chat_id"]) for row in files])
+        self.assertEqual([], messages_reader.search_attachments("private", limit=5)["attachments"])
+        self.assertEqual([], messages_reader.search_attachments("link", limit=5)["attachments"])
 
 
 class SearchMessagesTests(ReaderFixture):

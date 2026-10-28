@@ -1,9 +1,11 @@
-"""#45: the Photos library through Mac MCP Photos (PhotoKit), read-only.
+"""#45: the Photos library through Mac MCP Photos (PhotoKit); #132: favourites and album membership.
 
 Photos had no adapter: mac_app app=Photos fell back to the generic path. Now list_albums, find_photos and
 export_photos go through a small helper the owner allows once in Privacy & Security › Photos. The Photos
-app is never opened and the library never changed; items say has_location, never where. A fake library
-stands in for the helper here; the helper itself ran against the real library in the E2E check.
+app is never opened; items say has_location, never where. The only changes are a favourite mark and whether
+an item is in one of the owner's own albums (#132), each read back and undone by the opposite call; items are
+never edited or deleted. A fake library stands in for the helper here; the helper itself ran against the real
+library in the E2E check.
 """
 from __future__ import annotations
 
@@ -63,7 +65,27 @@ class FakeLibrary:
                 path.write_bytes(b"heic-bytes")
                 out.append({"id": item_id, "ok": True, "path": str(path)})
             return {"ok": True, "items": out, "access": "granted"}
+        if action == "set_favorite":
+            rows = []
+            for item_id in request["ids"]:
+                item = next((row for row in ITEMS if row["id"] == item_id), None)
+                if item is not None:
+                    rows.append({"id": item_id, "favorite": request["favorite"], "was_favorite": item["favorite"],
+                                 "ok": not self.ignore})
+            changed = sum(1 for row in rows if row["was_favorite"] != request["favorite"])
+            return {"ok": True, "items": rows, "changed": changed,
+                    "missing": [item for item in request["ids"] if not any(row["id"] == item for row in ITEMS)]}
+        if action in {"album_add", "album_remove"}:
+            if request["album"] == "Favorites":
+                return {"ok": False, "error": "album_not_editable", "message": "Favorites is kept by Photos itself."}
+            adding = action == "album_add"
+            rows = [{"id": item_id, "in_album": adding, "was_in_album": item_id == "B/L0/001", "ok": True}
+                    for item_id in request["ids"]]
+            return {"ok": True, "album": {"id": "ALB/1", "title": "Tatil"}, "items": rows, "missing": [],
+                    "changed": sum(1 for row in rows if row["was_in_album"] != adding)}
         raise AssertionError(action)
+
+    ignore = False
 
 
 class PhotosAdapterTests(unittest.TestCase):
@@ -75,7 +97,8 @@ class PhotosAdapterTests(unittest.TestCase):
 
     def test_capabilities_say_photos_is_built_in_and_whether_access_is_given(self) -> None:
         caps = self.call(FakeLibrary(access="not_asked"), action="capabilities")
-        self.assertEqual(["list_albums", "find_photos", "export_photos"], caps["actions"])
+        self.assertEqual(["list_albums", "find_photos", "export_photos", "set_favorite", "add_to_album",
+                          "remove_from_album"], caps["actions"])
         self.assertEqual("not_asked", caps["access"]["state"])
         self.assertEqual("partial_first_party", support_matrix()["Photos"]["support"])
 
@@ -128,11 +151,48 @@ class PhotosAdapterTests(unittest.TestCase):
             denied = self.call(FakeLibrary(), action="export_photos", item_id="A/L0/001", path="/tmp/elsewhere")
         self.assertEqual("SCOPE_PATH_DENIED", denied["reason_code"])
 
+    def test_favourite_change_is_read_back_and_says_how_to_undo_it(self) -> None:
+        library = FakeLibrary()
+        done = self.call(library, action="set_favorite", item_id="A/L0/001,B/L0/001", favorite=True)
+        self.assertTrue(done["ok"] and done["verified"])
+        self.assertEqual(("set_favorite", ["A/L0/001", "B/L0/001"], True),
+                         (library.requests[-1]["action"], library.requests[-1]["ids"], library.requests[-1]["favorite"]))
+        # Only the item that was not a favourite is changed, so only it is unmarked again by undo.
+        self.assertEqual({"action": "set_favorite", "item_id": "B/L0/001", "favorite": False}, done["undo"])
+        self.assertTrue(done["library_changed"])
+        self.assertEqual("APP_ADAPTER_ARGUMENT_INVALID",
+                         self.call(FakeLibrary(), action="set_favorite", item_id="A/L0/001")["reason_code"])
+        missing = self.call(FakeLibrary(), action="set_favorite", item_id="A/L0/001,gone/1", favorite=False)
+        self.assertFalse(missing["ok"])
+        self.assertEqual(("PHOTOS_ITEM_NOT_FOUND", ["gone/1"]), (missing["error"], missing["missing"]))
+        stubborn = FakeLibrary()
+        stubborn.ignore = True
+        unverified = self.call(stubborn, action="set_favorite", item_id="B/L0/001", favorite=True)
+        self.assertEqual((False, "PHOTOS_CHANGE_NOT_VERIFIED"), (unverified["ok"], unverified["error"]))
+
+    def test_album_membership_changes_only_own_albums_and_says_how_to_undo_it(self) -> None:
+        library = FakeLibrary()
+        added = self.call(library, action="add_to_album", item_id="A/L0/001,B/L0/001", album="Tatil")
+        self.assertTrue(added["verified"])
+        self.assertEqual(("album_add", "Tatil"), (library.requests[-1]["action"], library.requests[-1]["album"]))
+        # B was already in the album: undo takes out only what this call put in.
+        self.assertEqual({"action": "remove_from_album", "item_id": "A/L0/001", "album": "ALB/1"}, added["undo"])
+        removed = self.call(library, action="remove_from_album", item_id="B/L0/001", album="ALB/1")
+        self.assertEqual({"action": "add_to_album", "item_id": "B/L0/001", "album": "ALB/1"}, removed["undo"])
+        smart = self.call(FakeLibrary(), action="add_to_album", item_id="A/L0/001", album="Favorites")
+        self.assertEqual("PHOTOS_ALBUM_NOT_EDITABLE", smart["reason_code"])
+        self.assertEqual("APP_ADAPTER_ARGUMENT_INVALID",
+                         self.call(FakeLibrary(), action="add_to_album", item_id="A/L0/001")["reason_code"])
+        too_many = ",".join(f"x/{n}" for n in range(photos_reader.MAX_CHANGE + 1))
+        self.assertEqual("APP_ADAPTER_ARGUMENT_INVALID",
+                         self.call(FakeLibrary(), action="set_favorite", item_id=too_many, favorite=True)["reason_code"])
+
     def test_reads_are_reads_and_export_is_a_local_write(self) -> None:
         _, read = resolve_risk("mac_app", {"app": "Photos", "action": "find_photos"})
         self.assertNotIn(Capability.LOCAL_WRITE, read.capabilities)
-        _, write = resolve_risk("mac_app", {"app": "Photos", "action": "export_photos"})
-        self.assertIn(Capability.LOCAL_WRITE, write.capabilities)
+        for action in ("export_photos", "set_favorite", "add_to_album", "remove_from_album"):
+            _, write = resolve_risk("mac_app", {"app": "Photos", "action": action})
+            self.assertIn(Capability.LOCAL_WRITE, write.capabilities, action)
 
     def test_the_build_ships_the_helper_with_a_photos_usage_text(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "menu_app" / "build_app.sh").read_text()
@@ -144,6 +204,11 @@ class PhotosAdapterTests(unittest.TestCase):
         self.assertLess(helper.index("if !libraryOnDisk()"), helper.index("switch action {"))
         self.assertIn('request["deadline_s"]', helper)
         self.assertNotIn("location.coordinate", helper)
+        # The helper changes favourites and album membership only: it never deletes or creates items or albums.
+        for never in ("deleteAssets", "creationRequestForAsset", "creationRequestForAssetCollection",
+                      "deleteAssetCollections", "contentEditingOutput"):
+            self.assertNotIn(never, helper)
+        self.assertIn("It never edits or deletes your photos.", script)
 
 
 if __name__ == "__main__":

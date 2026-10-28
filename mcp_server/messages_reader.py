@@ -186,7 +186,65 @@ def _clean(text: Optional[str]) -> Tuple[str, bool]:
     return (value[:TEXT_LIMIT], len(value) > TEXT_LIMIT)
 
 
-def _message(row: Dict[str, Any], chats: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+ATTACHMENTS_PER_MESSAGE = 10
+_ATTACHMENT_NAME_LIMIT = 120
+# What a message carries, never where it is on disk: no file path, no content. Link previews and hidden
+# payloads (plugin attachments) are not attachments the sender chose, so they are left out.
+_ATTACHMENTS_SQL = """
+SELECT maj.message_id AS message_rowid, a.transfer_name AS name, a.mime_type AS mime, a.uti AS uti,
+       a.total_bytes AS bytes, a.created_date AS created, a.is_sticker AS sticker,
+       a.is_commsafety_sensitive AS sensitive
+FROM message_attachment_join maj JOIN attachment a ON a.ROWID = maj.attachment_id
+WHERE maj.message_id IN ({marks}) AND coalesce(a.hide_attachment, 0) = 0
+  AND coalesce(a.transfer_name, '') NOT LIKE '%.pluginPayloadAttachment'
+ORDER BY maj.message_id, a.ROWID
+"""
+
+
+def _attachment_kind(mime: str, uti: str) -> str:
+    for kind in ("image", "video", "audio"):
+        if mime.startswith(kind + "/") or uti.startswith(f"public.{kind}"):
+            return kind
+    if mime == "application/pdf" or uti == "com.adobe.pdf":
+        return "pdf"
+    return "file"
+
+
+def _attachments(rows: Sequence[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+    """Name, kind, size and date of each message's attachments (#132), by message rowid."""
+    ids = [int(row["rowid"]) for row in rows if row.get("cache_has_attachments") and row.get("rowid") is not None]
+    if not ids:
+        return {}
+    try:
+        found = _query(_ATTACHMENTS_SQL.format(marks=",".join("?" * len(ids))), ids,
+                       max_rows=len(ids) * ATTACHMENTS_PER_MESSAGE + 1)
+    except MessagesError:
+        return {}  # the details are extra: the messages still come, with has_attachments
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for row in found:
+        items = out.setdefault(int(row["message_rowid"]), [])
+        if len(items) >= ATTACHMENTS_PER_MESSAGE:
+            continue
+        mime, uti = str(row.get("mime") or ""), str(row.get("uti") or "")
+        item: Dict[str, Any] = {"kind": "sticker" if row.get("sticker") else _attachment_kind(mime, uti)}
+        if row.get("sensitive"):
+            item["name_hidden"] = "macOS marked this attachment as sensitive content"
+        else:
+            name = redact_sensitive_text(str(row.get("name") or "").strip())
+            if name:
+                item["name"] = name[:_ATTACHMENT_NAME_LIMIT]
+        if mime:
+            item["type"] = mime
+        if row.get("bytes"):
+            item["bytes"] = int(row["bytes"])
+        if _when(row.get("created")):
+            item["date"] = _when(row.get("created"))
+        items.append(item)
+    return out
+
+
+def _message(row: Dict[str, Any], chats: Dict[int, Dict[str, Any]],
+             attachments: Optional[Dict[int, List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
     body, clipped = _clean(row.get("body"))
     chat = chats.get(int(row.get("chat_rowid") or 0)) or {}
     from_me = bool(row.get("is_from_me"))
@@ -200,6 +258,9 @@ def _message(row: Dict[str, Any], chats: Dict[int, Dict[str, Any]]) -> Dict[str,
         out["text_truncated"] = True
     if row.get("cache_has_attachments"):
         out["has_attachments"] = True
+        listed = (attachments or {}).get(int(row.get("rowid") or 0))
+        if listed:
+            out["attachments"] = listed
     return out
 
 
@@ -362,9 +423,10 @@ def read_messages(item_id: Optional[str], query: Optional[str], *, limit: int, c
                   max_rows=limit + 1)
     more_left = len(rows) > limit
     rows = rows[:limit]
+    attached = _attachments(rows)
     return {
         "ok": True, "chat_id": chat["chat_id"], "chat": chat["name"], "participants": chat["handles"],
-        "count": len(rows), "messages": [_message(row, known) for row in rows],
+        "count": len(rows), "messages": [_message(row, known, attached) for row in rows],
         "next_cursor": f"{rows[-1]['date']}:{rows[-1]['rowid']}" if more_left and rows else None,
         "order": "newest_first", "read_only": True,
     }
@@ -421,6 +483,46 @@ def find_sent(chat_id: str, text: str, *, since_s: float) -> Optional[Dict[str, 
     return None
 
 
+_ATTACHMENT_SEARCH_SQL = """
+SELECT a.transfer_name AS name, a.mime_type AS mime, a.uti AS uti, a.total_bytes AS bytes, a.created_date AS created,
+       a.is_sticker AS sticker, m.guid AS guid, m.date AS date, m.is_from_me AS is_from_me, h.id AS sender,
+       cmj.chat_id AS chat_rowid
+FROM attachment a
+JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+JOIN message m ON m.ROWID = maj.message_id
+JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+LEFT JOIN handle h ON h.ROWID = m.handle_id
+WHERE coalesce(a.hide_attachment, 0) = 0 AND coalesce(a.is_commsafety_sensitive, 0) = 0
+  AND coalesce(a.transfer_name, '') NOT LIKE '%.pluginPayloadAttachment'
+  AND instr(mm_fold(coalesce(a.transfer_name, '')), mm_fold(?)) > 0 {where}
+ORDER BY m.date DESC, a.ROWID DESC
+LIMIT ?
+"""
+
+
+def search_attachments(query: str, *, limit: int, date_from: Optional[str] = None,
+                       date_to: Optional[str] = None) -> Dict[str, Any]:
+    """Attachments whose file name contains query, newest first (#132): name, kind, size and date, and the message
+    and chat they came in. Never the file or where it is kept; attachments macOS marked sensitive are left out."""
+    needle = " ".join(str(query or "").split())
+    if len(needle) < 2:
+        raise MessagesError("APP_ADAPTER_ARGUMENT_INVALID", "Searching attachments needs at least 2 characters.")
+    known = chats()
+    extra, params = _range_where(date_from, date_to)
+    rows = _query(_ATTACHMENT_SEARCH_SQL.format(where=extra), [needle, *params, limit], max_rows=limit)
+    out = []
+    for row in rows:
+        chat = known.get(int(row.get("chat_rowid") or 0)) or {}
+        mime, uti = str(row.get("mime") or ""), str(row.get("uti") or "")
+        item = {"name": redact_sensitive_text(str(row.get("name") or ""))[:_ATTACHMENT_NAME_LIMIT],
+                "kind": "sticker" if row.get("sticker") else _attachment_kind(mime, uti),
+                "type": mime or None, "bytes": int(row["bytes"]) if row.get("bytes") else None,
+                "date": _when(row.get("date")), "message_id": row.get("guid"), "chat_id": chat.get("chat_id"),
+                "chat": chat.get("name"), "sender": "me" if row.get("is_from_me") else (row.get("sender") or None)}
+        out.append({key: value for key, value in item.items() if value is not None})
+    return {"ok": True, "query": needle, "count": len(out), "attachments": out, "read_only": True}
+
+
 def search_messages(query: str, *, item_id: Optional[str] = None, limit: int, cursor: Optional[str] = None,
                     date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict[str, Any]:
     """Messages whose text contains query (any case or accents), newest first, across chats or in one."""
@@ -440,9 +542,10 @@ def search_messages(query: str, *, item_id: Optional[str] = None, limit: int, cu
                   max_rows=limit + 1)
     more_left = len(rows) > limit
     rows = rows[:limit]
+    attached = _attachments(rows)
     return {
         "ok": True, "query": needle, "chat_id": chat["chat_id"] if chat else None, "count": len(rows),
-        "messages": [_message(row, known) for row in rows],
+        "messages": [_message(row, known, attached) for row in rows],
         "next_cursor": f"{rows[-1]['date']}:{rows[-1]['rowid']}" if more_left and rows else None,
         "order": "newest_first", "read_only": True,
     }

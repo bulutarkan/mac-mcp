@@ -206,7 +206,7 @@ for pair in "CFBundleExecutable string MacMCPPhotos" "CFBundleIdentifier string 
   /usr/bin/plutil -insert "${key}" -"${kind}" "${value}" "${PHOTOS_HELPER}/Contents/Info.plist"
 done
 /usr/bin/plutil -insert NSPhotoLibraryUsageDescription -string \
-  "Mac MCP finds photos by date, album and type and copies the ones you ask for. It never changes your library." \
+  "Mac MCP finds photos by date, album and type, copies the ones you ask for, and marks favourites or puts photos in your own albums when you ask. It never edits or deletes your photos." \
   "${PHOTOS_HELPER}/Contents/Info.plist"
 /usr/bin/plutil -lint "${PHOTOS_HELPER}/Contents/Info.plist" >/dev/null
 /usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${PHOTOS_HELPER}" >/dev/null

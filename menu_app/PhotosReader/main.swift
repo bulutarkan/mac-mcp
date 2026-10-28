@@ -2,8 +2,10 @@
 //
 // macOS asks the owner once whether this app may see their photos; the grant covers this helper
 // alone (it runs from a copy in ~/.mac-mcp/helpers, like Mac MCP Messages Reader). It never opens
-// the Photos app and never changes the library: it lists albums, finds items by their metadata and
-// copies chosen originals into a folder. Mac MCP starts it with
+// the Photos app: it lists albums, finds items by their metadata and copies chosen originals into a
+// folder. The only changes it makes are ones the owner can undo in one step (#132): an item's
+// favourite mark, and whether an item is in one of the owner's own albums. It never edits, deletes
+// or creates items or albums. Mac MCP starts it with
 // `open -W -n -g <helper> --args --request <json> --result <json>`.
 //
 // Requests: {"action": "access", "prompt": bool}
@@ -11,6 +13,9 @@
 //           {"action": "find_photos", "from": epoch?, "to": epoch?, "album": id-or-title?, "media_type":
 //            "photo"|"video"?, "favorite": bool?, "name": text?, "limit": n}
 //           {"action": "export", "ids": [...], "folder": path}
+//           {"action": "set_favorite", "ids": [...], "favorite": bool}
+//           {"action": "album_add" | "album_remove", "ids": [...], "album": id-or-title}
+// A change answers with each item's state read back after it, and what it was before.
 // Results:  {"ok": true, ...} or {"ok": false, "error": "photos_access" | "...", "message": ...}
 // Item locations are never returned: an item only says whether it has one.
 
@@ -193,6 +198,94 @@ private func find(_ request: [String: Any], resultPath: String) -> [String: Any]
     return out
 }
 
+private let maxChange = 50
+
+/// The items these ids name, in the order asked, and the ids no item has.
+private func assets(_ ids: [String]) -> ([PHAsset], [String]) {
+    var byId: [String: PHAsset] = [:]
+    PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil).enumerateObjects { asset, _, _ in
+        byId[asset.localIdentifier] = asset
+    }
+    return (ids.compactMap { byId[$0] }, ids.filter { byId[$0] == nil })
+}
+
+private func changeIds(_ request: [String: Any], resultPath: String) -> [String] {
+    var seen = Set<String>()
+    let ids = ((request["ids"] as? [String]) ?? []).filter { !$0.isEmpty && seen.insert($0).inserted }
+    if ids.isEmpty { fail("bad_request", "The change needs ids from find_photos.", to: resultPath) }
+    if ids.count > maxChange { fail("bad_request", "Change at most \(maxChange) items at once.", to: resultPath) }
+    return ids
+}
+
+/// One PhotoKit change, waited for; nil when it was applied.
+private func perform(_ changes: @escaping () -> Void) -> String? {
+    let done = DispatchSemaphore(value: 0)
+    var failure: String?
+    PHPhotoLibrary.shared().performChanges(changes) { applied, error in
+        if !applied { failure = error?.localizedDescription ?? "Photos did not apply the change." }
+        done.signal()
+    }
+    if !wait(done, seconds: 60) { return "Photos did not apply the change in time." }
+    return failure
+}
+
+private func setFavorite(_ request: [String: Any], resultPath: String) -> [String: Any] {
+    let ids = changeIds(request, resultPath: resultPath)
+    guard let favorite = request["favorite"] as? Bool else { fail("bad_request", "set_favorite needs favorite.", to: resultPath) }
+    let (found, missing) = assets(ids)
+    let before = Dictionary(uniqueKeysWithValues: found.map { ($0.localIdentifier, $0.isFavorite) })
+    let toChange = found.filter { $0.isFavorite != favorite }
+    if !toChange.isEmpty, let failure = perform({
+        for asset in toChange { PHAssetChangeRequest(for: asset).isFavorite = favorite }
+    }) {
+        fail("change_failed", failure, to: resultPath)
+    }
+    // Read back from a fresh fetch, not the objects changed above.
+    let (after, _) = assets(found.map(\.localIdentifier))
+    let rows: [[String: Any]] = after.map {
+        ["id": $0.localIdentifier, "favorite": $0.isFavorite, "was_favorite": before[$0.localIdentifier] ?? NSNull(),
+         "ok": $0.isFavorite == favorite]
+    }
+    return ["ok": true, "items": rows, "missing": missing, "changed": toChange.count]
+}
+
+private func changeAlbum(_ request: [String: Any], adding: Bool, resultPath: String) -> [String: Any] {
+    let ids = changeIds(request, resultPath: resultPath)
+    guard let wanted = request["album"] as? String, !wanted.isEmpty else {
+        fail("bad_request", "The album change needs album (an id or name from list_albums).", to: resultPath)
+    }
+    let collection = album(wanted, resultPath: resultPath)
+    // Smart albums and shared albums are kept by Photos itself; only the owner's own albums take items.
+    guard collection.assetCollectionType == .album,
+          collection.canPerform(adding ? .addContent : .removeContent) else {
+        fail("album_not_editable", "\(collection.localizedTitle ?? "That album") is kept by Photos itself (a smart or "
+             + "shared album); only your own albums can take items.", to: resultPath)
+    }
+    let (found, missing) = assets(ids)
+    func members() -> Set<String> {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "localIdentifier IN %@", found.map(\.localIdentifier))
+        var inside = Set<String>()
+        PHAsset.fetchAssets(in: collection, options: options).enumerateObjects { asset, _, _ in inside.insert(asset.localIdentifier) }
+        return inside
+    }
+    let before = members()
+    let toChange = found.filter { before.contains($0.localIdentifier) != adding }
+    if !toChange.isEmpty, let failure = perform({
+        guard let change = PHAssetCollectionChangeRequest(for: collection) else { return }
+        if adding { change.addAssets(toChange as NSArray) } else { change.removeAssets(toChange as NSArray) }
+    }) {
+        fail("change_failed", failure, to: resultPath)
+    }
+    let after = members()
+    let rows: [[String: Any]] = found.map {
+        let id = $0.localIdentifier
+        return ["id": id, "in_album": after.contains(id), "was_in_album": before.contains(id), "ok": after.contains(id) == adding]
+    }
+    return ["ok": true, "album": ["id": collection.localIdentifier, "title": collection.localizedTitle ?? ""],
+            "items": rows, "missing": missing, "changed": toChange.count]
+}
+
 private func uniqueURL(in folder: URL, named name: String) -> URL {
     var candidate = folder.appendingPathComponent(name)
     let stem = (name as NSString).deletingPathExtension
@@ -255,7 +348,8 @@ guard let data = FileManager.default.contents(atPath: requestPath),
       let action = request["action"] as? String else {
     fail("bad_request", "The request is not readable JSON with an action.", to: resultPath)
 }
-let status = authorization(prompt: action != "access" || (request["prompt"] as? Bool ?? false))
+// A search across the owner's sources asks with prompt=false: it never puts a permission prompt in front of them.
+let status = authorization(prompt: (request["prompt"] as? Bool) ?? (action != "access"))
 if action == "access" {
     write(["ok": true, "access": statusName(status)], to: resultPath)
     exit(0)
@@ -288,6 +382,10 @@ case "find_photos":
     answer = find(request, resultPath: resultPath)
 case "export":
     answer = export(request, resultPath: resultPath)
+case "set_favorite":
+    answer = setFavorite(request, resultPath: resultPath)
+case "album_add", "album_remove":
+    answer = changeAlbum(request, adding: action == "album_add", resultPath: resultPath)
 default:
     fail("bad_request", "Unknown action \(action).", to: resultPath)
 }

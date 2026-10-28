@@ -69,12 +69,12 @@ _ACTIONS = {
     "Reminders": ("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder",
                   "undo"),
     "Preview": ("list_documents", "open_document"),
-    "System Settings": ("list_panes", "open_pane"),
+    "System Settings": ("list_panes", "open_pane", "read_settings", "change_setting"),
     "Messages": ("find_chats", "read_messages", "search_messages", "send_message"),
     "Xcode": ("list_workspaces",),
     "Contacts": ("find_contacts", "create_contact", "update_contact", "undo"),
     "Shortcuts": ("list_shortcuts", "run_shortcut"),
-    "Photos": ("list_albums", "find_photos", "export_photos"),
+    "Photos": ("list_albums", "find_photos", "export_photos", "set_favorite", "add_to_album", "remove_from_album"),
     "Mission Control": ("list_desktops", "create_desktop", "remove_desktop", "open_on_desktop", "move_to_desktop"),
 }
 
@@ -86,6 +86,7 @@ _READ_ACTIONS = {
     "find_events",
     "list_documents",
     "list_panes",
+    "read_settings",
     "list_reminders",
     "find_chats",
     "read_messages",
@@ -105,7 +106,7 @@ _READ_ACTIONS = {
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                        "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
                        "update_message", "create_contact", "update_contact", "schedule_reminders", "export_photos",
-                       "undo"}
+                       "set_favorite", "add_to_album", "remove_from_album", "change_setting", "undo"}
 # A shortcut can do anything its actions do, so running one is gated like run_command: the shell
 # switch and the permission profile decide, as for any other command (no new approval prompt).
 _RUN_ACTIONS = {"run_shortcut"}
@@ -157,12 +158,14 @@ _SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
         "aliases": ("photos", "photo library"),
         "bundle_paths": ("/System/Applications/Photos.app",),
         "native_api": "PhotoKit through Mac MCP Photos, which the owner allows once under Privacy & Security › Photos; "
-                      "the Photos app is not opened and the library is never changed",
+                      "the Photos app is not opened; the only changes are a favourite mark and membership of the "
+                      "owner's own albums, each read back and undone by the opposite call",
         "tasks": {
             "find_photos": "first_party: list_albums and find_photos (date, album, photo or video, favourite, file "
                            "name; locations are not shared)",
             "export_photos": "first_party: export_photos copies chosen originals into a folder",
-            "edit_or_organize": "generic_ax: mac_observe and mac_act in the Photos window",
+            "organize": "first_party: set_favorite and add_to_album / remove_from_album (the owner's own albums)",
+            "edit_or_delete": "generic_ax: mac_observe and mac_act in the Photos window",
         },
     },
     "Slack": {
@@ -373,79 +376,39 @@ def _focus_finish(context: Optional[Dict[str, Any]], app: str, deadline: float) 
 
 
 def _finder_selection(*, limit: int, timeout_s: float) -> Dict[str, Any]:
+    """The front Finder window's selected items, in any view (list, icon, column, gallery), from Finder's own
+    selection; the window must stay the same while it is read."""
     script = f'''set rs to ASCII character 30
 set us to ASCII character 31
-set maxRows to 500
 set maxSelected to {limit}
 tell application "Finder"
     if (count of windows) is 0 then return "NO_WINDOW"
     set expectedWindowID to id of front window
     set currentFolder to POSIX path of (target of front window as alias)
     set currentViewName to current view of front window as text
-end tell
-if currentViewName is not "list view" then return "UNSUPPORTED_VIEW" & us & currentViewName & us & currentFolder
-set selectedNames to {{}}
-tell application "System Events"
-    tell process "Finder"
-        if (count of windows) is 0 then return "WINDOW_GONE"
-        set allItems to entire contents of window 1
-        repeat with e in allItems
-            set elementRole to ""
-            set elementDescription to ""
-            try
-                set elementRole to role of e as text
-                set elementDescription to description of e as text
-            end try
-            if elementRole is "AXOutline" and elementDescription is "list view" then
-                set rowCount to 0
-                repeat with rw in rows of e
-                    set rowCount to rowCount + 1
-                    if rowCount > maxRows then exit repeat
-                    set isSelected to false
-                    try
-                        set isSelected to value of attribute "AXSelected" of rw
-                    end try
-                    if isSelected then
-                        set descendants to {{}}
-                        try
-                            set descendants to entire contents of rw
-                        end try
-                        repeat with ch in descendants
-                            try
-                                if (role of ch as text) is "AXTextField" then
-                                    set end of selectedNames to value of ch as text
-                                    exit repeat
-                                end if
-                            end try
-                        end repeat
-                        if (count of selectedNames) >= maxSelected then exit repeat
-                    end if
-                end repeat
-                exit repeat
-            end if
-        end repeat
-    end tell
-end tell
-tell application "Finder"
+    try
+        set selectedItems to selection as alias list
+    on error
+        set selectedItems to {{}}
+    end try
+    set totalCount to count of selectedItems
+    set selectedPaths to {{}}
+    repeat with selectedItem in selectedItems
+        if (count of selectedPaths) >= maxSelected then exit repeat
+        set end of selectedPaths to POSIX path of selectedItem
+    end repeat
     if (count of windows) is 0 then return "WINDOW_GONE"
     if (id of front window) is not expectedWindowID then return "WINDOW_CHANGED"
 end tell
 set AppleScript's text item delimiters to rs
-set selectedText to selectedNames as text
+set selectedText to selectedPaths as text
 set AppleScript's text item delimiters to ""
-return "OK" & us & currentFolder & us & selectedText'''
+return "OK" & us & currentFolder & us & selectedText & us & currentViewName & us & (totalCount as text)'''
     raw = _run(script, timeout_s=timeout_s, code="FINDER_SELECTION_FAILED")
-    parts = raw.split(_US, 2)
+    parts = raw.split(_US, 4)
     status = parts[0] if parts else ""
     if status == "NO_WINDOW":
         return {"ok": True, "folder": None, "selected_count": 0, "selected_paths": [], "truncated": False}
-    if status == "UNSUPPORTED_VIEW":
-        view = parts[1] if len(parts) > 1 else "unknown"
-        raise AppAdapterError(
-            "FINDER_STATE_UNSUPPORTED",
-            f"Finder semantic selection currently requires list view; current view is {view}.",
-            current_view=view,
-        )
     if status in {"WINDOW_GONE", "WINDOW_CHANGED"}:
         raise AppAdapterError(
             "FINDER_WINDOW_CHANGED",
@@ -454,14 +417,18 @@ return "OK" & us & currentFolder & us & selectedText'''
     if status != "OK" or len(parts) < 2:
         raise AppAdapterError("FINDER_SELECTION_NOT_VERIFIED", "Finder selection response was invalid.")
     folder = parts[1]
-    names = [name for name in (parts[2].split(_RS) if len(parts) > 2 and parts[2] else []) if name]
-    selected_paths = [str((Path(folder) / name).resolve(strict=False)) for name in names]
+    raw_paths = [item for item in (parts[2].split(_RS) if len(parts) > 2 and parts[2] else []) if item]
+    # A selected folder comes back with a trailing slash.
+    selected_paths = [str(Path(item.rstrip("/") or "/").resolve(strict=False)) for item in raw_paths]
+    total = int(parts[4]) if len(parts) > 4 and parts[4].strip().isdigit() else len(selected_paths)
     return {
         "ok": True,
         "folder": folder or None,
+        "view": (parts[3] if len(parts) > 3 else "") or None,
         "selected_count": len(selected_paths),
         "selected_paths": selected_paths,
-        "truncated": len(selected_paths) >= limit,
+        "total_selected": total,
+        "truncated": total > len(selected_paths),
     }
 
 
@@ -2293,6 +2260,14 @@ def _photos(action: str, *, item_id: Optional[str], query: Optional[str], path: 
         if action == "find_photos":
             return photos_reader.find_photos(date_from=date_from, date_to=date_to, album=album, media_type=media_type,
                                              favorite=favorite, name=query, limit=limit)
+        if action == "set_favorite":
+            if favorite is None:
+                raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "set_favorite needs favorite=true or false.",
+                                      retryable=False)
+            return photos_reader.set_favorite(str(item_id or "").split(","), bool(favorite))
+        if action in {"add_to_album", "remove_from_album"}:
+            return photos_reader.change_album(str(item_id or "").split(","), str(album or ""),
+                                              adding=action == "add_to_album")
         folder = str(path or "").strip() or None
         target = Path(folder).expanduser() if folder else photos_reader.default_export_folder()
         scope = current_policy_context().scope
@@ -2424,6 +2399,92 @@ return outText'''
         if row.get("name") == "__MAC_MCP_NONE__":
             row["name"] = ""
     return {"ok": True, "count": len(rows), "panes": rows, "truncated": len(rows) >= limit}
+
+
+# The settings agents may change (#132): each is read and set through scripting, never the Settings window,
+# and read back after the change. Focus and Do Not Disturb have no scripting interface; the owner's own
+# shortcut does that (Shortcuts run_shortcut).
+_SETTINGS_ALLOWED = {
+    "dark_mode": "Dark Mode: on or off",
+    "volume": "Output volume: 0 to 100",
+    "mute": "Output muted: on or off",
+}
+
+
+def _settings_values(timeout_s: float) -> Dict[str, Any]:
+    script = '''set us to ASCII character 31
+tell application "System Events" to set darkMode to dark mode of appearance preferences
+set volumeState to get volume settings
+set volumeText to "none"
+set mutedText to "none"
+try
+    set volumeText to (output volume of volumeState) as text
+end try
+try
+    set mutedText to (output muted of volumeState) as text
+end try
+return (darkMode as text) & us & volumeText & us & mutedText'''
+    parts = _run(script, timeout_s=timeout_s, code="SETTINGS_READ_FAILED").split(_US)
+    if len(parts) != 3:
+        raise AppAdapterError("SETTINGS_READ_FAILED", "The settings could not be read.")
+
+    def flag(text: str) -> Optional[bool]:
+        return {"true": True, "false": False}.get(text.strip().lower())
+
+    volume = parts[1].strip()
+    return {"dark_mode": flag(parts[0]), "volume": int(volume) if volume.isdigit() else None,
+            "mute": flag(parts[2])}
+
+
+def _settings_read(*, timeout_s: float) -> Dict[str, Any]:
+    values = _settings_values(timeout_s)
+    return {"ok": True, "settings": values, "allowed": _SETTINGS_ALLOWED,
+            "note": "None means this Mac's current output has no such control (an external display's speakers, say)."}
+
+
+def _setting_value(name: str, raw: Optional[str]) -> Any:
+    text = str(raw if raw is not None else "").strip().lower()
+    if name == "volume":
+        if not text.isdigit() or not 0 <= int(text) <= 100:
+            raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "volume takes query = a number from 0 to 100.",
+                                  retryable=False)
+        return int(text)
+    flags = {"on": True, "true": True, "yes": True, "1": True, "off": False, "false": False, "no": False, "0": False}
+    if text not in flags:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"{name} takes query = on or off.", retryable=False)
+    return flags[text]
+
+
+def _settings_change(item_id: Optional[str], value: Optional[str], *, timeout_s: float) -> Dict[str, Any]:
+    name = str(item_id or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if name not in _SETTINGS_ALLOWED:
+        raise AppAdapterError(
+            "SETTINGS_NOT_ALLOWED", f"change_setting changes only {', '.join(_SETTINGS_ALLOWED)} (item_id); other "
+            "settings open in their pane with open_pane, and Focus through the owner's shortcut.", retryable=False,
+            allowed=_SETTINGS_ALLOWED)
+    wanted = _setting_value(name, value)
+    before = _settings_values(timeout_s)
+    if before[name] is None:
+        raise AppAdapterError("SETTINGS_NOT_AVAILABLE", f"This Mac's current output has no {name} control.",
+                              retryable=False)
+    statement = {
+        "dark_mode": f'tell application "System Events" to tell appearance preferences to set dark mode to {str(wanted).lower()}',
+        "volume": f"set volume output volume {wanted}",
+        "mute": f"set volume output muted {str(wanted).lower()}",
+    }[name]
+    if before[name] != wanted:
+        _run(statement, timeout_s=timeout_s, code="SETTINGS_CHANGE_FAILED")
+    after = _settings_values(timeout_s)
+    verified = after[name] == wanted
+    out: Dict[str, Any] = {"ok": verified, "setting": name, "value": after[name], "previous": before[name],
+                           "changed": before[name] != wanted, "verified": verified, "verification": "read_back"}
+    if before[name] != wanted:
+        previous = before[name]
+        out["undo"] = {"action": "change_setting", "item_id": name,
+                       "query": str(previous) if name == "volume" else ("on" if previous else "off")}
+    if not verified:
+        out.update(error="SETTINGS_CHANGE_NOT_VERIFIED", message=f"{name} reads {after[name]!r} after the change.")
+    return out
 
 
 def _settings_open(
@@ -2843,11 +2904,14 @@ def mac_app(
                               date_to=date_to, album=album, media_type=media_type, favorite=favorite,
                               limit=bounded)
         elif canonical == "System Settings":
-            payload = (
-                _settings_list(limit=bounded, timeout_s=timeout)
-                if normalized_action == "list_panes"
-                else _settings_open(item_id, query, exact=exact, preserve_focus=preserve_focus, timeout_s=timeout)
-            )
+            if normalized_action == "list_panes":
+                payload = _settings_list(limit=bounded, timeout_s=timeout)
+            elif normalized_action == "read_settings":
+                payload = _settings_read(timeout_s=timeout)
+            elif normalized_action == "change_setting":
+                payload = _settings_change(item_id, query, timeout_s=timeout)
+            else:
+                payload = _settings_open(item_id, query, exact=exact, preserve_focus=preserve_focus, timeout_s=timeout)
         elif canonical == "Mission Control":
             payload = _mission_control(
                 normalized_action, item_id=item_id, target_app=target_app, path=path, url=url, window_ids=window_ids,

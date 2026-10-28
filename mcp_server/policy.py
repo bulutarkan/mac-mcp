@@ -409,7 +409,8 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     # Mail drafts are saved, never sent.
     if action in {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                   "create_reminder", "append_to_note", "update_reminder", "update_message",
-                  "create_contact", "update_contact", "schedule_reminders", "export_photos"}:
+                  "create_contact", "update_contact", "schedule_reminders", "export_photos",
+                  "set_favorite", "add_to_album", "remove_from_album", "change_setting"}:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
             destructive=False,

@@ -105,6 +105,7 @@ def _ask(request: Dict[str, Any], deadline_s: float = 90.0) -> Dict[str, Any]:
             "Security › Photos (Mac MCP Photos). Do not work around it.", retryable=False,
         )
     code = {"album_not_found": "PHOTOS_ALBUM_NOT_FOUND", "album_not_unique": "PHOTOS_ALBUM_NOT_UNIQUE",
+            "album_not_editable": "PHOTOS_ALBUM_NOT_EDITABLE", "change_failed": "PHOTOS_CHANGE_FAILED",
             "bad_request": "APP_ADAPTER_ARGUMENT_INVALID", "library_unavailable": "PHOTOS_LIBRARY_UNAVAILABLE",
             "timed_out": "PHOTOS_TIMED_OUT"}.get(str(answer.get("error")), "PHOTOS_READ_FAILED")
     raise PhotosError(code, str(answer.get("message") or answer.get("error") or "Photos could not be read."))
@@ -143,11 +144,13 @@ def _epoch(value: Optional[str], *, end: bool) -> Optional[float]:
 
 
 def find_photos(*, date_from: Optional[str], date_to: Optional[str], album: Optional[str], media_type: Optional[str],
-                favorite: Optional[bool], name: Optional[str], limit: int) -> Dict[str, Any]:
+                favorite: Optional[bool], name: Optional[str], limit: int, prompt: bool = True) -> Dict[str, Any]:
     kind = str(media_type or "").strip().lower() or None
     if kind not in {None, "photo", "video"}:
         raise PhotosError("APP_ADAPTER_ARGUMENT_INVALID", "media_type is photo or video.")
     request: Dict[str, Any] = {"action": "find_photos", "limit": limit}
+    if not prompt:
+        request["prompt"] = False  # without access, say so instead of asking the owner
     for key, value in (("from", _epoch(date_from, end=False)), ("to", _epoch(date_to, end=True)),
                        ("album", str(album or "").strip() or None), ("media_type", kind),
                        ("favorite", favorite), ("name", str(name or "").strip() or None)):
@@ -205,3 +208,57 @@ def export_photos(ids: List[str], folder: Optional[str]) -> Dict[str, Any]:
     return {"ok": bool(done), "exported": len(done), "failed": len(rows) - len(done), "folder": str(target),
             "items": rows, "verified": len(done) == len(wanted) and bool(done), "verification": "file_read_back",
             "library_changed": False}
+
+
+MAX_CHANGE = 50
+
+
+def _change_ids(ids: List[str]) -> List[str]:
+    wanted = list(dict.fromkeys(item.strip() for item in ids if item and item.strip()))
+    if not wanted:
+        raise PhotosError("APP_ADAPTER_ARGUMENT_INVALID", "This change needs item_id: ids from find_photos, "
+                          "separated by commas.")
+    if len(wanted) > MAX_CHANGE:
+        raise PhotosError("APP_ADAPTER_ARGUMENT_INVALID", f"Change at most {MAX_CHANGE} items at once.")
+    return wanted
+
+
+def _changed(answer: Dict[str, Any], wanted: List[str], undo: Dict[str, Any]) -> Dict[str, Any]:
+    """A change's answer: each item read back after it, whether all of it took, and how to undo it."""
+    rows = list(answer.get("items") or [])
+    missing = list(answer.get("missing") or [])
+    verified = bool(rows) and not missing and all(row.get("ok") for row in rows) and len(rows) == len(wanted)
+    out = {"ok": verified, "changed": int(answer.get("changed") or 0), "items": rows, "verified": verified,
+           "verification": "photokit_read_back", "library_changed": bool(answer.get("changed")), "undo": undo}
+    if missing:
+        out.update(missing=missing, error="PHOTOS_ITEM_NOT_FOUND",
+                   message="Some ids name no item in the library; the others were changed.")
+    elif not verified:
+        out.update(error="PHOTOS_CHANGE_NOT_VERIFIED", message="Photos did not show every change when read back.")
+    if answer.get("album"):
+        out["album"] = answer["album"]
+    return out
+
+
+def set_favorite(ids: List[str], favorite: bool) -> Dict[str, Any]:
+    """Marks these items as favourites, or unmarks them (#132); undone by the opposite call."""
+    wanted = _change_ids(ids)
+    answer = _ask({"action": "set_favorite", "ids": wanted, "favorite": bool(favorite)})
+    restore = sorted(str(row["id"]) for row in answer.get("items") or [] if row.get("was_favorite") != bool(favorite))
+    return _changed(answer, wanted, {"action": "set_favorite", "item_id": ",".join(restore), "favorite": not favorite}
+                    if restore else {})
+
+
+def change_album(ids: List[str], album: str, *, adding: bool) -> Dict[str, Any]:
+    """Puts these items into one of the owner's own albums, or takes them out (#132); the items themselves are
+    never changed or deleted."""
+    wanted = _change_ids(ids)
+    name = str(album or "").strip()
+    if not name:
+        raise PhotosError("APP_ADAPTER_ARGUMENT_INVALID", "album is an album id or name from list_albums.")
+    answer = _ask({"action": "album_add" if adding else "album_remove", "ids": wanted, "album": name})
+    moved = sorted(str(row["id"]) for row in answer.get("items") or [] if bool(row.get("was_in_album")) != adding)
+    target = (answer.get("album") or {}).get("id") or name
+    undo = ({"action": "remove_from_album" if adding else "add_to_album", "item_id": ",".join(moved), "album": target}
+            if moved else {})
+    return _changed(answer, wanted, undo)

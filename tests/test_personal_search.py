@@ -52,8 +52,8 @@ class PersonalSearchTests(unittest.TestCase):
 
     def test_one_query_returns_every_source_in_one_shape(self) -> None:
         result = ps.personal_search("invoice", limit=30)
-        self.assertEqual(21, result["count"])
-        self.assertEqual(list(ps.SOURCES), [row["source"] for row in result["results"][:7]])  # interleaved
+        self.assertEqual(3 * len(ps.SOURCES), result["count"])
+        self.assertEqual(list(ps.SOURCES), [row["source"] for row in result["results"][:len(ps.SOURCES)]])  # interleaved
         self.assertEqual({"source", "title", "id"}, set(result["results"][0]))
         self.assertTrue(all(entry == {"ok": True, "found": 3} for entry in result["sources"].values()))
         self.assertEqual({"invoice"}, {call["query"] for call in self.calls.values()})
@@ -73,7 +73,8 @@ class PersonalSearchTests(unittest.TestCase):
         self.assertEqual(("calendar_find_failed", True),
                          (result["sources"]["calendar"]["reason"], result["sources"]["calendar"]["retryable"]))
         self.assertEqual("no_folders", result["sources"]["documents"]["reason"])
-        self.assertEqual({"notes", "reminders", "contacts", "messages"}, {row["source"] for row in result["results"]})
+        self.assertEqual({"notes", "reminders", "contacts", "messages", "attachments", "photos"},
+                         {row["source"] for row in result["results"]})
 
     def test_sources_and_date_bounds_reach_only_the_chosen_sources(self) -> None:
         result = ps.personal_search("plan", sources=["messages", "notes"], date_from="2026-10-01", date_to="2026-10-21")
@@ -82,7 +83,7 @@ class PersonalSearchTests(unittest.TestCase):
         self.assertEqual("not_applied", result["sources"]["notes"]["date_filter"])  # notes carry no date
         self.assertNotIn("date_filter", result["sources"]["messages"])
         self.assertEqual(["notes", "messages"], list(result["sources"]))
-        for bad in ({"sources": ["photos"]}, {"date_from": "yesterday"}):
+        for bad in ({"sources": ["safari"]}, {"date_from": "yesterday"}):
             with self.subTest(bad=bad), self.assertRaises(HTTPException):
                 ps.personal_search("plan", **bad)
         with self.assertRaises(HTTPException):
@@ -98,7 +99,7 @@ class PersonalSearchTests(unittest.TestCase):
             cursor = page["next_cursor"]
             if not cursor:
                 break
-        self.assertEqual(56, len(seen))
+        self.assertEqual(8 * len(ps.SOURCES), len(seen))
         self.assertEqual(len(seen), len(set(seen)))
         with self.assertRaises(HTTPException):
             ps.personal_search("other words", cursor=ps._cursor(20, "not-this-search"))
@@ -121,6 +122,23 @@ class PersonalSearchTests(unittest.TestCase):
         self.assertLessEqual(len(message["snippet"]), ps.SNIPPET_CHARS)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwx", message["snippet"])
         self.assertEqual("read_messages", message["open"]["action"])
+        with patch.object(messages_reader, "search_attachments", return_value={"attachments": [
+                {"name": "Fatura.pdf", "kind": "pdf", "date": "2026-10-20T10:00:00", "message_id": "g2", "chat_id": "c1",
+                 "chat": "Ali"}]}):
+            sent = ps._attachments("fatura", 5, date_from=None, date_to=None)[0]
+        self.assertEqual(("Fatura.pdf", "pdf · Ali", "g2", "read_messages"),
+                         (sent["title"], sent["detail"], sent["id"], sent["open"]["action"]))
+        from mcp_server import photos_reader
+        with patch.object(photos_reader, "find_photos", return_value={"items": [
+                {"id": "P/1", "filename": "IMG_7.HEIC", "media_type": "photo", "created": "2026-10-01T09:00:00"}]}) as find:
+            photo = ps._photos("img_7", 5, date_from="2026-10-01", date_to=None)[0]
+        # A search never puts a Photos permission prompt in front of the owner.
+        self.assertIs(False, find.call_args.kwargs["prompt"])
+        self.assertEqual(("IMG_7.HEIC", "P/1", "export_photos"), (photo["title"], photo["id"], photo["open"]["action"]))
+        with patch.object(photos_reader, "find_photos",
+                          side_effect=photos_reader.PhotosError("PHOTOS_ACCESS_REQUIRED", "no access")), \
+                self.assertRaises(ps._Unavailable):
+            ps._photos("img", 5, date_from=None, date_to=None)
         from mcp_server import knowledge
         with patch.object(knowledge, "knowledge_search", return_value={"folders": [], "results": []}):
             with self.assertRaises(ps._Unavailable):

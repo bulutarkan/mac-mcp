@@ -140,21 +140,85 @@ class AdapterRegistryTests(unittest.TestCase):
         asyncio.run(run())
 
 
+class SystemSettingsAllowlistTests(unittest.TestCase):
+    """#132: a few settings agents may change, by script and read back; nothing else."""
+
+    def run_with(self, state):
+        scripts = []
+
+        def fake_run(script, **kwargs):
+            scripts.append(script)
+            if "get volume settings" in script:
+                return f"{str(state['dark_mode']).lower()}{_US}{state['volume']}{_US}{str(state['mute']).lower()}"
+            if "set dark mode to" in script:
+                state["dark_mode"] = script.rstrip().endswith("true")
+            elif "set volume output volume" in script:
+                state["volume"] = int(script.split()[-1])
+            elif "set volume output muted" in script:
+                state["mute"] = script.rstrip().endswith("true")
+            return ""
+
+        return patch("mcp_server.app_adapters._run", side_effect=fake_run), scripts
+
+    def test_reads_and_changes_with_read_back_and_undo(self) -> None:
+        state = {"dark_mode": True, "volume": 19, "mute": False}
+        runner, scripts = self.run_with(state)
+        with runner:
+            read = mac_app(SETTINGS, app="System Settings", action="read_settings")
+            light = mac_app(SETTINGS, app="System Settings", action="change_setting", item_id="dark mode", query="off")
+            louder = mac_app(SETTINGS, app="System Settings", action="change_setting", item_id="volume", query="40")
+            same = mac_app(SETTINGS, app="System Settings", action="change_setting", item_id="mute", query="off")
+        self.assertEqual({"dark_mode": True, "volume": 19, "mute": False}, read["settings"])
+        self.assertEqual((True, False, True, True), (light["ok"], light["value"], light["previous"], light["verified"]))
+        self.assertEqual({"action": "change_setting", "item_id": "dark_mode", "query": "on"}, light["undo"])
+        self.assertEqual({"action": "change_setting", "item_id": "volume", "query": "19"}, louder["undo"])
+        self.assertEqual((True, False), (same["ok"], same["changed"]))
+        self.assertNotIn("undo", same)
+        self.assertFalse(any("set volume output muted" in script for script in scripts))  # already off: untouched
+        self.assertFalse(any("System Settings" in script for script in scripts))  # never the Settings window
+
+    def test_anything_else_is_refused_before_it_runs(self) -> None:
+        state = {"dark_mode": False, "volume": 10, "mute": False}
+        runner, scripts = self.run_with(state)
+        with runner:
+            other = mac_app(SETTINGS, app="System Settings", action="change_setting", item_id="firewall", query="off")
+            loud = mac_app(SETTINGS, app="System Settings", action="change_setting", item_id="volume", query="150")
+            vague = mac_app(SETTINGS, app="System Settings", action="change_setting", item_id="dark_mode", query="maybe")
+        self.assertEqual("SETTINGS_NOT_ALLOWED", other["reason_code"])
+        self.assertEqual(("APP_ADAPTER_ARGUMENT_INVALID", "APP_ADAPTER_ARGUMENT_INVALID"),
+                         (loud["reason_code"], vague["reason_code"]))
+        self.assertEqual([], scripts)
+
+    def test_change_is_a_local_write_and_read_is_a_read(self) -> None:
+        from mcp_server.policy import Capability, resolve_risk
+
+        _, change = resolve_risk("mac_app", {"app": "System Settings", "action": "change_setting"})
+        self.assertIn(Capability.LOCAL_WRITE, change.capabilities)
+        _, read = resolve_risk("mac_app", {"app": "System Settings", "action": "read_settings"})
+        self.assertNotIn(Capability.LOCAL_WRITE, read.capabilities)
+
+
 class FinderAdapterTests(unittest.TestCase):
-    def test_selection_reads_ax_selected_rows(self) -> None:
-        raw = f"OK{_US}/tmp/{_US}example.txt{_RS}second.txt"
+    def test_selection_reads_finders_own_selection(self) -> None:
+        raw = f"OK{_US}/tmp/{_US}/tmp/example.txt{_RS}/tmp/folder/{_US}list view{_US}2"
         with patch("mcp_server.app_adapters._run", return_value=raw):
             result = mac_app(SETTINGS, app="Finder", action="selection", limit=5)
         self.assertTrue(result["ok"])
-        self.assertEqual([str((Path("/tmp") / "example.txt").resolve()), str((Path("/tmp") / "second.txt").resolve())], result["selected_paths"])
+        self.assertEqual([str(Path("/tmp/example.txt").resolve()), str(Path("/tmp/folder").resolve())], result["selected_paths"])
+        self.assertEqual(("list view", 2, False), (result["view"], result["total_selected"], result["truncated"]))
         self.assertEqual(1, result["semantic_tool_calls"])
 
-    def test_selection_unsupported_view_returns_safe_fallback(self) -> None:
-        with patch("mcp_server.app_adapters._run", return_value=f"UNSUPPORTED_VIEW{_US}icon view{_US}/tmp/"):
-            result = mac_app(SETTINGS, app="Finder", action="selection")
-        self.assertFalse(result["ok"])
-        self.assertEqual("FINDER_STATE_UNSUPPORTED", result["reason_code"])
-        self.assertFalse(result["fallback"]["automatic"])
+    def test_selection_works_in_icon_column_and_gallery_views(self) -> None:
+        # It used to read rows of the list view only, and refused every other view (#132).
+        for view in ("icon view", "column view", "flow view"):
+            raw = f"OK{_US}/tmp/{_US}/tmp/a.txt{_US}{view}{_US}3"
+            with self.subTest(view), patch("mcp_server.app_adapters._run", return_value=raw) as run:
+                result = mac_app(SETTINGS, app="Finder", action="selection", limit=1)
+            self.assertTrue(result["ok"])
+            self.assertEqual((view, 1, 3, True), (result["view"], result["selected_count"], result["total_selected"],
+                                                 result["truncated"]))
+            self.assertIn("selection as alias list", run.call_args.args[0])
+            self.assertNotIn("UNSUPPORTED_VIEW", run.call_args.args[0])
 
     def test_select_file_uses_dedicated_window_and_axselected_verification(self) -> None:
         with tempfile.TemporaryDirectory() as td:

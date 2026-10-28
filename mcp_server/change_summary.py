@@ -183,6 +183,8 @@ _MAC_APP_VERBS = {
     "create_contact": "Created contact", "update_contact": "Changed contact",
     "schedule_reminders": "Planned reminders in the calendar",
     "export_photos": "Copied photos to a folder",
+    "set_favorite": "Changed photo favourites", "add_to_album": "Added photos to an album",
+    "remove_from_album": "Took photos out of an album", "change_setting": "Changed a Mac setting",
     "create_draft": "Saved email draft", "update_message": "Changed email", "send_mail": "Sent email",
     "send_message": "Sent message", "run_shortcut": "Ran shortcut", "undo": "Undid a change",
     "create_desktop": "Added desktop", "remove_desktop": "Removed desktop", "open_on_desktop": "Opened on desktop",

@@ -1,5 +1,5 @@
-"""One search across the owner's own sources (#67): Notes, Mail, Calendar, Reminders, Contacts, Messages and
-the document folders chosen in Settings › Privacy.
+"""One search across the owner's own sources (#67): Notes, Mail, Calendar, Reminders, Contacts, Messages, files
+sent and received in Messages, Photos (by file name, #132) and the document folders chosen in Settings › Privacy.
 
 Each source is asked at the same time through the search it already has, read-only, and answers on its
 own: one that is excluded in Privacy, closed or failing is reported in `sources` while the others still
@@ -20,7 +20,7 @@ from fastapi import HTTPException, status
 from . import privacy_policy
 from .data_guard import redact_sensitive_text
 
-SOURCES = ("notes", "mail", "calendar", "reminders", "contacts", "messages", "documents")
+SOURCES = ("notes", "mail", "calendar", "reminders", "contacts", "messages", "attachments", "photos", "documents")
 MAX_LIMIT = 50
 MAX_PER_SOURCE = 25  # what each source's own search returns at most
 SNIPPET_CHARS = 160
@@ -28,8 +28,9 @@ _APPS = {
     "notes": ("Notes", "com.apple.Notes"), "mail": ("Mail", "com.apple.mail"),
     "calendar": ("Calendar", "com.apple.iCal"), "reminders": ("Reminders", "com.apple.reminders"),
     "contacts": ("Contacts", "com.apple.AddressBook"), "messages": ("Messages", "com.apple.MobileSMS"),
+    "attachments": ("Messages", "com.apple.MobileSMS"), "photos": ("Photos", "com.apple.Photos"),
 }
-_DATED = {"mail", "calendar", "messages", "documents"}
+_DATED = {"mail", "calendar", "messages", "attachments", "photos", "documents"}
 _TIMEOUT_S = {"calendar": 25.0}
 
 
@@ -98,6 +99,31 @@ def _messages(query: str, n: int, date_from: Optional[str], date_to: Optional[st
             for row in rows]
 
 
+def _attachments(query: str, n: int, date_from: Optional[str], date_to: Optional[str]) -> List[Dict[str, Any]]:
+    from . import messages_reader
+
+    rows = messages_reader.search_attachments(query, limit=n, date_from=date_from, date_to=date_to)["attachments"]
+    return [{"title": row.get("name"), "detail": " · ".join(part for part in (row.get("kind"), row.get("chat")) if part),
+             "when": row.get("date"), "id": row.get("message_id"),
+             "open": {"tool": "mac_app", "app": "Messages", "action": "read_messages", "item_id": row.get("chat_id")}}
+            for row in rows]
+
+
+def _photos(query: str, n: int, date_from: Optional[str], date_to: Optional[str]) -> List[Dict[str, Any]]:
+    from . import photos_reader
+
+    try:
+        found = photos_reader.find_photos(date_from=date_from, date_to=date_to, album=None, media_type=None,
+                                          favorite=None, name=query, limit=n, prompt=False)
+    except photos_reader.PhotosError as exc:
+        if exc.code in {"PHOTOS_ACCESS_REQUIRED", "PHOTOS_HELPER_MISSING", "PHOTOS_LIBRARY_UNAVAILABLE"}:
+            raise _Unavailable(exc.code.lower(), str(exc)) from exc
+        raise
+    return [{"title": row.get("filename"), "detail": row.get("media_type"), "when": row.get("created"),
+             "id": row.get("id"), "open": {"tool": "mac_app", "app": "Photos", "action": "export_photos",
+                                           "item_id": row.get("id")}} for row in found["items"]]
+
+
 def _documents(query: str, n: int, date_from: Optional[str], date_to: Optional[str]) -> List[Dict[str, Any]]:
     from .knowledge import knowledge_search
 
@@ -123,7 +149,7 @@ class _Unavailable(Exception):
 
 _SEARCHES: Dict[str, Callable[..., List[Dict[str, Any]]]] = {
     "notes": _notes, "mail": _mail, "calendar": _calendar, "reminders": _reminders, "contacts": _contacts,
-    "messages": _messages, "documents": _documents,
+    "messages": _messages, "attachments": _attachments, "photos": _photos, "documents": _documents,
 }
 
 
