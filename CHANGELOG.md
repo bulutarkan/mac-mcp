@@ -1,3 +1,29 @@
+## 2.3.1 r5 - 2026-10-28
+
+**In short:** a signed checkpoint on the 2.3.1 line; the version stays 2.3.1. Build named agent teams in Settings and start them by name, see what each team used in Usage › Teams, manage chats, and let agents open, read and fill many browser tabs in one call. The Chrome companion stays connected, forms in Chrome no longer lose their second field, and updates keep the menu bar app running while the new one builds. Reload the Chrome companion once at chrome://extensions after updating.
+
+### Agent teams
+- Settings › Agents › Teams: build a team from your enabled providers (drag or click into up to 10 slots), each member with its own name, model, thinking and role. Agents start it with `spawn_agents(team_preset="<name>")`; a team with a member Mac MCP cannot read is refused with the reason instead of starting smaller, and `add_task` can hand a task to a named member.
+- The menu shows a running team as one card with every member's state ("waiting for Atlas", the tool it is using), and a finished team as one row (result, time, tokens) that opens to its members. Live Island and the finished notification name the team.
+- Settings › Usage › Teams: tokens per saved team by member, day and run, with a chart; a deleted team keeps its history. Delegated Agents says how much of its total came from teams. The tokens are the same ones counted under each provider, never twice.
+- Team History has a Team Messages button that opens a team's conversation.
+
+### Browser
+- `browser_do(urls=[...])` opens up to 10 pages in background tabs and works in each; `tabs=[{tab_handle, actions}]` acts in several open tabs in one call (Chrome runs them together, Safari one after another). A known failure in one tab no longer blocks a delegated agent's next step.
+- `fill` returns what each field now holds (a password only as set), so a form needs no second look to verify. A repeat `browser_observe` after a fill no longer answers "not modified".
+- Several open tabs read in one call, a stale element found again after the page re-rendered (never a near miss), a page saved as PDF in the background, and a bounded network timeline per tab. `computer_plan` can upload a downloaded file, native waits wake on Accessibility notifications, and a `browser_do` run can be kept as a recipe draft.
+- Chrome: filling a form whose first field woke a password manager no longer fails on the next field (Mac MCP's element ids now live on the page itself). Window 1 is the front browser window, not DevTools.
+- The Chrome companion stays awake while connected, is woken through an open tab when it was asleep, and replaces a connection that went quiet. Reload it once at chrome://extensions.
+
+### Chat, Browser Activity and Settings
+- Chat (#122): archive with undo, pin, ⌘K to switch, open a file or the whole diff from a change, models grouped by provider, a not-ready agent cannot start a chat (and says why), and a session that cannot be reopened continues from a summary.
+- Browser Activity (#124): which agent or team works in which tab, Take over without a prompt (the agent stops before its next change to that tab), a quiet idle rail and quieter notifications.
+- Settings no longer shows an "Up to date" line above fresh data, and a Settings link opens on the pane it names. Skill search results say whether a skill comes from Mac MCP, from you or from another tool.
+
+### Updates
+- Updating keeps the menu bar app running while its replacement builds (up to 15 minutes instead of 3); if the build fails or times out, the installed app is left as it was.
+- Installs that went from r2 to r4 kept older dependencies; this update installs the release's set.
+
 ## 2.3.1 r4 - 2026-10-27
 
 **In short:** a signed checkpoint on the 2.3.1 line; the version stays 2.3.1. It fixes r3's updater: updates after r3 would have stopped on the dependency lock that older updaters left behind.
