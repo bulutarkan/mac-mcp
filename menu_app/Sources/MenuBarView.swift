@@ -887,17 +887,16 @@ struct MenuBarView: View {
                 .frame(width: 18)
                 .help(status)
                 .accessibilityLabel(status)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
+            VStack(alignment: .leading, spacing: 3) {
+                // Plain text, no capsules: two capsules of different heights on lines 2 pt apart touched and
+                // read as overlapping (owner, 2026-10-28).
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(member.name).font(.caption.weight(.semibold)).lineLimit(1)
                     if member.role?.lowercased() == "reviewer" {
-                        Text("Reviewer")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(.quaternary, in: Capsule())
+                        Text("Reviewer").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
-                HStack(spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
                     // Who runs it keeps its room; the tool or what it waits for gives way first.
                     Text("\(providerName(member.provider)) · \(modelName(member.model))")
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
@@ -1090,14 +1089,19 @@ struct MenuBarView: View {
         }.padding(.vertical, 5)
     }
 
+    /// The thinking level inline with the provider and model, "· 🧠 Max", in the same small text as the line.
     private func reasoningChip(_ reasoning: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "brain").font(.system(size: 8 * glyphScale, weight: .semibold))
-            Text(reasoningBadge(reasoning)).font(.caption2.weight(.semibold))
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text("·").foregroundStyle(.tertiary)
+            Image(systemName: "brain").font(.system(size: 8 * glyphScale))
+            Text(reasoningBadge(reasoning))
         }
-        .padding(.horizontal, 5).padding(.vertical, 2)
-        .background(.quaternary, in: Capsule())
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .fixedSize()
         .help("Reasoning: \(reasoningBadge(reasoning))")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Reasoning \(reasoningBadge(reasoning))")
     }
 
     @ViewBuilder
