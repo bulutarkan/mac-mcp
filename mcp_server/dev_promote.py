@@ -116,6 +116,28 @@ def _compile(runtime: Path, files: list[str]) -> None:
         raise PromoteError(f"A promoted file does not compile: {(result.stderr or result.stdout).strip()[:400]}")
 
 
+# An update that stopped here and left its record behind. A promote that lands afterwards is the
+# newer word on the runtime, so the menu stops saying "Update failed" about a runtime that now works.
+_STOPPED_UPDATE_STATES = {"failed", "blocked", "recovered", "recovery_failed"}
+
+
+def _supersede_stopped_update(plan: PromotePlan, *, health_checked: bool) -> None:
+    state = uh.read_update_state()
+    if not isinstance(state, dict) or state.get("status") not in _STOPPED_UPDATE_STATES:
+        return
+    uh.write_update_state({
+        "status": "completed",
+        "update_id": f"promote_{plan.head_commit[:12]}",
+        "kind": "promote",
+        "from_commit": plan.deployed_commit,
+        "to_commit": plan.head_commit,
+        "from_short": uh._short(plan.deployed_commit),
+        "to_short": uh._short(plan.head_commit),
+        "health_skipped": not health_checked,
+        "superseded_update_id": state.get("update_id"),
+    })
+
+
 def promote(
     repo: Optional[str | Path] = None,
     runtime: Optional[str | Path] = None,
@@ -176,6 +198,7 @@ def _apply(plan: PromotePlan, repo: Path, runtime: Path, *, restart: bool, refre
                 raise PromoteError(f"Health check failed after restart: {health_url}")
             say(f"Health check passed: {health_url}")
         uh._write_state_commit(runtime, plan.head_commit)
+        _supersede_stopped_update(plan, health_checked=restarted)
         say(f"The runtime now runs {uh._short(plan.head_commit)}.")
         return {"ok": True, "promoted": True, "backup": str(backup), **asdict(plan)}
     except Exception as exc:

@@ -92,6 +92,27 @@ class DevPromoteTests(unittest.TestCase):
         # A second run has nothing left to do.
         self.assertFalse(self.run_promote()["promoted"])
 
+    def test_a_promote_replaces_the_record_of_an_update_that_stopped(self) -> None:
+        update_state.write_update_state({"status": "failed", "update_id": "upd_stale"})
+        self.write("mcp_server/main.py", "VALUE = 'new'\n")
+        head = self.commit("change")
+        self.push()
+        self.run_promote()
+        state = update_state.read_update_state()
+        self.assertEqual("completed", state["status"])
+        self.assertEqual(head, state["to_commit"])
+        self.assertEqual("upd_stale", state["superseded_update_id"])
+        # restart=False in these tests: nothing was health checked, and the record says so.
+        self.assertTrue(state["health_skipped"])
+
+    def test_a_promote_leaves_a_completed_update_record_alone(self) -> None:
+        update_state.write_update_state({"status": "completed", "update_id": "upd_done"})
+        self.write("mcp_server/main.py", "VALUE = 'new'\n")
+        self.commit("change")
+        self.push()
+        self.run_promote()
+        self.assertEqual("upd_done", update_state.read_update_state()["update_id"])
+
     def test_a_file_already_copied_by_hand_is_not_a_conflict(self) -> None:
         self.write("mcp_server/main.py", "VALUE = 'new'\n")
         head = self.commit("change")
