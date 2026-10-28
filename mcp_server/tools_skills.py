@@ -433,6 +433,27 @@ def set_skill_excluded(location: str, excluded: bool) -> Dict[str, Any]:
             "files_changed": False}
 
 
+def _origin(location: str, managed: bool) -> str:
+    """Where a skill comes from, for agents: shipped with Mac MCP, kept in Mac MCP's skills folder, or another tool's."""
+    if managed:
+        return "owner"
+    try:
+        Path(location).relative_to(BUNDLED_SKILLS_DIR)
+        return "mac_mcp"
+    except ValueError:
+        return "external"
+
+
+# A skill written for Mac MCP names it or its tools; one written for another browser or agent tool does not.
+_MAC_MCP_MENTION = re.compile(
+    r"\bmac[ -]?mcp\b|\b(?:browser_(?:observe|act|do|find|list_tabs)|mac_(?:act|observe|snapshot|app)|"
+    r"computer_plan|spawn_agents|team_messages)\b",
+    re.IGNORECASE,
+)
+# Added to the search score of Mac MCP's own skills, so they come first when relevance is about equal.
+_MAC_MCP_SKILL_BOOST = 0.05
+
+
 def _row_public(row: sqlite3.Row, *, include_body: bool = False) -> Dict[str, Any]:
     out = {
         "name": row["name"],
@@ -441,6 +462,7 @@ def _row_public(row: sqlite3.Row, *, include_body: bool = False) -> Dict[str, An
         "directory": row["directory"],
         "metadata": json.loads(row["metadata_json"] or "{}"),
         "managed": bool(row["managed"]),
+        "source": _origin(row["location"], bool(row["managed"])),
     }
     if include_body:
         out["body"] = row["body"]
@@ -583,6 +605,9 @@ def skill_search(query: str, limit: int = 10) -> Dict[str, Any]:
             score = semantic * 0.58 + lexical * 0.42
             if semantic < 0.05 and lexical < 0.05:
                 continue
+            if (_origin(row["location"], bool(row["managed"])) == "mac_mcp"
+                    or _MAC_MCP_MENTION.search(f"{row['description']}\n{row['body']}")):
+                score += _MAC_MCP_SKILL_BOOST
             scored.append((score, semantic, lexical, row))
         scored.sort(key=lambda item: (item[0], item[3]["name"]), reverse=True)
         results = []

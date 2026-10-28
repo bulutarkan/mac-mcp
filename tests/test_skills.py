@@ -207,6 +207,41 @@ class SkillToolTests(unittest.TestCase):
         self.assertEqual(2, skills.skill_update_index()["total"])
         self.assertEqual("Shared", skills.skill_get(name="another-skill")["body"])
 
+    def test_mac_mcp_skills_rank_above_equal_external_ones_and_external_is_marked(self):
+        # An agent searching for browser help loaded a third-party browser skill (made for another tool)
+        # instead of Mac MCP guidance; with about equal relevance Mac MCP's own skills now come first.
+        text = "---\nname: {name}\ndescription: Fill web forms in Safari tabs and verify the values.\n---\n{body}\n"
+        body = "Open the tab, fill every form field at once, verify the values, close the tab."
+        bundled = self.external / "bundled"
+        cli = self.external / "cli"
+        # The external skill is a shade more relevant (one more query word); others give the index a real spread.
+        rows = [(bundled, "forms-alpha", body), (cli, "forms-zulu", body + " Safari."),
+                (cli, "forms-mike", body + " Use browser_act fill.")]
+        rows += [(cli, f"other-{n:02d}", f"Safari tabs note {n}.") for n in range(30)]
+        for root, name, content in rows:
+            (root / name).mkdir(parents=True)
+            (root / name / "SKILL.md").write_text(text.format(name=name, body=content), encoding="utf-8")
+        os.environ["MAC_MCP_CLI_SKILLS_DIRS"] = str(cli)
+        old_bundled, old_flag = skills.BUNDLED_SKILLS_DIR, os.environ.get("MAC_MCP_BUNDLED_SKILLS")
+        skills.BUNDLED_SKILLS_DIR = bundled.resolve()
+        os.environ["MAC_MCP_BUNDLED_SKILLS"] = "1"
+        try:
+            found = skills.skill_search("Safari form fill verify close tabs", limit=10)["results"]
+        finally:
+            skills.BUNDLED_SKILLS_DIR = old_bundled
+            if old_flag is None:
+                os.environ.pop("MAC_MCP_BUNDLED_SKILLS", None)
+            else:
+                os.environ["MAC_MCP_BUNDLED_SKILLS"] = old_flag
+        order = [item["name"] for item in found]
+        self.assertLess(order.index("forms-alpha"), order.index("forms-zulu"))
+        self.assertLess(order.index("forms-mike"), order.index("forms-zulu"))
+        sources = {item["name"]: item["source"] for item in found}
+        self.assertEqual("mac_mcp", sources["forms-alpha"])
+        self.assertEqual("external", sources["forms-zulu"])
+        self.assertEqual("external", sources["forms-mike"])  # still another tool's folder, only ranked up
+        self.assertEqual("owner", skills.skill_get(name="wordpress-performance")["source"])
+
     def test_invalid_skill_frontmatter_is_rejected(self):
         directory = self.external / "bad"
         directory.mkdir(parents=True)
