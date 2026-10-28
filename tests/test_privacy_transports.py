@@ -47,7 +47,8 @@ KEEPS_WORKING_WHILE_PAUSED = frozenset({
     "lesson_record", "lesson_feedback", "lesson_consolidate", "lesson_delete", "lesson_export", "lesson_search",
     "skill_get", "skill_list", "skill_register", "skill_search", "skill_update_index", "knowledge_search",
     # agents already running, teams and scheduled work (new agents are paused: spawn_agent, spawn_agents)
-    "agent_action", "agent_catalog", "get_agent", "list_agents", "wait_agents", "team_messages", "scheduled_tasks",
+    "agent_action", "agent_catalog", "get_agent", "list_agents", "wait_agents", "team_messages", "team_memory",
+    "scheduled_tasks",
     # Mac MCP's own panel and updater
     "mac_mcp_panel_setting", "mac_mcp_panel_state", "mac_mcp_update", "open_mac_mcp_panel",
     # dispatchers whose observing parts meet the pause on their own: tool_invoke calls the named tool through

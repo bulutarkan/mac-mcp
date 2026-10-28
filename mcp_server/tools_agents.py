@@ -47,7 +47,7 @@ from .workflow_checkpoints import (
     resume_prompt as durable_resume_prompt, rollback_resumed_agent, update_provider_state,
     workflow_for_agent, workflow_input_hash,
 )
-from . import browser_tabs, paths
+from . import browser_tabs, paths, privacy_policy
 from .agent_worktrees import (
     GIT_ISOLATION_MODES, AgentWorktreeError, apply_worktree, cleanup_worktree,
     inspect_worktree, prepare_worktree, remapped_roots, resolve_git_base, reuse_worktree, seed_worktree,
@@ -68,7 +68,7 @@ from .agent_admission import (
 from .workspace_arbitration import sanitize_resource_claims
 from . import provider_compat
 from . import harness_providers
-from . import agent_message_bridge, team_messages
+from . import agent_message_bridge, team_memory, team_messages
 from .security_context import current_delegated_provenance
 from .provider_usage import (
     SOURCE_REPORT as PROVIDER_USAGE_SOURCE_REPORT,
@@ -1314,9 +1314,167 @@ def _team_skill_preamble(team: Dict[str, Any], task: Dict[str, Any]) -> str:
             f"(name=\"{TEAM_COORDINATION_SKILL}\"); the short rules at the end of this task apply either way.")
 
 
+def _team_preset_member_of(team: Dict[str, Any], task: Dict[str, Any]
+                           ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """The saved team (as Settings has it now) and the member this task runs as, else (None, None)."""
+    record = team.get("team_preset") if isinstance(team.get("team_preset"), dict) else {}
+    seat = task.get("preset_member") if isinstance(task.get("preset_member"), dict) else {}
+    if not record.get("id") or not seat.get("id"):
+        return None, None
+    preset = next((item for item in _team_presets()[0] if item["id"] == record["id"]), None)
+    member = next((item for item in (preset or {}).get("members") or [] if item["id"] == seat["id"]), None)
+    return (preset, member) if member else (None, None)
+
+
+def _team_member_context(team: Dict[str, Any], task: Dict[str, Any]) -> str:
+    """Who a saved-team member is and what its team and it remember (#141), for its prompt."""
+    preset, member = _team_preset_member_of(team, task)
+    if member is None:
+        return ""
+    try:
+        return team_memory.prompt_context(preset, member)
+    except (OSError, team_memory.TeamMemoryError):
+        return ""
+
+
+def _keep_team_notes(agent_id: str, meta: Dict[str, Any], result: str) -> str:
+    """Take the note lines off a saved-team member's report and keep them in its team's memory (#141).
+
+    Notes from work that read untrusted web content are dropped: they would come back in every later prompt."""
+    try:
+        team = _read_team(str(meta.get("team_id")))
+    except (HTTPException, OSError, ValueError):
+        return result
+    task = next((item for item in team.get("tasks") or [] if str(item.get("id")) == str(meta.get("team_task_id"))), {})
+    preset, member = _team_preset_member_of(team, task)
+    if member is None:
+        return result
+    clean, team_notes, own_notes = team_memory.extract_notes(result)
+    if not (team_notes or own_notes):
+        return result
+    try:
+        # The record as it is now: the server marks web taint on it while the agent runs.
+        meta = _read_meta(agent_id)
+    except (HTTPException, OSError, ValueError):
+        pass
+    inherited = meta.get("inherited_provenance") if isinstance(meta.get("inherited_provenance"), dict) else {}
+    tainted = (str(meta.get("provenance_class") or "local") != "local"
+               or inherited.get("provenance_class") == TAINTED_PROVENANCE or bool(meta.get("web_tainted_at")))
+    outcome: Dict[str, Any] = {"offered": len(team_notes) + len(own_notes)}
+    if tainted:
+        outcome["dropped"] = "untrusted_web_content"
+    else:
+        try:
+            team_added = team_memory.add_notes(preset["id"], team_notes, author=member["name"])
+            own_added = team_memory.add_notes(preset["id"], own_notes, author=member["name"], member_id=member["id"])
+            outcome.update(team=team_added["added"], member=own_added["added"],
+                           refused_secret=team_added["refused_secret"] + own_added["refused_secret"])
+        except (OSError, team_memory.TeamMemoryError) as exc:
+            outcome["error"] = str(exc)[:200]
+    try:
+        _update_meta(agent_id, lambda current: current.update(team_notes=outcome))
+    except (HTTPException, OSError, ValueError):
+        pass
+    return clean
+
+
+TEAM_MEMORY_DESCRIPTION = (
+    "Memory of a team saved in Settings > Agents > Teams (#141). Its members get it in their prompt each time the "
+    "team runs, and keep notes themselves from their reports. action=read (team = saved team name or id): the "
+    "team's rules and notes and each member's notes. action=add (team, text; optional member = a member's name "
+    "or id for that member's own notes): keep one lasting fact for the team's later runs, such as how this project "
+    "is built and tested, a decision of the owner, or a pitfall the team hit. Never secrets, one-off details or "
+    "guesses. For the lead that starts teams; the members themselves add notes from their reports."
+)
+
+
+def team_memory_tool(action: str = "read", team: Optional[str] = None, text: Optional[str] = None,
+                     member: Optional[str] = None, provenance_class: str = "local") -> Dict[str, Any]:
+    """The team_memory tool: the lead reads a saved team's memory or adds a note to it."""
+    verb = str(action or "read").strip().lower()
+    if verb not in {"read", "add"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be read or add.")
+    caller = team_messages.current_caller()
+    if caller is not None and caller.agent_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, (
+            "team_member_caller: a team member keeps notes by ending its report with MAC_MCP_TEAM_NOTE or "
+            "MAC_MCP_MEMBER_NOTE lines; its team memory is already in its prompt."))
+    preset, problem = _find_team_preset(str(team or ""))
+    if preset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"team_not_found: {problem}")
+    seat = None
+    if member is not None and str(member).strip():
+        key = str(member).strip().casefold()
+        seat = next((item for item in preset["members"] if key in (item["id"].casefold(), item["name"].casefold())), None)
+        if seat is None:
+            names = ", ".join(repr(item["name"]) for item in preset["members"])
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"member_not_found: {member!r} is not in {preset['name']!r} ({names}).")
+    if verb == "read":
+        view = team_memory.view(preset)
+        if seat is not None:
+            view["members"] = [item for item in view["members"] if item["id"] == seat["id"]]
+        return view
+    if privacy_policy.policy()["private_mode"]:
+        raise privacy_policy.PrivacyBlocked(
+            "private_mode", "private mode is on (Settings > Privacy): Mac MCP keeps nothing about this work, so team "
+            "notes are not saved.")
+    if str(provenance_class or "local") != "local":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, (
+            "untrusted_provenance: this session read untrusted web content, so it cannot add to a team's memory "
+            "(it would come back in every later run)."))
+    note = str(text or "").strip()
+    if not note:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "text is required for action=add.")
+    added = team_memory.add_notes(preset["id"], [note], author="lead", member_id=seat["id"] if seat else None)
+    if added["refused_secret"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "secret_refused: the note looks like it holds a password, key or token; it was not saved.")
+    return {"ok": True, "team_preset": {"id": preset["id"], "name": preset["name"]},
+            "saved_to": seat["name"] if seat else "team", "added": bool(added["added"]),
+            **({} if added["added"] else {"note": "The team already has this note."})}
+
+
+def team_memory_settings(action: str, preset_id: str, member_id: Optional[str] = None,
+                         text: Optional[str] = None) -> Dict[str, Any]:
+    """Settings › Agents › Teams (#141): the owner views, edits or resets a saved team's memory."""
+    preset = next((item for item in _team_presets()[0] if item["id"] == str(preset_id or "").strip()), None)
+    if action == "forget" and preset is None:
+        # The team was deleted in Settings: its memory goes with it.
+        team_memory.forget_team(str(preset_id or "").strip())
+        return {"ok": True, "forgotten": True}
+    if preset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "team_not_found: no saved team has this id.")
+    if action == "forget":
+        raise HTTPException(status.HTTP_409_CONFLICT, "team_still_saved: delete the team first; reset clears one file.")
+    if member_id and not any(item["id"] == member_id for item in preset["members"]):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member_not_found: this team has no member with this id.")
+    try:
+        if action == "save":
+            team_memory.save_owner_text(preset["id"], str(text or ""), member_id=member_id or None)
+        elif action == "reset":
+            team_memory.reset(preset["id"], member_id=member_id or None)
+        elif action != "view":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be view, save, reset or forget.")
+    except team_memory.TeamMemoryError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{exc.code}: {exc}") from exc
+    return team_memory.view(preset)
+
+
+def record_agent_web_taint(agent_id: str) -> None:
+    """Note on an agent's record that it read untrusted web content through Mac MCP, once. Its worker runs
+    in another process and checks this before keeping the agent's team notes."""
+    try:
+        if _read_meta(agent_id).get("web_tainted_at"):
+            return
+        _update_meta(agent_id, lambda current: current.setdefault("web_tainted_at", _now()))
+    except (HTTPException, OSError, ValueError):
+        pass
+
+
 def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict[str, Dict[str, Any]]) -> str:
     preamble = _team_skill_preamble(team, task)
-    pieces = ([preamble] if preamble else []) + [str(task.get("prompt") or "").strip()]
+    identity = _team_member_context(team, task)
+    pieces = [piece for piece in (preamble, identity) if piece] + [str(task.get("prompt") or "").strip()]
     dependency_rows: List[Tuple[str, Dict[str, Any]]] = []
     full_text_sources: List[Tuple[str, str]] = []
     for dep_id in task.get("depends_on") or []:
@@ -1372,6 +1530,8 @@ def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict
             + (json.dumps(bounded_target, ensure_ascii=False, sort_keys=True) if bounded_target else "(no candidate result found)")
         )
 
+    if identity:
+        pieces.append(team_memory.note_instruction())
     pieces.append(_team_messaging_instruction(team, task))
 
     revision_count = int(task.get("revision_count") or 0)
@@ -9239,6 +9399,9 @@ def _worker(agent_id: str) -> int:
                 lesson_candidate_ids.append(str(recorded["lesson"]["lesson_id"]))
             except Exception as exc:
                 lesson_candidate_error = str(exc)[:300]
+
+    if result and meta.get("team_id") and meta.get("team_task_id"):
+        result = _keep_team_notes(agent_id, meta, result)
 
     if not result:
         error_tail = _tail_text(stderr_path, max_lines=30, max_chars=3000)

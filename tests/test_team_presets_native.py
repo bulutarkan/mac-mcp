@@ -41,8 +41,20 @@ class TeamPresetsSourceTests(unittest.TestCase):
 
     def test_build_compiles_the_new_sources(self) -> None:
         build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
-        for name in ("AgentChoice.swift", "TeamPresets.swift", "TeamPresetsSection.swift"):
+        for name in ("AgentChoice.swift", "TeamPresets.swift", "TeamPresetsSection.swift", "TeamMemoryView.swift"):
             self.assertIn(f'"${{SCRIPT_DIR}}/Sources/{name}"', build)
+
+    def test_a_teams_memory_opens_from_its_card_and_leaves_with_the_team(self) -> None:
+        # #141: the owner reads, edits and resets what a team remembers, through the dashboard API.
+        section = source("TeamPresetsSection.swift")
+        self.assertIn('Button("Memory…", action: memory)', section)
+        self.assertIn("TeamMemoryView(preset: preset).environmentObject(state)", section)
+        self.assertIn('["action": "forget", "preset": preset.id]', section)
+        view = source("TeamMemoryView.swift")
+        self.assertIn('"dashboard/api/team-memory?preset=', view)
+        for action in ('"action": "save"', '"action": "reset"'):
+            self.assertIn(action, view)
+        self.assertIn("confirmationDialog", view)  # a reset asks first
 
     def test_default_agent_and_team_members_share_one_status_check(self) -> None:
         view = source("SettingsView.swift")

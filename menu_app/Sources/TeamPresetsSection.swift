@@ -6,6 +6,8 @@ import SwiftUI
 /// Teams are saved to settings.json under `subagents.team_presets`, one team at a time.
 struct TeamPresetsSection: View {
     @ObservedObject var settings: SettingsStore
+    /// For the team memory sheet, which reads and writes through the local dashboard API.
+    let state: AppState
     let providers: [ProviderInfo]
     let catalogs: [String: ProviderCatalogInfo]
     let phase: AgentChoice.ProvidersPhase
@@ -18,6 +20,8 @@ struct TeamPresetsSection: View {
     @MacMCPState private var notice: String?
     @MacMCPState private var noticeIsError = false
     @MacMCPState private var pendingDelete: TeamPreset?
+    /// The team whose memory sheet is open.
+    @MacMCPState private var memoryOf: TeamPreset?
 
     var body: some View {
         Group {
@@ -52,6 +56,7 @@ struct TeamPresetsSection: View {
                     create: create,
                     edit: edit,
                     duplicate: duplicate,
+                    memory: { memoryOf = $0 },
                     delete: { pendingDelete = $0 }
                 )
                 .transition(AppMotion.arrive)
@@ -59,6 +64,9 @@ struct TeamPresetsSection: View {
         }
         .animation(AppMotion.content, value: draft == nil)
         .onAppear { settings.reloadTeamPresets() }
+        .sheet(item: $memoryOf) { preset in
+            TeamMemoryView(preset: preset).environmentObject(state)
+        }
         .confirmationDialog(
             "Delete “\(pendingDelete?.name ?? "")”?",
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
@@ -67,7 +75,7 @@ struct TeamPresetsSection: View {
             Button("Delete Team", role: .destructive) { delete(preset) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("The team is removed from Mac MCP. Agents that are already running keep going.")
+            Text("The team and what it remembers are removed from Mac MCP. Agents that are already running keep going.")
         }
     }
 
@@ -114,6 +122,8 @@ struct TeamPresetsSection: View {
             try settings.deleteTeamPreset(id: preset.id)
             notice = "Deleted “\(preset.name)”."
             noticeIsError = false
+            // Its memory goes with it; the server forgets only a team that is no longer saved.
+            Task { _ = await state.taskAPI("dashboard/api/team-memory", body: ["action": "forget", "preset": preset.id]) }
         } catch {
             notice = "Could not delete the team: \(error.localizedDescription)"
             noticeIsError = true
@@ -232,6 +242,7 @@ struct TeamPresetInventory: View {
     let create: () -> Void
     let edit: (TeamPreset) -> Void
     let duplicate: (TeamPreset) -> Void
+    let memory: (TeamPreset) -> Void
     let delete: (TeamPreset) -> Void
 
     private var usable: [String] { AgentChoice.usableProviders(providers) }
@@ -271,6 +282,7 @@ struct TeamPresetInventory: View {
                             locked: locked,
                             edit: { edit(preset) },
                             duplicate: { duplicate(preset) },
+                            memory: { memory(preset) },
                             delete: { delete(preset) }
                         )
                     }
@@ -381,6 +393,7 @@ private struct TeamPresetCard: View {
     let locked: Bool
     let edit: () -> Void
     let duplicate: () -> Void
+    let memory: () -> Void
     let delete: () -> Void
 
     @MacMCPState private var hovering = false
@@ -420,6 +433,7 @@ private struct TeamPresetCard: View {
             Menu {
                 Button("Edit", action: edit)
                 Button("Duplicate", action: duplicate)
+                Button("Memory…", action: memory)
                 Divider()
                 Button("Delete…", role: .destructive, action: delete)
             } label: {

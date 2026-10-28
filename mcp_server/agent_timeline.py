@@ -47,6 +47,7 @@ _TOOL_WORDS = {
     "memory_search": "Searched memories",
     "knowledge_search": "Searched your folders",
     "team_messages": "Messaged teammates",
+    "team_memory": "Used team memory",
     "fleet": "Used another Mac",
     "iphone": "Used the iPhone",
     "screenshot": "Took a screenshot",

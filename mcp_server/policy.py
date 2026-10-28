@@ -742,6 +742,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     # Messages between agents write only Mac MCP's own coordination store, never the owner's data,
     # so even a read-only team member may tell its teammates something (#208).
     "team_messages": _r("team_messages", "agents", _caps(Capability.READ), sensitive=True),
+    "team_memory": _r("team_memory", "agents", _caps(Capability.LOCAL_WRITE), sensitive=True),
     "fleet": _r("fleet", "meta", _caps(Capability.READ, Capability.NETWORK_ACCESS, Capability.EXTERNAL_SIDE_EFFECT,
                                       Capability.RAW_EXECUTION), destructive=True, sensitive=True, resolver=_fleet_risk),
     "list_agents": _r("list_agents", "agents", _caps(Capability.READ), sensitive=True),

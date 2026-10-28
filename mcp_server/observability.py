@@ -2099,6 +2099,7 @@ class ObservedFastMCP(FastMCP):
                 arguments=arguments,
                 result=result,
             )
+            self.security_context.note_agent_taint(security_key, policy_context.agent_id)
             inherited = self.security_context.inherit_delegated_provenance(
                 parent_key=security_key,
                 parent_public_session_id=public_session_id,

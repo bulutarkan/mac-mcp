@@ -245,6 +245,30 @@ class SecurityContextManager:
         """loader(agent_id) -> persisted inherited provenance or None (read from the agent's meta)."""
         self._child_seed_loader = loader
 
+    def set_agent_taint_recorder(self, recorder) -> None:
+        """recorder(agent_id) persists that a delegated agent read untrusted web content; its worker runs in
+        another process and reads that before it keeps the agent's team notes (#141)."""
+        self._agent_taint_recorder = recorder
+
+    def note_agent_taint(self, key: str, agent_id: Optional[str]) -> None:
+        """After a delegated agent's call: record once that its session is web-tainted."""
+        recorder = getattr(self, "_agent_taint_recorder", None)
+        if not agent_id or recorder is None:
+            return
+        with self._lock:
+            state = self._states.get(key)
+            if state is None or state.provenance_class != "tainted_untrusted_web":
+                return
+            recorded = self.__dict__.setdefault("_taint_recorded", set())
+            if agent_id in recorded:
+                return
+            recorded.add(agent_id)
+        try:
+            recorder(agent_id)
+        except Exception:
+            with self._lock:
+                self._taint_recorded.discard(agent_id)
+
     def provenance_snapshot(self, key: str, public_session_id: str) -> Optional[dict]:
         """What a child spawned by this caller must inherit, or None when the caller is not tainted."""
         with self._lock:

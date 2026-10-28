@@ -131,6 +131,7 @@ class TeamPresetSpawnTests(unittest.TestCase):
         self.settings_path = self.root / "settings.json"
         write_settings(self.settings_path, [NIGHT_SHIFT])
         env = patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(self.settings_path),
+                                      "MAC_MCP_STATE_DIR": str(self.root / "state"),
                                       "MAC_MCP_AGENT_GLOBAL_ACTIVE_LIMIT": "8", "MAC_MCP_AGENT_PROVIDER_LIMIT": "8"})
         env.start()
         self.addCleanup(env.stop)
@@ -191,9 +192,12 @@ class TeamPresetSpawnTests(unittest.TestCase):
         self.assertEqual(("claude", "opus", None, "Nova", "reviewer"),
                          tuple(runs["review"][key] for key in ("provider", "model", "reasoning", "title", "role")))
         self.assertEqual(2, len(self.spawned))
-        # Members bring no identity or memory text: the prompt is the task's own.
-        self.assertTrue(runs["build"]["prompt"].strip().startswith("build it"))
-        self.assertNotIn("Atlas", runs["build"]["prompt"])
+        # Each member is told who it is and who its teammates are (#141), then gets its task.
+        self.assertIn('you are Atlas, the coder of the saved team "Night Shift". Teammates: Nova (reviewer), Echo.',
+                      runs["build"]["prompt"])
+        self.assertIn("\n\nbuild it", runs["build"]["prompt"])
+        # How to keep notes comes after the task, fresh when the member writes its report.
+        self.assertLess(runs["build"]["prompt"].index("build it"), runs["build"]["prompt"].index("MAC_MCP_TEAM_NOTE"))
         self.assertEqual({"id": "tp_0000000a", "name": "Night Shift"}, team["team_preset"])
         self.assertEqual("Night Shift", team["title"])
 

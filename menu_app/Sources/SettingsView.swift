@@ -1169,6 +1169,7 @@ struct SettingsView: View {
                         agentsStatusRows
                         TeamPresetsSection(
                             settings: settings,
+                            state: state,
                             providers: state.providerStatuses,
                             catalogs: state.providerCatalogs,
                             phase: providersPhase

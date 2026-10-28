@@ -59,6 +59,9 @@ from .tools_jobs import (
 )
 from .tools_agents import (
     inherited_provenance_for,
+    record_agent_web_taint,
+    TEAM_MEMORY_DESCRIPTION,
+    team_memory_tool,
     AGENTS_DIR, agent_catalog, spawn_agent, spawn_agents, wait_agents,
     list_agents, get_agent, agent_action, start_agent_history_expiry,
 )
@@ -636,6 +639,7 @@ def create_app():
 
     security_context = SecurityContextManager()
     security_context.set_child_seed_loader(inherited_provenance_for)
+    security_context.set_agent_taint_recorder(record_agent_web_taint)
     mcp = ObservedFastMCP(
         telemetry=telemetry,
         security_context=security_context,
@@ -981,7 +985,8 @@ def create_app():
             "team success until a reviewer settles them with resolutions. A child reporting success with errors counts as partial_failure. "
             "team_preset=<saved team name or id> runs a team saved in Settings > Agents: each task runs as one member "
             "(its provider, model, reasoning, role; title defaults to the member's name); task.member picks one by name, "
-            "other tasks take the next unused member in order; a task's own fields still win. "
+            "other tasks take the next unused member in order; a task's own fields still win. Each member knows its "
+            "name, role and teammates and gets the team's memory (team_memory reads it or adds a note). "
             "Returns immediately with parent-visible budget and global admission/queue state."
         ),
     )
@@ -1047,6 +1052,15 @@ def create_app():
                 action=action, body=body, to=to, kind=kind, reply_to=reply_to, room=room, team_id=team_id,
                 unread_only=unread_only, limit=limit, dedupe_key=dedupe_key, after=after,
             ),
+        )
+
+    @mcp.tool(name="team_memory", description=TEAM_MEMORY_DESCRIPTION)
+    async def _team_memory(action: str = "read", team: Optional[str] = None, text: Optional[str] = None,
+                           member: Optional[str] = None) -> Dict[str, Any]:
+        provenance = current_provenance_class()
+        return await asyncio.to_thread(
+            _log, audit_logger, "team_memory",
+            lambda: team_memory_tool(action=action, team=team, text=text, member=member, provenance_class=provenance),
         )
 
     @mcp.tool(

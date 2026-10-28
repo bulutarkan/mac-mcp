@@ -65,7 +65,7 @@ from .steering import (
 )
 from .tools_agents import (
     agent_action, agent_catalog, dashboard_team_summary, list_agents, provider_overview, team_history,
-    team_message_history, team_usage_summary,
+    team_memory_settings, team_message_history, team_usage_summary,
 )
 from .tools_browser import browser_activate_tab
 from .workspace_arbitration import owner_action, owner_takeover_snapshot
@@ -1168,6 +1168,36 @@ def create_dashboard_routes(
         return JSONResponse({"ok": False, "error": "invalid_request", "message": str(exc.detail)},
                             status_code=exc.status_code if 400 <= exc.status_code < 500 else 400)
 
+    # Settings › Agents › Teams (#141): a saved team's memory, its TEAM.md and each member's notes.
+    async def team_memory_view(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            result = await asyncio.to_thread(team_memory_settings, "view", request.query_params.get("preset") or "")
+        except HTTPException as exc:
+            return _http_error(exc)
+        return JSONResponse(result)
+
+    async def team_memory_change(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        action = str(body.get("action") or "").strip().lower()
+        if action == "save":
+            refused = _private_refusal()
+            if refused:
+                return refused
+        try:
+            result = await asyncio.to_thread(
+                team_memory_settings, action, str(body.get("preset") or ""),
+                str(body.get("member") or "").strip() or None, body.get("text"),
+            )
+        except HTTPException as exc:
+            return _http_error(exc)
+        return JSONResponse(result)
+
     async def memory_items(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -2156,6 +2186,8 @@ def create_dashboard_routes(
         Route("/dashboard/api/memory/clear", memory_clear_route, methods=["POST"]),
         Route("/dashboard/api/memory/settings", memory_settings, methods=["POST"]),
         Route("/dashboard/api/memory/items", memory_items, methods=["GET"]),
+        Route("/dashboard/api/team-memory", team_memory_view, methods=["GET"]),
+        Route("/dashboard/api/team-memory", team_memory_change, methods=["POST"]),
         Route("/dashboard/api/memory/item", memory_item_update, methods=["POST"]),
         Route("/dashboard/api/memory/item/delete", memory_item_delete, methods=["POST"]),
         Route("/dashboard/api/lessons", lesson_items, methods=["GET"]),
