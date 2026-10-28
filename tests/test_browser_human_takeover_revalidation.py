@@ -239,7 +239,11 @@ class BrowserMutationRevalidationTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual("HUMAN_ACTIVE_RESOURCE", result["reason_code"])
-        self.assertEqual(1, run_js.call_count, "option activation must not run after takeover")
+        scripts = [call.args[2] for call in run_js.call_args_list]
+        # A read for a replacement box (a hidden native select), then the opening press; never the option press.
+        self.assertEqual(2, len(scripts))
+        self.assertIn("widget_id", scripts[0])
+        self.assertFalse(any("candidate_count" in script for script in scripts), "option activation must not run after takeover")
 
     def test_trusted_pointer_revalidates_after_readiness_before_dispatch(self) -> None:
         before = {

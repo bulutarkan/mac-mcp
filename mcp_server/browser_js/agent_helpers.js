@@ -308,14 +308,18 @@ function __mcpDescribe(el,s){
   var shadowHost=__mcpShadowHost(el);if(shadowHost)out.shadow_host=String(shadowHost.tagName||'').toLowerCase();
   var modalScope=__mcpModalScope(el);out.modal_scope=modalScope.active?(modalScope.inside?'inside':'outside'):'none';
   var assoc=__mcpAssociation(el),associationText=__mcpAssociationText(el);if(associationText)out.association_text=associationText;
-  if(assoc.control&&assoc.control!==el)out.associated_control={element_id:__mcpId(assoc.control,s),tag:String(assoc.control.tagName||'').toLowerCase(),role:__mcpRole(assoc.control)};
+  if(assoc.control&&assoc.control!==el){out.associated_control={element_id:__mcpId(assoc.control,s),tag:String(assoc.control.tagName||'').toLowerCase(),role:__mcpRole(assoc.control)};if(String(assoc.control.tagName||'').toLowerCase()==='input'){if(assoc.control.type)out.associated_control.input_type=String(assoc.control.type);if(__mcpSuggests(assoc.control))out.associated_control.suggests=true;}}
   if(assoc.label&&assoc.label!==el)out.associated_label={element_id:__mcpId(assoc.label,s),text:__mcpText(assoc.label)};
   if(assoc.ambiguous)out.association_ambiguous=true;
   if(out.actionable){var rd=__mcpElementReadiness(el,'observe',0);out.ready=!!rd.ready;if(rd.reason_code)out.readiness_reason=rd.reason_code;if(rd.hit_target)out.hit_target=rd.hit_target;}
   var context=__mcpContext(el);if(context)out.context=context;
   var aria=el.getAttribute('aria-label')||'';if(!aria&&el.getAttribute('aria-labelledby')){var lroot=(el.getRootNode&&el.getRootNode().getElementById)?el.getRootNode():document;aria=String(el.getAttribute('aria-labelledby')).split(/\s+/).map(function(i){var n=i&&lroot.getElementById(i);return n?String(n.textContent||'').replace(/\s+/g,' ').trim():'';}).filter(Boolean).join(' ');}var ph=__mcpPlaceholder(el),name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
-  try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=__mcpSafeValue(el).slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
+  try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=__mcpSafeValue(el).slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(tag==='input'&&__mcpSuggests(el))out.suggests=true;if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
 }
+/* A text box that offers a list while typing (a search box, an autocomplete): marked by ARIA, or by a
+   page script that turns off the suggestions of the browser to show its own. No quote marks in comments
+   here: the export scan reads them as strings. */
+function __mcpSuggests(el){var a=function(n){return String(el.getAttribute(n)||'').toLowerCase();},popup=a('aria-haspopup');return a('role')==='combobox'||a('aria-autocomplete')==='list'||a('aria-autocomplete')==='both'||popup==='listbox'||popup==='true'||!!el.getAttribute('aria-controls')||!!el.getAttribute('aria-owns')||a('autocomplete')==='off';}
 function __mcpParent(el){if(!el)return null;if(el.parentElement)return el.parentElement;try{var root=el.getRootNode&&el.getRootNode();return root&&root.host?root.host:null;}catch(e){return null;}}
 function __mcpActivationTarget(el){
   if(!el)return el;

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Comboboxes</title>
+<style>
+  body { font: 14px system-ui, sans-serif; padding: 20px; max-width: 520px; }
+  .row { margin: 14px 0; position: relative; }
+  label, .label { display: block; margin-bottom: 4px; }
+  .list { position: absolute; z-index: 5; left: 0; top: 100%; width: 260px; margin: 0; padding: 0; list-style: none;
+          background: #fff; border: 1px solid #999; }
+  .list[hidden] { display: none; }
+  .list > * { padding: 4px 6px; }
+  .shown { display: inline-block; min-width: 120px; }
+  .picker { display: inline-block; border: 1px solid #999; width: 240px; padding: 3px 6px; cursor: pointer; }
+  .clipped { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<!-- Search boxes that take only a choice from their list, the way React select, MUI Autocomplete,
+     Headless UI, Tom Select and Select2 work; fixtures for tests.test_browser_page_integration. -->
+<form onsubmit="return false">
+  <div class="row"><label>Full name <input id="name"></label></div>
+
+  <!-- MUI-like: the input shows the choice; typed text that was not chosen is dropped on blur. -->
+  <div class="row">
+    <label for="country">Country</label>
+    <input id="country" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="country-list" autocomplete="off">
+    <ul id="country-list" class="list" role="listbox" hidden></ul>
+  </div>
+
+  <!-- React select-like: the input empties after a choice; the choice shows beside it. Options come
+       after a delay, as from a server. No aria-controls. -->
+  <div class="row">
+    <label for="city">City</label>
+    <div><span class="shown" id="city-shown"></span><input id="city" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off"></div>
+    <div id="city-menu" class="list" hidden></div>
+  </div>
+
+  <!-- No ARIA at all: a page script's own list, recognisable only by autocomplete=off and the list it opens. -->
+  <div class="row">
+    <label>Interest <input id="interest" placeholder="Interest" autocomplete="off"></label>
+    <div id="interest-list" class="list" hidden></div>
+  </div>
+
+  <!-- Free text with suggestions (an address box): text that matches no suggestion is kept. -->
+  <div class="row">
+    <label for="address">Address</label>
+    <input id="address" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="address-list" autocomplete="off">
+    <ul id="address-list" class="list" role="listbox" hidden></ul>
+  </div>
+
+  <!-- Select2-like: the native select is hidden; a box drawn after it is used instead and copies the
+       choice back to the select. -->
+  <div class="row">
+    <label for="language">Language</label>
+    <select id="language" class="clipped" aria-hidden="true"><option value=""></option><option>English</option><option>Turkish</option><option>German</option></select>
+    <span id="language-box" class="picker" role="combobox" aria-expanded="false" aria-controls="language-list" tabindex="0">Pick a language</span>
+    <ul id="language-list" class="list" role="listbox" hidden></ul>
+  </div>
+</form>
+<script>
+  window.__chosen = {};
+  function strict(input, list, items, opts) {
+    opts = opts || {};
+    let committed = '';
+    function close() { list.hidden = true; if (input.hasAttribute('aria-expanded')) input.setAttribute('aria-expanded', 'false'); }
+    function render(q) {
+      const shown = items.filter(x => x.toLowerCase().includes(q.toLowerCase()));
+      list.innerHTML = '';
+      if (!shown.length && opts.notice) { const n = document.createElement('div'); n.textContent = 'No options'; list.appendChild(n); }
+      shown.forEach(x => {
+        const row = document.createElement(opts.tag || 'li');
+        if (opts.roles !== false) row.setAttribute('role', 'option');
+        row.textContent = x;
+        row.addEventListener('mousedown', e => e.preventDefault());
+        row.addEventListener('click', () => {
+          committed = x; window.__chosen[input.id] = x; close();
+          if (opts.emptyAfter) { input.value = ''; opts.emptyAfter.textContent = x; } else { input.value = x; }
+        });
+        list.appendChild(row);
+      });
+      list.hidden = false;
+      if (input.hasAttribute('aria-expanded')) input.setAttribute('aria-expanded', 'true');
+    }
+    input.addEventListener('input', () => {
+      committed = ''; window.__chosen[input.id] = '';
+      if (opts.delay) { list.hidden = true; setTimeout(() => render(input.value), opts.delay); } else render(input.value);
+    });
+    input.addEventListener('blur', () => {
+      close();
+      if (!opts.freeText && input.value !== (opts.emptyAfter ? '' : committed)) input.value = opts.emptyAfter ? '' : committed;
+    });
+  }
+  const countries = ['Germany', 'Turkey', 'United Kingdom', 'United States'];
+  strict(document.getElementById('country'), document.getElementById('country-list'), countries, {notice: true});
+  strict(document.getElementById('city'), document.getElementById('city-menu'), ['Istanbul', 'Izmir', 'Ankara', 'Antalya'],
+         {delay: 500, tag: 'div', emptyAfter: document.getElementById('city-shown'), notice: true});
+  strict(document.getElementById('interest'), document.getElementById('interest-list'), ['Hair transplant', 'Dental', 'Eye surgery'],
+         {roles: false, tag: 'div'});
+  strict(document.getElementById('address'), document.getElementById('address-list'), ['Main Street 1, Springfield', 'Main Street 2, Springfield'],
+         {freeText: true});
+
+  const select = document.getElementById('language'), box = document.getElementById('language-box'),
+        languages = document.getElementById('language-list');
+  box.addEventListener('click', () => {
+    const open = languages.hidden;
+    languages.innerHTML = '';
+    Array.from(select.options).filter(o => o.value).forEach(o => {
+      const row = document.createElement('li');
+      row.setAttribute('role', 'option');
+      row.textContent = o.text;
+      row.addEventListener('mouseup', () => {
+        select.value = o.value; select.dispatchEvent(new Event('change', {bubbles: true}));
+        box.textContent = o.text; languages.hidden = true; box.setAttribute('aria-expanded', 'false');
+      });
+      languages.appendChild(row);
+    });
+    languages.hidden = !open;
+    box.setAttribute('aria-expanded', String(open));
+  });
+</script>
+</body>
+</html>

@@ -238,6 +238,78 @@ class FillFlowTests(unittest.TestCase):
         self.assertEqual(["Range"], result["actions"][0]["failed_fields"])
         self.assertEqual(1, key.call_count)  # one Escape, one retry, no loop
 
+    def _fill_search_box(self, values, finds, pick, check=None, kept=None):
+        """Run fill with page scripts answered by role: the list probe, the kept-choice check and the
+        final read of what the boxes hold."""
+        scripts = []
+
+        def run_js(_settings, _browser, js, *_args, **_kwargs):
+            if js.startswith("SUGGEST:"):
+                mode = js.split(":", 1)[1]
+                scripts.append(mode)
+                return {"before": {"ok": True}, "pick": pick, "check": check or {"ok": True}}[mode]
+            if js == "KEPT":
+                scripts.append("kept")
+                return kept or {"ok": True, "values": {}}
+            return {"ok": True, "url": "u", "title": "t", "dom_revision": 1}
+
+        with patch.object(agent, "_fill_suggestion_js", side_effect=lambda _eid, _value, mode: f"SUGGEST:{mode}"), \
+             patch.object(agent, "_fill_kept_js", return_value="KEPT"), \
+             patch.object(agent, "_verified_dom_action", side_effect=lambda _s, _b, item, *_a, **_k: {
+                 "ok": True, "type": "type", "element_id": item["element_id"], "value": item["text"], "_js_calls": 1}), \
+             patch.object(agent, "_resolve_tab_target", return_value=(1, 1)), \
+             patch.object(agent, "browser_find", side_effect=lambda _s, _b, **kw: finds[kw.get("query")]), \
+             patch.object(agent, "_run_json_js", side_effect=run_js), \
+             patch.object(agent.time, "sleep"), patch.object(agent, "cancellable_sleep"), \
+             patch.object(agent.time, "monotonic", side_effect=lambda clock=itertools.count(0.0, 0.5): next(clock)):
+            result = _browser_act_locked(MagicMock(), "Safari", [{"type": "fill", "values": values}], observation_id=None,
+                                         window_index=1, tab_index=1, tab_handle="tab", return_state="none")
+        return result["actions"][0], scripts
+
+    def test_search_box_value_is_chosen_from_the_list_typing_opened(self) -> None:
+        # Live: "Healthcare" typed into a React select style box was reported filled; the page kept nothing.
+        fill, scripts = self._fill_search_box(
+            {"Industry": "Healthcare"},
+            {"Industry": self._found(field("e_ind", "Industry", role="combobox", suggests=True))},
+            pick={"ok": True, "popup": True, "found": True, "picked": "Healthcare"},
+            check={"ok": True, "kept": True, "value": ""},
+        )
+        self.assertTrue(fill["ok"], fill)
+        self.assertEqual(("Healthcare", True), (fill["fields"][0]["value"], fill["fields"][0]["chosen_from_list"]))
+        self.assertEqual(["before", "pick", "check"], scripts)
+
+    def test_plain_text_box_costs_no_list_probe(self) -> None:
+        fill, scripts = self._fill_search_box(
+            {"Email": "me@example.com"}, {"Email": self._found(field("e_mail", "Email", input_type="email"))},
+            pick={"ok": True, "popup": False},
+        )
+        self.assertTrue(fill["ok"], fill)
+        self.assertEqual([], scripts)
+
+    def test_search_box_that_drops_the_typed_text_is_not_reported_filled(self) -> None:
+        fill, scripts = self._fill_search_box(
+            {"Industry": "Aerospace"},
+            {"Industry": self._found(field("e_ind", "Industry", role="combobox", suggests=True))},
+            pick={"ok": True, "marked": True, "popup": False},
+            kept={"ok": True, "values": {"e_ind": ""}, "left": ["e_ind"]},
+        )
+        self.assertFalse(fill["ok"])
+        self.assertEqual(("value_not_kept", "FILL_VALUE_NOT_KEPT", ["Industry"]),
+                         (fill["fields"][0]["error"], fill["fields"][0]["reason_code"], fill["failed_fields"]))
+        self.assertNotIn("value", fill["fields"][0])
+        self.assertIs(False, fill["outcome_unknown"])
+        self.assertEqual("kept", scripts[-1])
+
+    def test_search_box_list_without_the_value_is_reported_with_its_options(self) -> None:
+        fill, _scripts = self._fill_search_box(
+            {"Country": "Narnia"},
+            {"Country": self._found(field("e_cty", "Country", role="combobox", suggests=True))},
+            pick={"ok": True, "marked": True, "popup": True, "found": False, "no_such_option": True, "options": ["No options"]},
+        )
+        self.assertFalse(fill["ok"])
+        self.assertEqual(("option_not_found", "FILL_NO_SUCH_OPTION", ["No options"]),
+                         (fill["fields"][0]["error"], fill["fields"][0]["reason_code"], fill["fields"][0]["options"]))
+
     def test_option_text_never_stands_in_for_a_field_label(self) -> None:
         # Live bug: State (not rendered yet) matched the Country select that lists "United States".
         country = {"element_id": "e_cty", "tag": "select", "role": "combobox", "association_text": "Country",

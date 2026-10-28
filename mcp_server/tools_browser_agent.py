@@ -1740,6 +1740,7 @@ def _browser_find_impl(
             "associated_control": element.get("associated_control"), "associated_label": element.get("associated_label"),
             "association_ambiguous": element.get("association_ambiguous"), "hit_target": element.get("hit_target"),
             **({"offscreen": True} if element.get("offscreen") else {}),
+            **({"suggests": True} if element.get("suggests") else {}),
             **({"within_up": element.get("within_up"), "within_down": element.get("within_down")} if scoped else {}),
         })
     _remember_target_identities(browser, tab_handle, matches)
@@ -1856,6 +1857,90 @@ return __mcpB64({{ok:true,found:true,selected:txt,tag:(chosen.tagName||'').toLow
 }})()'''
 
 
+def _select_widget_js(element_id: str) -> str:
+    """A native select that a script hid (Select2, Choices.js, Tom Select) is chosen in through the box
+    drawn in its place; the script copies that choice back to the select. Returns the box's element id,
+    or nothing when the select is shown itself."""
+    eid = json.dumps(str(element_id or ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),sel=s.elements[{eid}];
+if(!sel||!sel.isConnected||String(sel.tagName||'').toLowerCase()!=='select')return __mcpB64({{ok:true}});
+var st=__mcpStyle(sel),r=sel.getBoundingClientRect();
+var hidden=st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0||r.width<=2||r.height<=2||sel.getAttribute('aria-hidden')==='true';
+if(!hidden)return __mcpB64({{ok:true}});
+function shown(e){{return e&&e.nodeType===1&&__mcpVisible(e);}}
+function selects(e){{try{{return e.querySelectorAll('select').length;}}catch(x){{return 9;}}}}
+var box=null;
+/* A combobox wrapped around the select (Choices.js) is the box; else one drawn right after it (Select2, Tom Select). */
+for(var a=__mcpParent(sel),k=0;a&&k<3&&!box;a=__mcpParent(a),k++){{if(selects(a)>1)break;if(shown(a)&&String(a.getAttribute('role')||'')==='combobox')box=a;}}
+for(var n=sel.nextElementSibling,g=0;n&&g<2&&!box;n=n.nextElementSibling,g++){{if(shown(n)&&!/^(select|input|textarea|label)$/i.test(n.tagName)&&!selects(n))box=n;}}
+for(var p=__mcpParent(sel),h=0;p&&h<3&&!box;p=__mcpParent(p),h++){{if(selects(p)>1)break;if(shown(p)&&p.querySelector('[role="combobox"],[aria-haspopup],[class*="select"],[class*="choice"]'))box=p;}}
+if(!box)return __mcpB64({{ok:true,hidden:true}});
+var trigger=null;try{{trigger=Array.from(box.querySelectorAll('[role="combobox"],[aria-haspopup="listbox"],[aria-haspopup="true"]')).filter(shown)[0]||null;}}catch(x){{}}
+trigger=trigger||(box.matches('[role="combobox"]')?box:(Array.from(box.children).filter(shown)[0]||box));
+var id=__mcpId(trigger,s);s.elements[id]=trigger;
+return __mcpB64({{ok:true,hidden:true,widget_id:id}});
+}})()'''
+
+
+def _select_toggle_js(element_id: str, want: str) -> str:
+    """Press a custom select whose aria-expanded says the opposite of want ("open"/"closed"): a press can
+    be lost while another list script takes focus back (Choices.js after Tom Select), and a list left
+    open after a miss covers the fields below it (Select2). Also says whether the tab is hidden."""
+    eid = json.dumps(str(element_id or ""))
+    pressed_when = json.dumps("false" if want == "open" else "true")
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var el=__mcpState().elements[{eid}],hidden=!!document.hidden;
+if(!el||!el.isConnected)return __mcpB64({{ok:true,pressed:false,hidden:hidden}});
+var marked=el.hasAttribute('aria-expanded')?el:el.querySelector('[aria-expanded]');
+var expanded=marked?String(marked.getAttribute('aria-expanded')):null;
+if(expanded!=={pressed_when})return __mcpB64({{ok:true,pressed:false,hidden:hidden,expanded:expanded}});
+__mcpActivate(el);
+return __mcpB64({{ok:true,pressed:true,hidden:hidden,expanded:expanded}});
+}})()'''
+
+
+def _select_chosen_js(element_id: str) -> str:
+    """The option a native select holds now."""
+    eid = json.dumps(str(element_id or ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var sel=__mcpState().elements[{eid}],o=sel&&sel.selectedOptions&&sel.selectedOptions[0];
+return __mcpB64({{ok:true,value:o?String(o.value):null,text:o?String(o.text||'').trim():null}});
+}})()'''
+
+
+def _fill_suggestion_js(element_id: str, value: Any, mode: str) -> str:
+    """mode "before": note the lists open ahead of typing; "pick": press the option the list typing
+    opened shows for value; "check": did it stay."""
+    return _fill_js(_browser_js("fill_suggestion.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__ELEMENT_ID__": json.dumps(str(element_id or "")),
+        "__TEXT__": json.dumps(str(value if value is not None else ""), ensure_ascii=False),
+        "__MODE__": json.dumps(mode),
+    })
+
+
+def _fill_kept_js(element_ids: List[str], leave_ids: List[str]) -> str:
+    """The value each filled box holds now. A box in leave_ids that still has focus is left first, as a
+    person moving on would, so a page that keeps only list choices clears what was merely typed."""
+    ids = json.dumps([str(item) for item in element_ids])
+    leave = json.dumps([str(item) for item in leave_ids])
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),out={{}},left=[];
+{leave}.forEach(function(id){{var e=s.elements[id];if(e&&e.isConnected&&document.activeElement===e){{try{{e.blur();left.push(id);}}catch(x){{}}}}}});
+{ids}.forEach(function(id){{var e=s.elements[id];out[id]=e&&e.isConnected?String(e.value==null?'':e.value):null;}});
+return __mcpB64({{ok:true,values:out,left:left}});
+}})()'''
+
+
 def _select_action(
     settings: Settings,
     browser: str,
@@ -1875,6 +1960,29 @@ def _select_action(
     poll_s = max(0.05, min(float(action.get("poll_ms", 100)) / 1000.0, 0.5))
     started = time.perf_counter()
     js_calls = 0
+    # fill already knows whether its select is shown (find's readiness); a plain select action looks.
+    if not action.get("_widget_of") and action.get("_widget_check", True):
+        widget = _run_json_js(settings, browser, _select_widget_js(element_id), window_index, tab_index, tab_handle)
+        js_calls += 1
+        if widget.get("widget_id"):
+            chosen = _select_action(
+                settings, browser, {**action, "element_id": widget["widget_id"], "option": option, "_widget_of": element_id},
+                None, window_index, tab_index, tab_handle, mutation_revalidator=mutation_revalidator,
+            )
+            js_calls += int(chosen.pop("_js_calls", 0))
+            if chosen.get("ok"):
+                # The select itself says what was chosen; a press the script ignored leaves it unchanged.
+                held = _run_json_js(settings, browser, _select_chosen_js(element_id), window_index, tab_index, tab_handle)
+                js_calls += 1
+                said = re.sub(r"\s+", " ", str(chosen.get("selected") or "")).strip().lower()
+                if not held.get("text") or str(held["text"]).strip().lower() != said:
+                    chosen = {"ok": False, "type": "select", "error": "choice_not_kept", "reason_code": "SELECT_CHOICE_NOT_KEPT",
+                              "picked": chosen.get("selected"), "select_holds": held.get("text")}
+                else:
+                    chosen["selected"] = held["text"]
+            chosen.update(element_id=element_id, widget_element_id=widget["widget_id"],
+                          duration_ms=int((time.perf_counter()-started)*1000), _js_calls=js_calls)
+            return chosen
     readiness = _wait_for_element_readiness(
         settings, browser, action, window_index, tab_index, tab_handle,
     )
@@ -1910,6 +2018,8 @@ def _select_action(
             "selected": prep.get("selected"), "native": True,
             "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
         }
+    reopened = False
+    page_hidden = False
     while time.perf_counter() - started < timeout_s:
         mutation_target = None
         if mutation_revalidator is not None:
@@ -1948,12 +2058,27 @@ def _select_action(
                 "selected": found.get("selected"), "native": False,
                 "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
             }
+        if not reopened and time.perf_counter() - started >= _SELECT_REOPEN_AFTER_S:
+            reopened = True
+            toggled = _run_json_js(settings, browser, _select_toggle_js(element_id, "open"), window_index,
+                                   tab_index, tab_handle, prevalidated_target=mutation_target)
+            js_calls += 1
+            # A list that says it is open and lacks the option is a plain miss, hidden tab or not.
+            page_hidden = bool(toggled.get("hidden")) and toggled.get("expanded") != "true"
         cancellable_sleep(poll_s)
-    return {
+    _run_json_js(settings, browser, _select_toggle_js(element_id, "closed"), window_index, tab_index, tab_handle)
+    js_calls += 1
+    missed: Dict[str, Any] = {
         "ok": False, "type": "select", "element_id": element_id,
         "error": "option_not_found", "timed_out": True, "native": False,
         "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
     }
+    if page_hidden:
+        # Some list scripts open on the next screen refresh, which a background tab never gets.
+        missed.update(reason_code="LIST_NEEDS_VISIBLE_TAB",
+                      hint="The list did not open while the tab is in the background. Show the tab "
+                           "(browser_activate_tab) and choose again, or check the option text.")
+    return missed
 
 
 def _changes_js(observation_id: Optional[str]) -> str:
@@ -2061,6 +2186,13 @@ def _wait_for_element_readiness(
         now = time.perf_counter()
         if last.get("ready"):
             last.update({"duration_ms": int((now - started) * 1000), "_js_calls": js_calls})
+            return last
+        if action.get("_list_cover_ok") and last.get("reason_code") == "ELEMENT_OCCLUDED" \
+                and str((last.get("hit_target") or {}).get("role") or "").lower() in _LIST_COVER_ROLES:
+            # fill: another field's dropdown list still lies over this field. A page script can keep it
+            # open in a background tab (Tom Select reopens it on a throttled timer); the DOM action
+            # reaches the field under it all the same. A dialog or banner over it still stops the action.
+            last.update(ready=True, list_cover_ignored=True, duration_ms=int((now - started) * 1000), _js_calls=js_calls)
             return last
         if now >= deadline:
             last.update({"ready": False, "timed_out": True, "duration_ms": int((now - started) * 1000), "_js_calls": js_calls})
@@ -4100,6 +4232,15 @@ def _wait_action(
 _TARGET_CANDIDATE_LIMIT = 8
 _LATE_TARGET_WAIT_S = 2.5
 _LATE_TARGET_MAX_WAIT_S = 10.0
+# A search box (role=combobox, aria-autocomplete) may open its list a moment after typing; once a list is
+# open, its options may still be loading. A list whose options stopped changing has nothing more coming.
+_SUGGEST_APPEAR_S = 1.5
+_SUGGEST_MAX_S = 4.0
+_SUGGEST_STABLE_S = 0.8
+_SUGGEST_INPUT_TYPES = frozenset({"", "text", "search"})
+_FILL_ESCAPE_SETTLE_S = 0.2
+_LIST_COVER_ROLES = frozenset({"option", "listbox"})
+_SELECT_REOPEN_AFTER_S = 0.6
 _MUTATING_RESULT_TYPES = {"click", "double_click", "type", "type_text", "paste", "select", "key", "post", "fill"}
 
 
@@ -4222,7 +4363,7 @@ _KNOWN_FAILURE_ERRORS = frozenset({
     "element_not_ready", "stale_observation", "field_not_found", "invalid_input_mode",
     "trusted_input_not_supported_for_action", "post_field_not_found", "post_field_ambiguous",
     "post_field_outside_item", "post_submit_not_found", "post_submit_ambiguous", "chrome_debugger_blocked",
-    "stale_target_ambiguous",
+    "stale_target_ambiguous", "choice_not_kept", "value_not_kept",
 })
 _LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
 
@@ -5210,6 +5351,10 @@ def _browser_act_locked(
         changed = False
         last_filled = ""
         in_flight = ["fill"]
+        # Boxes whose list choice shows as their own text: that text must outlast leaving the box.
+        chosen_in_box: set = set()
+        # Boxes marked as offering a list: only their typed text can be refused by the page on leaving.
+        suggesting: set = set()
 
         def apply(kind: str, step: Dict[str, Any]) -> Dict[str, Any]:
             nonlocal internal_js_calls
@@ -5221,6 +5366,72 @@ def _browser_act_locked(
                                             mutation_revalidator=revalidate_mutation)
             internal_js_calls += int(done.pop("_js_calls", 0))
             return done
+
+        def mutating_page_js(js: str) -> Dict[str, Any]:
+            nonlocal internal_js_calls
+            page_target, blocked = revalidate_mutation("fill")
+            if blocked is not None:
+                return {**blocked, "ok": False}
+            internal_js_calls += 1
+            return _run_json_js(settings, browser, js, window_index, tab_index, tab_handle,
+                                prevalidated_target=page_target)
+
+        def suggestible(target: Dict[str, Any]) -> bool:
+            # Only a box marked as offering a list (find's "suggests") costs the extra page reads.
+            return bool(target.get("suggests")) and str(target.get("tag") or "").lower() == "input" \
+                and str(target.get("input_type") or "").lower() in _SUGGEST_INPUT_TYPES
+
+        def pick_suggestion(element_id: str, value: Any) -> Optional[Dict[str, Any]]:
+            """After typing into a text box: when typing opened a list (a search box), press the option that
+            names the value and confirm it stayed. None when no list came: a plain text box."""
+            nonlocal internal_js_calls
+            started = time.monotonic()
+            options: List[str] = []
+            seen_list = False
+            stable_since = started
+            while True:
+                cancellation_checkpoint()
+                found = mutating_page_js(_fill_suggestion_js(element_id, value, "pick"))
+                if found.get("error") and not found.get("ok"):
+                    return found if found.get("reason_code") else None
+                if found.get("found"):
+                    break
+                if found.get("no_such_option"):
+                    return {"chosen": False, "no_such_option": True, "options": [str(item) for item in found.get("options") or []]}
+                now = time.monotonic()
+                if found.get("popup"):
+                    seen_list = True
+                    shown = [str(item) for item in found.get("options") or []]
+                    if shown != options:
+                        options, stable_since = shown, now
+                    elif not found.get("busy") and now - stable_since >= _SUGGEST_STABLE_S:
+                        break
+                    if now - started >= _SUGGEST_MAX_S:
+                        break
+                elif seen_list or not found.get("marked") or now - started >= _SUGGEST_APPEAR_S:
+                    break
+                cancellable_sleep(0.12)
+            if not found.get("found"):
+                if not seen_list:
+                    return None
+                return {"chosen": False, "options": options, **({"ambiguous": True} if found.get("ambiguous") else {})}
+            picked = str(found.get("picked") or "")
+            deadline = time.monotonic() + 1.0
+            while True:
+                check = post_page_js(_fill_suggestion_js(element_id, value, "check"))
+                if check.get("kept"):
+                    if check.get("open") or check.get("expanded") == "true":
+                        # Chosen, list still open (Tom Select): close it so it does not cover the next field.
+                        key_target, blocked = revalidate_mutation("key")
+                        if blocked is None:
+                            closed = _dom_key_action(settings, browser, {"key": "Escape"}, element_id,
+                                                     window_index, tab_index, tab_handle, prevalidated_target=key_target)
+                            internal_js_calls += int(closed.pop("_js_calls", 0))
+                            cancellable_sleep(_FILL_ESCAPE_SETTLE_S)
+                    return {"chosen": True, "picked": picked, "in_box": bool(str(check.get("value") or "").strip())}
+                if time.monotonic() >= deadline:
+                    return {"chosen": False, "pressed": True, "picked": picked}
+                cancellable_sleep(0.1)
 
         for label, value in dict(action.get("values") or {}).items():
             row: Dict[str, Any] = {"field": str(label)[:80]}
@@ -5244,9 +5455,13 @@ def _browser_act_locked(
                 step = {"type": "click", "element_id": element_id}
             elif kind == "select":
                 note_possible_navigation()
-                step = {"type": "select", "element_id": element_id, "option": str(value)}
+                step = {"type": "select", "element_id": element_id, "option": str(value),
+                        "_widget_check": target.get("ready") is not True, "_list_cover_ok": True}
             else:
-                step = {"type": "type", "element_id": element_id, "text": str(value)}
+                step = {"type": "type", "element_id": element_id, "text": str(value), "_list_cover_ok": True}
+                if suggestible(target):
+                    suggesting.add(element_id)
+                    post_page_js(_fill_suggestion_js(element_id, value, "before"))
             mutation_dispatched = True
             done = apply(kind, step)
             if not done.get("ok") and last_filled and _fill_occluded(done):
@@ -5259,6 +5474,13 @@ def _browser_act_locked(
                     internal_js_calls += int(closed.pop("_js_calls", 0))
                     row["closed_popup_with_escape"] = True
                     done = apply(kind, step)
+            if kind == "select" and done.get("error") == "option_not_found" and not done.get("native"):
+                # The list this field opened stays open over the fields after it; close it as a person would.
+                key_target, blocked = revalidate_mutation("key")
+                if blocked is None:
+                    closed = _dom_key_action(settings, browser, {"key": "Escape"}, None,
+                                             window_index, tab_index, tab_handle, prevalidated_target=key_target)
+                    internal_js_calls += int(closed.pop("_js_calls", 0))
             ok = bool(done.get("ok")) or (kind in {"checkbox", "radio"} and done.get("error") == "action_no_effect")
             changed = changed or ok
             if ok:
@@ -5274,8 +5496,56 @@ def _browser_act_locked(
                     row["value_set"] = True
                 elif done.get("value") is not None:
                     row["value"] = str(done.get("value"))[:200]
-            fields.append({**row, "ok": ok, **({key: done.get(key) for key in ("error", "reason_code") if done.get(key)}
+            if ok and kind == "text" and suggestible(target):
+                suggestion = pick_suggestion(element_id, value) or {"plain": True}
+                if suggestion.get("plain"):
+                    pass  # no list came: an ordinary text box
+                elif suggestion.get("chosen"):
+                    row.update(value=str(suggestion.get("picked") or value)[:200], chosen_from_list=True)
+                    if suggestion.get("in_box"):
+                        chosen_in_box.add(element_id)
+                elif suggestion.get("pressed"):
+                    ok = False
+                    row.pop("value", None)
+                    row["picked"] = suggestion.get("picked")
+                    done = {"error": "choice_not_kept", "reason_code": "FILL_CHOICE_NOT_KEPT"}
+                elif "chosen" not in suggestion:
+                    ok = False
+                    done = suggestion
+                elif suggestion.get("no_such_option"):
+                    ok = False
+                    row.pop("value", None)
+                    row["options"] = suggestion.get("options") or []
+                    done = {"error": "option_not_found", "reason_code": "FILL_NO_SUCH_OPTION"}
+                else:
+                    # Typed text stands where the list holds no such option (an address box suggests,
+                    # it does not insist); whether the page kept it is read once every field is done.
+                    row.update(suggestion_not_chosen=True, options=suggestion.get("options") or [],
+                               **({"ambiguous": True} if suggestion.get("ambiguous") else {}))
+            fields.append({**row, "ok": ok, **({key: done.get(key) for key in ("error", "reason_code", "hint") if done.get(key)}
                                                  if not ok else {})})
+        typed = [row for row in fields if row.get("ok") and row.get("element_id") in suggesting and row.get("value")
+                 and (not row.get("chosen_from_list") or row["element_id"] in chosen_in_box)]
+        if typed:
+            # A search box that takes only a choice from its list clears typed text once the box is left,
+            # also when a press on its option did not register.
+            ids = [row["element_id"] for row in typed]
+            kept = mutating_page_js(_fill_kept_js(ids, ids))
+            if kept.get("left"):
+                cancellable_sleep(0.25)
+                kept = post_page_js(_fill_kept_js(ids, []))
+            values_now = kept.get("values") if isinstance(kept.get("values"), dict) else {}
+            for row in typed:
+                now_value = values_now.get(row["element_id"])
+                if now_value is None or str(now_value).strip():
+                    continue
+                row.pop("value", None)
+                row.pop("chosen_from_list", None)
+                row["ok"] = False
+                if row.get("options"):
+                    row.update(error="option_not_found", reason_code="FILL_NEEDS_LIST_CHOICE")
+                else:
+                    row.update(error="value_not_kept", reason_code="FILL_VALUE_NOT_KEPT")
         in_flight = []
         failed = [row["field"] for row in fields if not row.get("ok")]
         out: Dict[str, Any] = {
@@ -5289,7 +5559,8 @@ def _browser_act_locked(
             out.update(error="fill_incomplete", reason_code="FILL_INCOMPLETE", failed_fields=failed,
                        automatic_retry=False, observe_again=False,
                        hint="The other fields were filled. Fix only these: check the label words (near_matches), "
-                            "or open the part of the form that shows them, then fill just those.")
+                            "pick a value from a field's options, or open the part of the form that shows "
+                            "them, then fill just those.")
         return out
 
     tab_lost: Optional[Dict[str, Any]] = None

@@ -574,6 +574,58 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertEqual(["2026-10-20", "7", "Window seat", 1], tools.page.js(
             "[arrival.value,document.getElementById('guests').value,document.getElementById('notes').value,window.__escapes]"))
 
+    def test_fill_chooses_in_search_boxes_from_the_list_typing_opens(self) -> None:
+        # Live: fill typed "Healthcare" into a React select style box and reported ok, while the page
+        # kept nothing; such boxes take only a choice from the list typing opens.
+        tools = self.tools("comboboxes.html")
+        filled = tools.act([{"type": "fill", "values": {
+            "Full name": "Integration Tester", "Country": "Turkey", "City": "Izmir", "Interest": "Dental",
+            "Address": "Main Street", "Language": "Turkish",
+        }}])
+        self.assertTrue(filled["ok"], filled)
+        rows = {row["field"]: row for row in filled["actions"][0]["fields"]}
+        for field, value in (("Country", "Turkey"), ("City", "Izmir"), ("Interest", "Dental")):
+            self.assertEqual((value, True), (rows[field]["value"], rows[field].get("chosen_from_list")), rows[field])
+        self.assertNotIn("chosen_from_list", rows["Full name"])
+        # Free text that two suggestions start with stays as typed; the result says no option was taken.
+        self.assertEqual((True, True), (rows["Address"].get("suggestion_not_chosen"), rows["Address"].get("ambiguous")),
+                         rows["Address"])
+        self.assertEqual("Turkish", rows["Language"]["value"])
+        self.assertEqual(
+            ["Integration Tester", "Turkey", "Turkey", "Izmir", "Izmir", "Dental", "Main Street", "Turkish",
+             "Turkish"],
+            tools.page.js("[document.getElementById('name').value,country.value,__chosen.country,document.getElementById('city-shown').textContent,"
+                          "__chosen.city,__chosen.interest,address.value,language.value,"
+                          "document.getElementById('language-box').textContent]"))
+
+    def test_fill_reports_a_value_a_search_box_list_does_not_hold(self) -> None:
+        tools = self.tools("comboboxes.html")
+        filled = tools.act([{"type": "fill", "values": {
+            "Country": "Narnia", "Interest": "Yoga", "Language": "French", "Full name": "Integration Tester",
+        }}])
+        self.assertFalse(filled["ok"], filled)
+        fill = filled["actions"][0]
+        self.assertEqual(["Country", "Interest", "Language"], fill["failed_fields"])
+        rows = {row["field"]: row for row in fill["fields"]}
+        self.assertEqual(("option_not_found", "FILL_NO_SUCH_OPTION"), (rows["Country"]["error"], rows["Country"]["reason_code"]))
+        self.assertEqual("value_not_kept", rows["Interest"]["error"])
+        self.assertEqual("option_not_found", rows["Language"]["error"])
+        self.assertTrue(rows["Full name"]["ok"])
+        # Nothing was chosen, and the Language list a miss opened was closed again.
+        self.assertEqual(["", "", "", "false"], tools.page.js(
+            "[country.value,interest.value,language.value,document.getElementById('language-box').getAttribute('aria-expanded')]"))
+
+    def test_fill_does_not_take_an_option_from_a_list_another_field_left_open(self) -> None:
+        tools = self.tools("comboboxes.html")
+        # The Country list is open showing every country, and focus is elsewhere.
+        tools.page.js("country.focus();country.value='';country.dispatchEvent(new Event('input',{bubbles:true}));"
+                      "document.getElementById('name').focus();document.getElementById('country-list').hidden=false")
+        # The address box offers nothing for "Turkey"; the open Country list's "Turkey" is not its option.
+        filled = tools.act([{"type": "fill", "values": {"Address": "Turkey"}}])
+        self.assertTrue(filled["ok"], filled)
+        self.assertNotIn("chosen_from_list", filled["actions"][0]["fields"][0])
+        self.assertEqual(["Turkey", ""], tools.page.js("[address.value,__chosen.country||'']"))
+
     def test_visual_companion_arrow_lands_on_the_target_with_its_label(self) -> None:
         # The redesigned companion: a graphite arrow whose tip sits on the target, the action label
         # next to it (flipped near the edges), a page-level label without coordinates, and an
