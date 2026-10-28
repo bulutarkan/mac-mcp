@@ -1313,7 +1313,71 @@ def _ensure_server_helper(runtime: Path) -> None:
               flush=True)
 
 
+# A full build of the menu app (swiftc compiles every source, nothing is cached) took 155-177 s on an
+# M3 MacBook Air under everyday load, and over 180 s in a promote. The installed app keeps running
+# while the new one builds, so a generous limit costs nothing.
+MENU_APP_INSTALL_TIMEOUT_S = 900
+
+
+class MenuAppNotReplaced(UpdateError):
+    """The new menu app was not installed. previous_in_place: the app installed before is in place
+    again (untouched, or put back and relaunched if it was running). The message says which."""
+
+    def __init__(self, message: str, *, previous_in_place: bool = True) -> None:
+        super().__init__(message)
+        self.previous_in_place = previous_in_place
+
+
+def _run_menu_app_installer(cmd: list[str], timeout: int) -> None:
+    """Run install_app.sh in its own process group, so a timeout stops the whole build (swiftc included)
+    instead of leaving it running on its own."""
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                break
+            try:
+                proc.communicate(timeout=5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        raise UpdateError(f"The menu bar app build did not finish within {timeout} s and was stopped.")
+    if proc.returncode != 0:
+        detail = (stderr or stdout or "install_app.sh failed").strip()[-600:]
+        raise UpdateError(f"The menu bar app build failed: {detail}")
+
+
+def _put_back_menu_app(previous: Optional[Path], target: Path, was_running: bool) -> tuple[bool, str]:
+    """After a failed swap: the previous app back in place, relaunched if it was running.
+    Returns whether that worked and what happened."""
+    if previous is None:
+        return False, "no menu bar app was installed before."
+    try:
+        _stop_menu_app(target)
+        _remove_path(target)
+        _run(["/usr/bin/ditto", str(previous), str(target)], timeout=180)
+        if not was_running:
+            return True, "the previous menu bar app was put back."
+        _start_menu_app(target)
+        return True, "the previous menu bar app was put back and relaunched."
+    except Exception as exc:
+        return False, (f"putting the previous menu bar app back failed too ({exc}); "
+                       f"reinstall it with menu_app/install_app.sh and open it.")
+
+
 def _refresh_installed_menu_app(runtime: Path) -> bool:
+    """Build the menu app from the runtime and put it in place of the installed one.
+
+    The installed app keeps running while the new one builds (minutes) and is stopped only for the
+    swap; if the swap fails, the previous app is put back and relaunched. A build that fails or times
+    out never touches the installed app. Either failure raises MenuAppNotReplaced, whose message says
+    what state the installed app is in.
+    """
     if os.getenv("MAC_MCP_SKIP_MENU_APP_INSTALL", "").strip().lower() in {"1", "true", "yes", "on"}:
         return False
     installer = runtime / "menu_app" / "install_app.sh"
@@ -1321,10 +1385,36 @@ def _refresh_installed_menu_app(runtime: Path) -> bool:
         return False
     target = _menu_app_target()
     target.parent.mkdir(parents=True, exist_ok=True)
-    _stop_menu_app(target)
-    _run(["/usr/bin/env", "MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1", str(installer), str(target)], timeout=180)
-    _run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(target)], timeout=30)
-    _start_menu_app(target)
+    staging = Path(tempfile.mkdtemp(prefix="mac-mcp-menu-app-"))
+    try:
+        staged = staging / target.name
+        previous: Optional[Path] = None
+        try:
+            _run_menu_app_installer(["/usr/bin/env", "MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1", str(installer),
+                                     str(staged)], MENU_APP_INSTALL_TIMEOUT_S)
+            _run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(staged)], timeout=30)
+            if target.exists():
+                previous = staging / "previous" / target.name
+                previous.parent.mkdir()
+                _run(["/usr/bin/ditto", str(target), str(previous)], timeout=180)
+        except Exception as exc:
+            running = " and keeps running" if _menu_app_process_pids(target) else ""
+            raise MenuAppNotReplaced(f"{exc} The installed menu bar app was not touched{running}.") from exc
+        was_running = bool(_menu_app_process_pids(target))
+        _stop_menu_app(target)
+        try:
+            _remove_path(target)
+            _run(["/usr/bin/ditto", str(staged), str(target)], timeout=180)
+            _run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(target)], timeout=30)
+            _start_menu_app(target)
+        except BaseException as exc:
+            restored, outcome = _put_back_menu_app(previous, target, was_running)
+            if not isinstance(exc, Exception):
+                raise
+            raise MenuAppNotReplaced(f"The new menu bar app could not be installed ({exc}); {outcome}",
+                                     previous_in_place=restored) from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return True
 
 
@@ -2269,10 +2359,16 @@ def apply_update(
                     print("[mac-mcp update] Restoring the previous runtime...", flush=True)
                     _restore_runtime(runtime_path, backup)
                     _write_state_commit(runtime_path, info.deployed_commit)
-                    try:
-                        _refresh_installed_menu_app(runtime_path)
-                    except Exception as menu_exc:
-                        print(f"[mac-mcp update] WARNING: menu app rollback refresh failed: {menu_exc}", flush=True)
+                    if isinstance(exc, MenuAppNotReplaced) and exc.previous_in_place:
+                        # The new app never replaced the installed one: nothing to rebuild.
+                        print("[mac-mcp update] The installed menu bar app is the previous one; no rebuild needed.",
+                              flush=True)
+                    else:
+                        try:
+                            _refresh_installed_menu_app(runtime_path)
+                        except Exception as menu_exc:
+                            print(f"[mac-mcp update] WARNING: menu app rollback refresh failed: {menu_exc}",
+                                  flush=True)
                     dependency_restore_safe = (
                         dependency_env_transaction is None
                         or dependency_rollback.get("status") == "restored"

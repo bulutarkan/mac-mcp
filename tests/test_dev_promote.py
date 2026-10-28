@@ -159,6 +159,38 @@ class DevPromoteTests(unittest.TestCase):
         self.assertFalse(plan.server_changed)
         self.assertIn("server: unchanged", dev_promote.format_plan(plan))
 
+    def test_a_menu_app_build_that_times_out_leaves_the_app_running_and_the_runtime_restored(self) -> None:
+        # A promote whose native build outran the limit used to leave the menu bar app stopped.
+        from mcp_server import update_helper as uh
+
+        app = self.root / "Applications" / "Mac MCP.app"
+        (app / "Contents" / "MacOS").mkdir(parents=True)
+        (app / "Contents" / "MacOS" / "MacMCPMenu").write_text("old app", encoding="utf-8")
+        self.write("menu_app/Sources/App.swift", "// new\n")
+        self.write("mcp_server/main.py", "VALUE = 'new'\n")
+        self.write("menu_app/install_app.sh", "#!/bin/sh\nexec sleep 60\n")
+        (self.repo / "menu_app/install_app.sh").chmod(0o755)
+        self.commit("app and server")
+        self.push()
+        lines: list[str] = []
+        with patch.dict(os.environ, {"MAC_MCP_APP_PATH": str(app)}), \
+                patch.object(uh, "MENU_APP_INSTALL_TIMEOUT_S", 1), \
+                patch.object(uh, "_menu_app_process_pids", return_value=[4242]), \
+                patch.object(uh, "_stop_menu_app") as stop, \
+                patch.object(uh, "_start_menu_app") as start, \
+                patch.object(uh, "_ensure_server_helper"):
+            os.environ.pop("MAC_MCP_SKIP_MENU_APP_INSTALL", None)
+            with self.assertRaises(dev_promote.PromoteError) as ctx:
+                dev_promote.promote(self.repo, self.runtime, restart=False, refresh_menu_app=True, say=lines.append)
+        self.assertIn("did not finish within 1 s", str(ctx.exception))
+        self.assertIn("The installed menu bar app was not touched and keeps running.", str(ctx.exception))
+        stop.assert_not_called()
+        start.assert_not_called()
+        self.assertEqual("old app", (app / "Contents/MacOS/MacMCPMenu").read_text(encoding="utf-8"))
+        self.assertEqual("VALUE = 'old'\n", self.read("mcp_server/main.py"))
+        self.assertEqual(self.deployed, update_state.read_deployed_commit(self.runtime))
+        self.assertTrue(any(line.startswith("Restored the runtime") for line in lines))
+
     def test_the_cli_offers_promote(self) -> None:
         from mcp_server import cli
 

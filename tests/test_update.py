@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -158,36 +159,136 @@ class SecureBootstrapMigrationTests(unittest.TestCase):
 
 
 class MenuAppParityTests(unittest.TestCase):
-    def test_updater_reinstalls_missing_menu_app_and_restarts_it(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="mac-mcp-menu-parity-") as td:
-            root = Path(td)
-            runtime = root / "runtime"
-            installer = runtime / "menu_app" / "install_app.sh"
-            installer.parent.mkdir(parents=True)
-            installer.write_text("#!/bin/sh\n", encoding="utf-8")
-            target = root / "Applications" / "Mac MCP.app"
-            calls: list[list[str]] = []
+    # A fake install_app.sh: builds a tiny bundle at its destination argument ($1) as `version`.
+    BUILD_SCRIPT = ('#!/bin/sh\nset -e\nmkdir -p "$1/Contents/MacOS"\n'
+                    'printf "%s" "{version}" > "$1/Contents/MacOS/MacMCPMenu"\n')
 
-            def fake_run(cmd, cwd=None, check=True, timeout=120):
-                calls.append(list(cmd))
-                if str(installer) in cmd:
-                    executable = target / "Contents" / "MacOS" / "MacMCPMenu"
-                    executable.parent.mkdir(parents=True, exist_ok=True)
-                    executable.write_text("menu", encoding="utf-8")
+    def menu_fixture(self, script: str, *, installed: str | None = "old"):
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-menu-parity-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        runtime = root / "runtime"
+        installer = runtime / "menu_app" / "install_app.sh"
+        installer.parent.mkdir(parents=True)
+        installer.write_text(script, encoding="utf-8")
+        installer.chmod(0o755)
+        target = root / "Applications" / "Mac MCP.app"
+        if installed is not None:
+            (target / "Contents" / "MacOS").mkdir(parents=True)
+            (target / "Contents" / "MacOS" / "MacMCPMenu").write_text(installed, encoding="utf-8")
+        env = patch.dict(os.environ, {"MAC_MCP_APP_PATH": str(target)}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MAC_MCP_SKIP_MENU_APP_INSTALL", None)
+        return root, runtime, installer, target
+
+    def lifecycle(self, events: list, *, running: bool = True, start_fails_for: str | None = None):
+        """Stop/start/ps fakes that record what happens to the app; nothing real is launched."""
+        state = {"running": running}
+
+        def stop(app):
+            executable = app / "Contents/MacOS/MacMCPMenu"
+            events.append(("stop", executable.read_text(encoding="utf-8") if executable.exists() else None))
+            state["running"] = False
+
+        def start(app):
+            version = (app / "Contents/MacOS/MacMCPMenu").read_text(encoding="utf-8")
+            events.append(("start", version))
+            if version == start_fails_for:
+                raise UpdateError(f"Mac MCP menu bar app did not start: {app}")
+            state["running"] = True
+
+        real_run = update_helper_module._run
+
+        def run(cmd, cwd=None, check=True, timeout=120):
+            if cmd[0] == "/usr/bin/codesign":  # the fake bundles are not signed
                 return subprocess.CompletedProcess(cmd, 0, "", "")
+            return real_run(cmd, cwd=cwd, check=check, timeout=timeout)
 
-            with patch.dict(os.environ, {"MAC_MCP_APP_PATH": str(target)}, clear=False):
-                os.environ.pop("MAC_MCP_SKIP_MENU_APP_INSTALL", None)
-                with patch.object(update_helper_module, "_run", side_effect=fake_run), \
-                        patch.object(update_helper_module, "_stop_menu_app") as stop, \
-                        patch.object(update_helper_module, "_start_menu_app") as start:
-                    refreshed = update_helper_module._refresh_installed_menu_app(runtime)
+        return [patch.object(update_helper_module, "_stop_menu_app", side_effect=stop),
+                patch.object(update_helper_module, "_start_menu_app", side_effect=start),
+                patch.object(update_helper_module, "_menu_app_process_pids",
+                             side_effect=lambda app: [4242] if state["running"] else []),
+                patch.object(update_helper_module, "_run", side_effect=run)]
 
-            self.assertTrue(refreshed)
-            stop.assert_called_once_with(target)
-            start.assert_called_once_with(target)
-            self.assertIn(["/usr/bin/env", "MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1", str(installer), str(target)], calls)
-            self.assertIn(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(target)], calls)
+    def refresh(self, runtime: Path, patches: list):
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return update_helper_module._refresh_installed_menu_app(runtime)
+
+    def test_updater_builds_beside_the_running_app_and_stops_it_only_for_the_swap(self) -> None:
+        events: list = []
+        _, runtime, installer, target = self.menu_fixture(self.BUILD_SCRIPT.format(version="new"))
+        real_installer = update_helper_module._run_menu_app_installer
+
+        def installer_run(cmd, timeout):
+            events.append(("build", cmd[-1]))
+            self.assertEqual(["/usr/bin/env", "MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1", str(installer)], cmd[:3])
+            self.assertNotEqual(str(target), cmd[-1])  # never builds into the installed app
+            self.assertEqual(update_helper_module.MENU_APP_INSTALL_TIMEOUT_S, timeout)
+            real_installer(cmd, timeout)
+
+        with patch.object(update_helper_module, "_run_menu_app_installer", side_effect=installer_run):
+            refreshed = self.refresh(runtime, self.lifecycle(events))
+        self.assertTrue(refreshed)
+        self.assertEqual(["build", ("stop", "old"), ("start", "new")],
+                         [events[0][0], *events[1:]])
+        self.assertEqual("new", (target / "Contents/MacOS/MacMCPMenu").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(update_helper_module.MENU_APP_INSTALL_TIMEOUT_S, 600)
+
+    def test_reinstalls_a_missing_menu_app_and_starts_it(self) -> None:
+        events: list = []
+        _, runtime, _, target = self.menu_fixture(self.BUILD_SCRIPT.format(version="new"), installed=None)
+        self.assertTrue(self.refresh(runtime, self.lifecycle(events, running=False)))
+        self.assertEqual([("start", "new")], [event for event in events if event[0] == "start"])
+        self.assertEqual("new", (target / "Contents/MacOS/MacMCPMenu").read_text(encoding="utf-8"))
+
+    def test_a_build_that_times_out_is_stopped_whole_and_leaves_the_running_app_alone(self) -> None:
+        events: list = []
+        root, runtime, _, target = self.menu_fixture("")
+        child_pid_file = root / "child.pid"
+        # The build forks a long child (like swiftc); a timeout must stop it too, not just the script.
+        (runtime / "menu_app" / "install_app.sh").write_text(
+            f'#!/bin/sh\nsleep 60 &\necho $! > "{child_pid_file}"\nwait\n', encoding="utf-8")
+        with patch.object(update_helper_module, "MENU_APP_INSTALL_TIMEOUT_S", 1):
+            with self.assertRaises(update_helper_module.MenuAppNotReplaced) as ctx:
+                self.refresh(runtime, self.lifecycle(events))
+        message = str(ctx.exception)
+        self.assertIn("did not finish within 1 s", message)
+        self.assertIn("was not touched and keeps running", message)
+        self.assertTrue(ctx.exception.previous_in_place)
+        self.assertEqual([], events)  # never stopped, never restarted
+        self.assertEqual("old", (target / "Contents/MacOS/MacMCPMenu").read_text(encoding="utf-8"))
+        child = int(child_pid_file.read_text(encoding="utf-8").strip())
+        for _ in range(50):
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(child, signal.SIGKILL)
+            self.fail("the build's child process outlived the timeout")
+
+    def test_a_failed_build_leaves_the_running_app_alone(self) -> None:
+        events: list = []
+        _, runtime, _, target = self.menu_fixture("#!/bin/sh\necho 'swiftc: error: boom' >&2\nexit 1\n")
+        with self.assertRaises(update_helper_module.MenuAppNotReplaced) as ctx:
+            self.refresh(runtime, self.lifecycle(events))
+        self.assertIn("swiftc: error: boom", str(ctx.exception))
+        self.assertIn("was not touched and keeps running", str(ctx.exception))
+        self.assertEqual([], events)
+        self.assertEqual("old", (target / "Contents/MacOS/MacMCPMenu").read_text(encoding="utf-8"))
+
+    def test_a_new_app_that_does_not_start_is_replaced_by_the_previous_one_again(self) -> None:
+        events: list = []
+        _, runtime, _, target = self.menu_fixture(self.BUILD_SCRIPT.format(version="new"))
+        with self.assertRaises(update_helper_module.MenuAppNotReplaced) as ctx:
+            self.refresh(runtime, self.lifecycle(events, start_fails_for="new"))
+        self.assertIn("put back and relaunched", str(ctx.exception))
+        self.assertTrue(ctx.exception.previous_in_place)
+        self.assertEqual([("stop", "old"), ("start", "new"), ("stop", "new"), ("start", "old")], events)
+        self.assertEqual("old", (target / "Contents/MacOS/MacMCPMenu").read_text(encoding="utf-8"))
 
     def test_updater_defaults_to_user_app_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-menu-home-") as td:
@@ -824,6 +925,23 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
         state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(("recovered", "restored"), (state["status"], state["recovery"]["menu_app"]["status"]))
+
+    def roll_back_after_menu_app_failure(self, *, previous_in_place: bool) -> int:
+        _, repo, runtime, old, target = self.make_fixture()
+        failure = update_helper_module.MenuAppNotReplaced("The menu bar app build did not finish.",
+                                                         previous_in_place=previous_in_place)
+        with patch("mcp_server.update_helper._refresh_installed_menu_app", side_effect=[failure, True]) as rebuild:
+            with self.assertRaises(UpdateError):
+                apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        return rebuild.call_count
+
+    def test_a_menu_app_that_was_not_replaced_is_not_rebuilt_on_rollback(self):
+        # The new app never replaced the installed one (a build timeout): rolling back rebuilds nothing.
+        self.assertEqual(1, self.roll_back_after_menu_app_failure(previous_in_place=True))
+
+    def test_a_menu_app_that_could_not_be_put_back_is_rebuilt_on_rollback(self):
+        self.assertEqual(2, self.roll_back_after_menu_app_failure(previous_in_place=False))
 
     def test_a_crash_before_the_app_changed_leaves_the_app_alone(self):
         _, repo, runtime, old, target = self.make_fixture()

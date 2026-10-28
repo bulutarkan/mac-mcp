@@ -52,7 +52,9 @@ def ensure_menu_app_installed(runtime: Path | None = None) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=180,
+            # A full native build takes about three minutes (update_helper.MENU_APP_INSTALL_TIMEOUT_S);
+            # install_app.sh builds before it touches the installed app.
+            timeout=900,
             check=False,
         )
         if completed.returncode != 0 or _installed_app() is None:
