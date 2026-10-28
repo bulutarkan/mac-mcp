@@ -275,7 +275,9 @@ BROWSER_ACT_DESCRIPTION = (
     "visual='viewport' observation (pass its observation_id; a scrolled or resized page is refused as stale_coordinates), "
     "and key with input_mode='trusted' for real key events (Chrome). "
     "Cross-origin frames (observe lists them under frames): pass frame='<part of the frame URL>' to browser_observe, "
-    "browser_find and browser_act to work inside that frame with its own element ids (Chrome); results carry frame."
+    "browser_find and browser_act to work inside that frame with its own element ids (Chrome); results carry frame. "
+    "In Safari, browser_observe and browser_act reach the frame through Accessibility (the tab must be the one its "
+    "window shows): click, fill, type, select, check and uncheck."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192

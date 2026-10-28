@@ -1580,7 +1580,8 @@ def _execute_js_for_target(
         if browser != "Google Chrome" or not chrome_background_bridge.is_connected() or not target.native_id:
             raise HTTPException(status.HTTP_409_CONFLICT, {
                 "ok": False, "error": "frame_unsupported", "retryable": False,
-                "message": "Working inside a child frame needs Chrome with the Mac MCP companion connected.",
+                "message": "Working inside a child frame needs Chrome with the Mac MCP companion connected; "
+                           "in Safari, browser_observe and browser_act reach it through Accessibility.",
             })
         return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s, frame=frame)
     if browser == "Google Chrome" and chrome_background_bridge.is_connected() and target.native_id:

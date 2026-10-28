@@ -288,6 +288,27 @@ def act(
     return parsed if isinstance(parsed, dict) else None
 
 
+def observe_frame(*, bundle_id: str, page_url: str, frame: str, max_nodes: int = 600,
+                  timeout_s: float = 8.0) -> Optional[Dict[str, Any]]:
+    """A browser page's child frame (the one whose URL contains `frame`) as Accessibility nodes,
+    when the page is the tab its window shows (#384). None when the helper is unavailable."""
+    executable = _executable()
+    if executable is None:
+        return None
+    answer = _call(executable, ["--mode", "frame", "--bundle", str(bundle_id), "--page-url", str(page_url),
+                                "--frame", str(frame), "--max-nodes", str(int(max_nodes))], timeout_s)
+    if answer is None:
+        return None
+    ok, out, error = answer
+    if not ok:
+        return {"ok": False, "reason_code": "FRAME_OBSERVE_TIMEOUT", "error": error}
+    try:
+        parsed = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def wake_web_accessibility(app_pid: int, timeout_s: float = 3.0) -> bool:
     """Ask a Chromium-based app for its full Accessibility tree, so its web controls offer AXPress (#82).
 

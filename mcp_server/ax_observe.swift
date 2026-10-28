@@ -348,6 +348,180 @@ func observe(_ options: [String: String], frontmost: Bool) -> (Int32, String, St
     return (0, out, "")
 }
 
+// MARK: A child frame of a browser page
+//
+// Safari gives a page's cross-origin iframe its own AXWebArea (with its AXURL) inside the page's,
+// so the frame's controls can be read and used through Accessibility where page scripts cannot
+// reach them (#384):
+//   --mode frame (--pid N | --bundle ID) --page-url U --frame PART [--max-nodes M]
+// finds the window whose page web area shows U (only a window's current tab has one), the one
+// nested web area whose URL contains PART, and answers its nodes as JSON. Ids are the same
+// window/child-index paths as observe(), so `--mode act` works on them unchanged.
+
+func webAreaURL(_ element: AXUIElement) -> String {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, "AXURL" as CFString, &value) == .success, let value else { return "" }
+    if let url = value as? URL { return url.absoluteString }
+    return text(value as AnyObject)
+}
+
+/// Web areas below `element` (not below a web area already found), with their id paths.
+func webAreas(in element: AXUIElement, id: String, depth: Int = 0, into found: inout [(AXUIElement, String)]) {
+    if depth > maxRawDepth || found.count >= 40 { return }
+    let children = (attributes(element, ["AXChildren"])["AXChildren"] as? [AXUIElement]) ?? []
+    for (index, child) in children.enumerated() {
+        let childID = "\(id)/\(index + 1)"
+        if text(attributes(child, ["AXRole"])["AXRole"]) == "AXWebArea" {
+            found.append((child, childID))
+        } else {
+            webAreas(in: child, id: childID, depth: depth + 1, into: &found)
+        }
+    }
+}
+
+/// The URL without its fragment: a page that moved to #section is still the same page.
+func pageKey(_ url: String) -> String { String(url.split(separator: "#", maxSplits: 1).first ?? "") }
+
+func collect(_ element: AXUIElement, id: String, depth: Int, budget: inout Int, into nodes: inout [[String: Any]]) {
+    if budget <= 0 || depth > maxRawDepth { return }
+    budget -= 1
+    let a = attributes(element, nodeAttributes)
+    let role = text(a["AXRole"]), subrole = text(a["AXSubrole"])
+    var value = text(a["AXValue"])
+    if role.contains("SecureText") || subrole.contains("Secure") { value = value.isEmpty ? "" : "[redacted]" }
+    var actionNames: CFArray?
+    var actions: [String] = []
+    if AXUIElementCopyActionNames(element, &actionNames) == .success, let names = actionNames as? [String] {
+        actions = names.filter { !incidentalActions.contains($0) }
+    }
+    let (x, y) = point(a["AXPosition"])
+    let (w, h) = size(a["AXSize"])
+    var node: [String: Any] = ["id": id, "role": role, "depth": depth]
+    for (key, field) in [("subrole", subrole), ("title", clean(text(a["AXTitle"]))), ("description", clean(text(a["AXDescription"]))),
+                         ("value", clean(value)), ("placeholder", clean(text(a["AXPlaceholderValue"]))),
+                         ("help", clean(text(a["AXHelp"]))), ("x", x), ("y", y), ("w", w), ("h", h)] where !field.isEmpty {
+        node[key] = field
+    }
+    if !actions.isEmpty { node["actions"] = actions }
+    if bool(a["AXEnabled"]) == "false", a["AXEnabled"] != nil { node["disabled"] = true }
+    if bool(a["AXFocused"]) == "true" { node["focused"] = true }
+    if role == "AXWebArea" { node["url"] = webAreaURL(element) }
+    nodes.append(node)
+    let children = (a["AXChildren"] as? [AXUIElement]) ?? []
+    for (index, child) in children.enumerated() {
+        if budget <= 0 { break }
+        collect(child, id: "\(id)/\(index + 1)", depth: depth + 1, budget: &budget, into: &nodes)
+    }
+}
+
+func observeFrame(_ options: [String: String]) -> (Int32, String, String) {
+    guard AXIsProcessTrusted() else { return (3, "", "Accessibility permission is not granted (-25211)") }
+    let found: NSRunningApplication?
+    if let pidText = options["--pid"], let pid = Int32(pidText) {
+        found = NSRunningApplication(processIdentifier: pid)
+    } else {
+        found = NSRunningApplication.runningApplications(withBundleIdentifier: options["--bundle"] ?? "").first
+    }
+    guard let app = found else { return (4, "", "Target application not found (-1728)") }
+    func answer(_ object: [String: Any]) -> (Int32, String, String) {
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return (0, String(decoding: data, as: UTF8.self), "")
+    }
+    let pageURL = pageKey(options["--page-url"] ?? "")
+    let part = options["--frame"] ?? ""
+    let maxNodes = Int(options["--max-nodes"] ?? "600") ?? 600
+    var pages: [(AXUIElement, String)] = []
+    for (offset, window) in allWindows(app).enumerated() {
+        var tops: [(AXUIElement, String)] = []
+        webAreas(in: window, id: "w\(offset + 1)", into: &tops)
+        pages += tops.filter { pageKey(webAreaURL($0.0)) == pageURL }
+    }
+    guard !pages.isEmpty else {
+        return answer(["ok": false, "reason_code": "FRAME_PAGE_NOT_SHOWN",
+                       "error": "The page is not the tab shown in its window, so Accessibility cannot see it."])
+    }
+    guard pages.count == 1 else {
+        return answer(["ok": false, "reason_code": "FRAME_PAGE_AMBIGUOUS",
+                       "error": "\(pages.count) windows show this page; close one or name the tab another way."])
+    }
+    let (page, pageID) = pages[0]
+    var frames: [(AXUIElement, String)] = []
+    var queue = [(page, pageID)]
+    while let (element, id) = queue.popLast(), frames.count < 40 {
+        var nested: [(AXUIElement, String)] = []
+        webAreas(in: element, id: id, into: &nested)
+        frames += nested
+        queue += nested
+    }
+    let matches = frames.filter { webAreaURL($0.0).contains(part) }
+    let urls = frames.map { webAreaURL($0.0) }
+    guard matches.count == 1 else {
+        return answer(["ok": false, "reason_code": matches.isEmpty ? "FRAME_NOT_FOUND" : "FRAME_AMBIGUOUS",
+                       "error": matches.isEmpty ? "No child frame's URL contains '\(part)'."
+                                                : "\(matches.count) child frames' URLs contain '\(part)'; use a longer part.",
+                       "frames": urls])
+    }
+    let (frame, frameID) = matches[0]
+    var nodes: [[String: Any]] = []
+    var budget = maxNodes
+    collect(frame, id: frameID, depth: 0, budget: &budget, into: &nodes)
+    return answer(["ok": true, "pid": Int(app.processIdentifier), "frame_url": webAreaURL(frame), "page_url": webAreaURL(page),
+                   "frame_id": frameID,
+                   "nodes": nodes, "truncated": budget <= 0])
+}
+
+/// Chooses `option` in a pop-up button (an HTML select): opens its menu, presses the item, and reads
+/// the choice back. The menu shows on screen for a moment; the app is not brought forward.
+func selectOption(_ element: AXUIElement, option: String) -> [String: Any] {
+    let before = text(attributes(element, ["AXValue"])["AXValue"])
+    if before == option { return ["ok": true, "op": "select_option", "verified": true, "effect_observed": false] }
+    guard AXUIElementPerformAction(element, "AXPress" as CFString) == .success else {
+        return ["ok": false, "reason_code": "ACCESSIBILITY_ACTION_FAILED", "error": "the list did not open"]
+    }
+    // The menu is the element's child in some apps; Safari's floats in its own window, found under the list.
+    let (x, y) = point(attributes(element, ["AXPosition"])["AXPosition"])
+    let (w, h) = size(attributes(element, ["AXSize"])["AXSize"])
+    let probe = CGPoint(x: (Double(x) ?? 0) + (Double(w) ?? 0) / 2, y: (Double(y) ?? 0) + (Double(h) ?? 0) / 2)
+    var menu: AXUIElement?
+    let deadline = Date().addingTimeInterval(1.5)
+    while menu == nil && Date() < deadline {
+        usleep(60_000)
+        let children = (attributes(element, ["AXChildren"])["AXChildren"] as? [AXUIElement]) ?? []
+        menu = children.first { text(attributes($0, ["AXRole"])["AXRole"]) == "AXMenu" }
+        if menu == nil {
+            var hit: AXUIElement?
+            if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(probe.x), Float(probe.y), &hit) == .success,
+               let hit, text(attributes(hit, ["AXRole"])["AXRole"]) == "AXMenuItem",
+               let parent = attributes(hit, ["AXParent"])["AXParent"], CFGetTypeID(parent) == AXUIElementGetTypeID() {
+                menu = (parent as! AXUIElement)
+            }
+        }
+    }
+    guard let menu else {
+        return ["ok": false, "reason_code": "MENU_NOT_FOUND", "error": "the list opened no menu Accessibility could see"]
+    }
+    let items = ((attributes(menu, ["AXChildren"])["AXChildren"] as? [AXUIElement]) ?? [])
+        .map { ($0, text(attributes($0, ["AXTitle"])["AXTitle"])) }.filter { !$0.1.isEmpty }
+    let wanted = option.lowercased()
+    let chosen = items.first { $0.1 == option } ?? items.first { $0.1.lowercased() == wanted }
+        ?? { let partial = items.filter { $0.1.lowercased().contains(wanted) }; return partial.count == 1 ? partial[0] : nil }()
+    guard let chosen else {
+        AXUIElementPerformAction(menu, "AXCancel" as CFString)
+        return ["ok": false, "reason_code": "OPTION_NOT_FOUND", "error": "no option named '\(option)'",
+                "options": items.prefix(60).map { $0.1 }]
+    }
+    AXUIElementPerformAction(chosen.0, "AXPress" as CFString)
+    var after = before
+    let readBack = Date().addingTimeInterval(1.0)
+    repeat {
+        usleep(60_000)
+        after = text(attributes(element, ["AXValue"])["AXValue"])
+    } while after != chosen.1 && Date() < readBack
+    let verified = after == chosen.1
+    return ["ok": verified, "op": "select_option", "selected": after, "verified": verified, "effect_observed": after != before]
+        .merging(verified ? [:] : ["reason_code": "ACTION_NO_EFFECT", "error": "the choice did not read back"]) { a, _ in a }
+}
+
 // MARK: Acting on a window no display shows
 //
 // System Events reaches only windows on a shown desktop, so mac_act sends element-bound
@@ -464,6 +638,8 @@ func act(_ options: [String: String]) -> (Int32, String, String) {
             changed = windowFingerprint(app, elementID) != before
         } while !changed && Date() < deadline
         return answer(["ok": true, "performed": name, "effect_observed": changed])
+    case "select_option":
+        return answer(selectOption(element, option: options["--text"] ?? ""))
     case "set_text":
         let replace = (options["--replace"] ?? "true") == "true"
         let wanted = options["--text"] ?? ""
@@ -525,6 +701,14 @@ func editThroughSelection(_ element: AXUIElement, wanted: String, replace: Bool,
             "verified": false, "reason_code": "ACTION_NO_EFFECT", "error": "the text did not read back as written"]
 }
 
+func run(_ options: [String: String], frontmost: Bool) -> (Int32, String, String) {
+    switch options["--mode"] {
+    case "act": return act(options)
+    case "frame": return observeFrame(options)
+    default: return observe(options, frontmost: frontmost)
+    }
+}
+
 /// --serve: one JSON request per stdin line, one JSON answer per stdout line, until stdin closes.
 func serve() -> Never {
     while let line = readLine(strippingNewline: true) {
@@ -545,7 +729,7 @@ func answer(_ line: String) {
         // that never runs it would keep the list from its launch. Let pending updates in.
         RunLoop.current.run(mode: .default, before: Date())
         let (options, frontmost) = parseArguments(args)
-        let (code, out, err) = options["--mode"] == "act" ? act(options) : observe(options, frontmost: frontmost)
+        let (code, out, err) = run(options, frontmost: frontmost)
         response["code"] = Int(code)
         response["out"] = out
         response["err"] = err
@@ -559,7 +743,7 @@ func answer(_ line: String) {
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments.first == "--serve" { serve() }
 let (cliOptions, cliFrontmost) = parseArguments(arguments)
-let (exitCode, output, errorText) = cliOptions["--mode"] == "act" ? act(cliOptions) : observe(cliOptions, frontmost: cliFrontmost)
+let (exitCode, output, errorText) = run(cliOptions, frontmost: cliFrontmost)
 if exitCode != 0 {
     FileHandle.standardError.write((errorText + "\n").data(using: .utf8)!)
     exit(exitCode)

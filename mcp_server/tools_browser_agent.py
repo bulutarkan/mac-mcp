@@ -26,7 +26,7 @@ from .computer_use_perf import record_computer_use_sample
 from . import decision_engine
 from .data_guard import redact_sensitive_text
 from .perception import estimate_payload_tokens, finalize_perception_telemetry, json_bytes, refresh_perception_size
-from . import browser_activity, browser_tabs
+from . import browser_activity, browser_tabs, safari_frames
 from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
 from .workspace_arbitration import delegated_agent_identity, owner_takeover_block
@@ -5810,17 +5810,46 @@ def _in_frame(frame: Optional[str], call: Callable[[], Any]) -> Any:
     return out
 
 
+def _safari_frame_call(browser: str, frame: Optional[str], tab_handle: Optional[str], window_index: int,
+                       tab_index: Optional[int], call: Callable[[browser_tabs.TabTarget, str], Dict[str, Any]],
+                       mutation: bool = False) -> Optional[Dict[str, Any]]:
+    """Safari has no script access to a cross-origin child frame; its Accessibility tree has the frame (#384).
+    None when this is not a Safari frame call."""
+    selector = str(frame or "").strip()
+    b = _norm_browser(browser)
+    if not selector or b != "Safari":
+        return None
+    if mutation:
+        _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
+    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=mutation) as target:
+        if not target.active:
+            payload = safari_frames.unavailable(
+                "Safari shows this tab's frames to Accessibility only while the tab is the one its window shows.",
+                reason="frame_tab_not_shown", hint="Bring the tab forward in its window with browser_activate_tab, "
+                "then try again; Safari itself stays in the background.")
+        else:
+            payload = call(target, selector)
+        payload["frame"] = {"selector": selector, "url": payload.get("url"), "transport": "accessibility"}
+        payload["tab_handle"] = target.tab_handle
+        return payload
+
+
 def browser_observe(settings: Settings, browser: str, window_index: int = 1, tab_index: Optional[int] = None,
                     tab_handle: Optional[str] = None, scope: str = "interactive",
                     max_elements: int = _DEFAULT_OBSERVE_ELEMENTS, visual: str = "none",
                     element_id: Optional[str] = None, previous_observation_id: Optional[str] = None,
                     frame: Optional[str] = None) -> Any:
-    """Compact DOM observation; frame='<url part>' observes inside that child frame (Chrome)."""
+    """Compact DOM observation; frame='<url part>' observes inside that child frame (Chrome's companion,
+    Safari's Accessibility tree)."""
     if frame and str(visual or "none").lower() != "none":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "error": "frame_visual_unsupported",
             "message": "Visual capture is of the whole page; observe the frame with visual='none'.",
         })
+    safari = _safari_frame_call(browser, frame, tab_handle, window_index, tab_index,
+                                lambda target, selector: safari_frames.observe(target.url, selector, max_elements))
+    if safari is not None:
+        return json.dumps(safari, ensure_ascii=False, separators=(",", ":"))
     return _in_frame(frame, lambda: _browser_observe_impl(
         settings, browser, window_index, tab_index, tab_handle, scope, max_elements, visual, element_id,
         previous_observation_id,
@@ -5843,7 +5872,13 @@ def browser_act(settings: Settings, browser: str, actions: List[Dict[str, Any]],
                 window_index: int = 1, tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
                 return_state: str = "compact", allow_foreground: bool = False,
                 frame: Optional[str] = None) -> Dict[str, Any]:
-    """Batched actions; frame='<url part>' acts inside that child frame with its element ids (Chrome)."""
+    """Batched actions; frame='<url part>' acts inside that child frame with its element ids (Chrome's
+    companion, Safari's Accessibility tree)."""
+    safari = _safari_frame_call(
+        browser, frame, tab_handle, window_index, tab_index, mutation=True,
+        call=lambda target, selector: safari_frames.act(target.url, selector, actions, observation_id, return_state))
+    if safari is not None:
+        return safari
     return _in_frame(frame, lambda: _browser_act_impl(
         settings, browser, actions, observation_id, window_index, tab_index, tab_handle, return_state, allow_foreground,
     ))

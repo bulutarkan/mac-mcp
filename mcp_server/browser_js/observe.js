@@ -112,7 +112,7 @@ var frameList=(function(){var out=[],found=[],scanned=0;
   var origin='';try{origin=src?new URL(src,location.href).origin:'';}catch(e){}
   out.push({element_id:__mcpId(f,s),origin:origin,src:src.slice(0,160),title:String(f.title||f.name||'').slice(0,80),
     rect:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},same_origin:same,
-    hint:same?undefined:'Cross-origin frame: observe/act inside it with frame=<part of its URL> (Chrome).'});});
+    hint:same?undefined:'Cross-origin frame: observe/act inside it with frame=<part of its URL> (Chrome; Safari through Accessibility).'});});
   return out.length?out:undefined;})();
 return __mcpB64({
   ok:true, observation_id:obs, dom_revision:s.mutationRevision,
