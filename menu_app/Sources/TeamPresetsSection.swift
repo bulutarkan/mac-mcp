@@ -485,6 +485,8 @@ struct TeamPresetBuilder: View {
     @MacMCPState private var targetedSlot: Int?
     @MacMCPState private var benchTargeted = false
     @MacMCPState private var confirmDiscard = false
+    /// An empty name is not called an error before the owner has typed in the field.
+    @MacMCPState private var nameTouched = false
 
     static let providerPayload = "mac-mcp-provider:"
     static let memberPayload = "mac-mcp-member:"
@@ -545,7 +547,7 @@ struct TeamPresetBuilder: View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 // The placeholder is drawn here: a plain field's own prompt showed nearly as dark as a typed
                 // name in this large font, so an empty field read as already named or as having no hint.
-                TextField("", text: $preset.name)
+                TextField("", text: Binding(get: { preset.name }, set: { preset.name = $0; nameTouched = true }))
                     .textFieldStyle(.plain)
                     .font(.system(size: 22, weight: .semibold, design: .rounded))
                     .accessibilityLabel("Team name")
@@ -565,10 +567,11 @@ struct TeamPresetBuilder: View {
                     .background(Capsule().fill(Color.primary.opacity(0.07)))
                     .accessibilityLabel("\(preset.members.count) of \(TeamPreset.maxMembers) members")
             }
+            let shown = nameTouched || !preset.name.isEmpty ? issues.name : nil
             Rectangle()
-                .fill(issues.name == nil ? Color.primary.opacity(0.14) : VisualTokens.error)
+                .fill(shown == nil ? Color.primary.opacity(0.14) : VisualTokens.error)
                 .frame(height: 1)
-            if let message = issues.name {
+            if let message = shown {
                 Text(message).font(SettingsType.meta).foregroundStyle(VisualTokens.error)
             }
         }
