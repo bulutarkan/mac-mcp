@@ -377,6 +377,10 @@ def _snapshot_commit(state: dict[str, Any]) -> str:
             "GIT_AUTHOR_EMAIL": "mac-mcp-agent@localhost",
             "GIT_COMMITTER_NAME": "Mac MCP Agent",
             "GIT_COMMITTER_EMAIL": "mac-mcp-agent@localhost",
+            # A fixed date makes the same files give the same snapshot, so an applied worktree reads as applied
+            # (not pending) on the next inspection; a clock date gave each inspection a new commit.
+            "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
+            "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000",
         })
         commit = _git(
             worktree, "commit-tree", tree, "-p", base,

@@ -103,6 +103,7 @@ _OUTPUT_READ_CHUNK_BYTES = 64 * 1024
 TEAM_RESULT_LIMIT = 2000
 DEFAULT_WAIT_TIMEOUT_S = 30
 MAX_WAIT_TIMEOUT_S = 300
+_WAIT_CHANGES_SHOWN = 50
 MAX_TEAM_SIZE = 10
 DEFAULT_TEAM_TIMEOUT_FLOOR_S = 3600
 MAX_TEAM_TIMEOUT_S = 86400
@@ -291,8 +292,40 @@ def _read_team_unlocked(team_id: str) -> Dict[str, Any]:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Corrupt team metadata: {team_id}") from exc
 
 
+# Task state changes a team keeps for wait_agents(since=...) (#129): enough for a lead that checks back
+# every few minutes, bounded so the team file stays small.
+_TEAM_EVENT_KEEP = 200
+
+
+def _record_team_events(path: Path, meta: Dict[str, Any]) -> None:
+    """Number each task's state change since the stored team, so a lead can ask what changed."""
+    try:
+        before = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        before = {}
+    previous = {str(task.get("id")): task for task in before.get("tasks") or [] if isinstance(task, dict)}
+    seq = max(int(meta.get("event_seq") or 0), int(before.get("event_seq") or 0))
+    events = list(meta.get("events") if isinstance(meta.get("events"), list) else before.get("events") or [])
+    for task in meta.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        old = previous.get(str(task.get("id"))) or {}
+        if old.get("state") == task.get("state") and old.get("latest_agent_id") == task.get("latest_agent_id"):
+            continue
+        seq += 1
+        event = {"seq": seq, "at": _now(), "task_id": task.get("id"), "from": old.get("state"), "to": task.get("state")}
+        for key, source in (("title", "title"), ("agent_id", "latest_agent_id"), ("reason", "failure_reason"),
+                            ("provider", "provider")):
+            if task.get(source):
+                event[key] = task.get(source)
+        events.append(event)
+    meta["event_seq"] = seq
+    meta["events"] = events[-_TEAM_EVENT_KEEP:]
+
+
 def _write_team_unlocked(team_id: str, meta: Dict[str, Any]) -> None:
     path = _team_meta_path(team_id)
+    _record_team_events(path, meta)
     path.parent.mkdir(parents=True, exist_ok=True)
     make_private(TEAMS_DIR)
     make_private(path.parent)
@@ -1881,8 +1914,15 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
                 or str(team.get("owner_agent_id") or "").strip()
                 or None
             )
+            # A revision continues in its last agent's worktree; a task started over (a retry of that task, or a
+            # resumed team restarting it) starts clean from its dependencies, as does any task whose last agent
+            # had no worktree (a read-only team) (#129).
+            fresh = bool(task.pop("fresh_start", False))
+            previous = "" if fresh else str(task.get("latest_agent_id") or "").strip()
+            if previous and not _agent_has_worktree(previous):
+                previous = ""
             seed_agent_ids: List[str] = []
-            if not str(task.get("latest_agent_id") or "").strip():
+            if not previous:
                 seed_task_ids = list(task.get("depends_on") or [])
                 review_of = str(task.get("review_of") or "").strip()
                 if review_of and review_of not in seed_task_ids:
@@ -1917,9 +1957,7 @@ def _team_tick_once(team_id: str) -> Dict[str, Any]:
                     provenance_class=str(team.get("provenance_class") or "local"),
                     git_isolation=str(team.get("git_isolation") or "auto"),
                     git_base_commit=team.get("git_base_commit"),
-                    reuse_worktree_agent_id=(
-                        str(task.get("latest_agent_id") or "").strip() or None
-                    ),
+                    reuse_worktree_agent_id=previous or None,
                     seed_worktree_agent_ids=seed_agent_ids,
                     seed_conflict_mode=("manifest" if len(seed_agent_ids) > 1 else "fail"),
                     admission_lease_id=str(task.get("admission_lease_id") or "") or None,
@@ -7011,12 +7049,19 @@ def wait_agents(
     mode: str = "all",
     timeout_s: int = DEFAULT_WAIT_TIMEOUT_S,
     include_results: bool = True,
+    since: Optional[int] = None,
 ) -> Dict[str, Any]:
+    """Wait for a team or agents. With since (a team's cursor from an earlier wait), return as soon as any of
+    its tasks changed state after that point, with those changes, so a lead follows a long team in one loop."""
     mode = mode.lower().strip()
     if mode not in _WAIT_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "mode must be all, any, or majority.")
     if bool(team_id) == bool(agent_ids):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of team_id or agent_ids.")
+    if since is not None and not team_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "since follows a team: pass it with team_id.")
+    since_seq = None if since is None else max(0, int(since))
+    changes: List[Dict[str, Any]] = []
     ids = list(agent_ids or [])
     # The timeout covers the whole call, the scheduler ticks below included (#99).
     bounded_timeout = min(max(0, int(timeout_s)), MAX_WAIT_TIMEOUT_S)
@@ -7055,8 +7100,12 @@ def wait_agents(
         signature, last_rebuild = current_signature, time.monotonic()
         rebuilds += 1
         if team_id:
-            team_summary = _team_summary(str(team_id), _team_tick_within(str(team_id), deadline))
+            raw_team = _team_tick_within(str(team_id), deadline)
+            team_summary = _team_summary(str(team_id), raw_team)
+            team_summary["cursor"] = int(raw_team.get("event_seq") or 0)
             ids = list(team_summary.get("agent_ids") or [])
+            if since_seq is not None:
+                changes = [event for event in raw_team.get("events") or [] if int(event.get("seq") or 0) > since_seq]
         states = [get_agent(settings, agent_id, include_logs=False) for agent_id in ids]
         wait_state = _wait_snapshot(states, team_summary)
         quorum_total = int(wait_state.get("work_count") or 0)
@@ -7065,7 +7114,7 @@ def wait_agents(
         pending_count = int(wait_state.get("pending_count") or 0)
         condition_met = _wait_condition(successful_count, quorum_terminal_count, quorum_total, mode)
         quorum_possible = _wait_quorum_possible(successful_count, pending_count, quorum_total, mode)
-        if condition_met or not quorum_possible:
+        if condition_met or not quorum_possible or changes:
             break
         if time.monotonic() >= deadline:
             waiter_timed_out = True
@@ -7181,6 +7230,15 @@ def wait_agents(
     }
     if team_id:
         response["team"] = team_summary or _team_summary(str(team_id))
+        cursor = int(response["team"].get("cursor") or 0)
+        response["cursor"] = cursor
+        if since_seq is not None:
+            response["changes"] = changes[-_WAIT_CHANGES_SHOWN:]
+            if len(changes) > _WAIT_CHANGES_SHOWN:
+                response["changes_omitted"] = len(changes) - _WAIT_CHANGES_SHOWN
+        if not condition_met and quorum_possible:
+            response["next"] = (f"The team is still working. Call wait_agents again with team_id and since={cursor}: "
+                                "it returns as soon as a task changes, with only what changed.")
     return response
 
 def _full_result_page(agent_id: str, offset: int, limit: int) -> Dict[str, Any]:
@@ -7589,6 +7647,11 @@ def agent_action(
     requested_by: str = "orchestrator",
     task: Optional[Dict[str, Any]] = None,
     expected_revision: Optional[int] = None,
+    task_ids: Optional[List[str]] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     if bool(agent_id) == bool(team_id):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of agent_id or team_id.")
@@ -7603,7 +7666,12 @@ def agent_action(
         return _resume_team(str(team_id), team)
     if normalized_action == "add_task":
         return _add_team_task(str(team_id), team, task, expected_revision)
-    if normalized_action in {"message", "apply", "discard"}:
+    if normalized_action == "retry" and task_ids:
+        return _retry_team_tasks(str(team_id), team, task_ids,
+                                 {"provider": provider, "model": model, "reasoning": reasoning})
+    if normalized_action == "apply":
+        return _apply_team(settings, str(team_id), team, dry_run=bool(dry_run))
+    if normalized_action in {"message", "discard"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{normalized_action} is only supported for an individual agent session.")
     if normalized_action == "cancel":
         if int(team.get("scheduler_version") or 0) >= 1:
@@ -7792,7 +7860,7 @@ def _resume_team(team_id: str, team: Dict[str, Any]) -> Dict[str, Any]:
                 task.update({"state": "ready", "failure_reason": None, "resume_from_agent_id": latest})
                 plan["continued"].append(task_id)
             elif not latest or _team_task_rerun_safe(latest):
-                task.update({"state": "ready", "failure_reason": None})
+                task.update({"state": "ready", "failure_reason": None, "fresh_start": True})
                 plan["restarted"].append(task_id)
             else:
                 plan["left"].append(task_id)
@@ -7801,6 +7869,160 @@ def _resume_team(team_id: str, team: Dict[str, Any]) -> Dict[str, Any]:
     _update_team(team_id, mark)
     summary = _team_summary(team_id)
     return {"ok": True, "team_id": team_id, **plan, "team": summary}
+
+
+_RETRYABLE_TASK_STATES = {"failed", "quality_failed", "cancelled", "skipped"}
+
+
+def _agent_has_worktree(agent_id: str) -> bool:
+    try:
+        state = _read_meta(agent_id).get("worktree")
+    except (HTTPException, OSError, ValueError):
+        return False
+    return isinstance(state, dict) and bool(state.get("enabled"))
+
+
+def _retry_team_tasks(team_id: str, team: Dict[str, Any], task_ids: Any,
+                      override: Dict[str, Optional[str]]) -> Dict[str, Any]:
+    """Run chosen tasks of a team again in place (#129), optionally on another provider, model or reasoning.
+
+    Finished tasks and their results stay; tasks skipped because a retried task failed wait for it again. A
+    task whose last agent crossed a side effect is refused, as a whole-team retry refuses it."""
+    if int(team.get("scheduler_version") or 0) < 1:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "task_ids needs a team started with task ids; use action=retry without task_ids.")
+    wanted = [str(item).strip() for item in (task_ids if isinstance(task_ids, list) else [task_ids]) if str(item).strip()]
+    tasks = {str(item.get("id")): item for item in team.get("tasks") or []}
+    unknown = [item for item in wanted if item not in tasks]
+    if unknown or not wanted:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            f"task_not_found: {unknown or wanted}; this team's tasks are {sorted(tasks)}.")
+    busy = {item: tasks[item].get("state") for item in wanted if tasks[item].get("state") not in _RETRYABLE_TASK_STATES}
+    if busy:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"task_not_retryable: only failed, cancelled or skipped tasks run again; {busy}.")
+    unsafe = [item for item in wanted
+              if str(tasks[item].get("latest_agent_id") or "").strip()
+              and not _team_task_rerun_safe(str(tasks[item]["latest_agent_id"]))]
+    if unsafe:
+        raise HTTPException(status.HTTP_409_CONFLICT, (
+            f"retry_replay_unsafe: {unsafe} crossed a side effect or an uncertain stop; starting over could repeat it. "
+            "Resume the team (action=resume) to continue from the checkpoint instead."))
+    choice = {key: str(value).strip() for key, value in override.items() if isinstance(value, str) and value.strip()}
+    selection: Optional[Dict[str, Any]] = None
+    if choice:
+        first = tasks[wanted[0]]
+        current = _task_selection(team, first)
+        chosen_provider = (choice.get("provider") or current["provider"]).lower()
+        if chosen_provider not in _PROVIDER_NAMES:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, _choice_problem("provider", chosen_provider, _PROVIDER_NAMES))
+        if not provider_enabled(chosen_provider):
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                f"provider_disabled: {chosen_provider} is disabled in Mac MCP Settings > Subagents.")
+        binary = _find_binary(chosen_provider)
+        if not binary:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{chosen_provider} CLI is not installed or not executable.")
+        _require_provider_compatible(chosen_provider, binary)
+        access_mode = str(team.get("access_mode") or "read_only")
+        _validate_provider_access_mode(chosen_provider, access_mode)
+        _require_provider_sign_in(chosen_provider, access_mode, binary)
+        # Another provider starts from its own defaults; the same provider keeps what was not overridden.
+        same = chosen_provider == current["provider"]
+        chosen_model = choice.get("model") or (current.get("model") if same else None)
+        chosen_reasoning = choice.get("reasoning") or (current.get("reasoning") if same else None)
+        selection = {"provider": chosen_provider, "model": chosen_model, "reasoning": chosen_reasoning,
+                     "selection_validation": _validate_provider_model_selection(
+                         chosen_provider, binary, chosen_model, chosen_reasoning)}
+    waiting: List[str] = []
+
+    def mark(current: Dict[str, Any]) -> None:
+        current["cancelled"] = False
+        for item in current.get("tasks") or []:
+            task_id = str(item.get("id"))
+            if task_id in wanted:
+                if str(item.get("state") or "") not in _RETRYABLE_TASK_STATES:
+                    continue  # it changed since the check above
+                item.update({"state": "ready", "failure_reason": None, "active_agent_id": None, "fresh_start": True,
+                             "manual_retry_count": int(item.get("manual_retry_count") or 0) + 1})
+                item.pop("resume_from_agent_id", None)
+                if selection:
+                    item.update(selection)
+                    item["retried_with"] = {key: selection[key] for key in ("provider", "model", "reasoning")}
+            elif item.get("state") == "skipped" and str(item.get("failure_reason") or "").startswith("dependency_failed:"):
+                # It waits for the retried task again; one with another failed dependency is skipped again.
+                item.update({"state": "blocked", "failure_reason": None})
+                waiting.append(task_id)
+        current["updated_at"] = _now()
+
+    _update_team(team_id, mark)
+    summary = _team_summary(team_id, _team_tick(team_id))
+    return {"ok": True, "action": "retry", "team_id": team_id, "retried": wanted, "waiting": waiting,
+            **({"retried_with": {key: selection[key] for key in ("provider", "model", "reasoning")}} if selection else {}),
+            "team": summary}
+
+
+def _apply_team(settings: Settings, team_id: str, team: Dict[str, Any], *, dry_run: bool) -> Dict[str, Any]:
+    """Apply a finished team's isolated changes to the source checkout in task order (#129).
+
+    A task's worktree that a later task's worktree started from (its dependent or reviewer) is carried by that
+    later one, so only the last of each chain is applied. Results that change the same file are left out and
+    listed, never merged here; each apply keeps the single-agent checks (base, dirty and touched-file CAS)."""
+    rows: List[Dict[str, Any]] = []
+    for item in team.get("tasks") or []:
+        agent = str(item.get("latest_agent_id") or "").strip()
+        if item.get("state") != "completed" or not agent:
+            continue
+        try:
+            state = _refresh_agent_worktree(agent)
+        except (HTTPException, AgentWorktreeError, OSError):
+            continue
+        if not state.get("enabled") or not state.get("pending_changes"):
+            continue
+        seeded = [str(row.get("source_agent_id")) for row in state.get("seeded_from") or [] if row.get("source_agent_id")]
+        rows.append({"task_id": str(item.get("id")), "agent_id": agent, "title": item.get("title"),
+                     "files": list(state.get("changed_files") or []), "seeded_from": seeded})
+    carried = {source for row in rows for source in row["seeded_from"]}
+    heads = [row for row in rows if row["agent_id"] not in carried]
+    owners: Dict[str, List[str]] = {}
+    for row in heads:
+        for path in row["files"]:
+            owners.setdefault(path, []).append(row["task_id"])
+    plan: List[Dict[str, Any]] = []
+    overlapping: List[Dict[str, Any]] = []
+    for row in heads:
+        shared = {path: [other for other in owners[path] if other != row["task_id"]]
+                  for path in row["files"] if len(owners[path]) > 1}
+        entry = {key: row[key] for key in ("task_id", "agent_id", "title", "files")}
+        if shared:
+            overlapping.append({**entry, "shared_files": shared})
+        else:
+            plan.append(entry)
+    carried_rows = [{"task_id": row["task_id"], "agent_id": row["agent_id"],
+                     "carried_by": [other["task_id"] for other in rows if row["agent_id"] in other["seeded_from"]]}
+                    for row in rows if row["agent_id"] in carried]
+    out: Dict[str, Any] = {"ok": True, "action": "apply", "team_id": team_id, "dry_run": dry_run,
+                           "carried": carried_rows, "overlapping": overlapping}
+    if dry_run:
+        out["will_apply"] = plan
+        out["note"] = ("Nothing was changed. apply without dry_run copies these into the source checkout in this order; "
+                       "overlapping results change the same files and are left for you to apply one by one.")
+        return out
+    applied: List[Dict[str, Any]] = []
+    refused: List[Dict[str, Any]] = []
+    for entry in plan:
+        try:
+            done = _agent_action_single(settings, entry["agent_id"], "apply")
+        except HTTPException as exc:
+            refused.append({**entry, "error": exc.detail})
+            continue
+        result = done.get("apply") or {}
+        if done.get("ok"):
+            applied.append({**entry, "status": result.get("status")})
+        else:
+            refused.append({**entry, "status": result.get("status"), "conflicts": result.get("conflicts"),
+                            "next_action": result.get("next_action")})
+    out.update(applied=applied, refused=refused, ok=not refused)
+    return out
 
 
 def _add_task_member(team: Dict[str, Any], task: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:

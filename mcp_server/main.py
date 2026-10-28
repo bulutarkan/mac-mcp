@@ -1029,16 +1029,18 @@ def create_app():
             "any/majority quorum counts only successful completed work; all preserves completion semantics while "
             "success/outcome separately report failures. timed_out refers only to the waiter deadline. "
             "Returns concise typed result envelopes for agents that finished, including explicit truncation/omission metadata when "
-            "bounded output is reduced; raw provider logs are excluded unless separately requested through get_agent(include_logs=true)."
+            "bounded output is reduced; raw provider logs are excluded unless separately requested through get_agent(include_logs=true). "
+            "A team answer carries cursor: wait_agents(team_id, since=cursor) returns as soon as any task changes "
+            "state, with only those changes, so a long team is followed in one loop instead of re-reading it all."
         ),
     )
     async def _wait_agents(team_id: Optional[str] = None, agent_ids: Optional[List[str]] = None,
                            mode: str = "all", timeout_s: int = 30,
-                           include_results: bool = True) -> Dict[str, Any]:
+                           include_results: bool = True, since: Optional[int] = None) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "wait_agents",
             lambda: wait_agents(settings, team_id=team_id, agent_ids=agent_ids,
-                                mode=mode, timeout_s=timeout_s, include_results=include_results),
+                                mode=mode, timeout_s=timeout_s, include_results=include_results, since=since),
         )
 
     @mcp.tool(name="team_messages", description=tools_team_messages.DESCRIPTION)
@@ -1183,16 +1185,23 @@ def create_app():
             "title?, role?, scope?, resources?, provider?, model?, reasoning?, member?}; member (name or id, for a team started "
             "with team_preset) runs it as that saved member; it starts once its depends_on complete and gets their "
             "results; pass expected_revision (the team's plan_revision) to get a conflict instead of racing another change. "
-            "Team cancel cascades to all children; team despawn refuses unapplied isolated changes."
+            "Team cancel cascades to all children; team despawn refuses unapplied isolated changes. Team retry with "
+            "task_ids runs only those failed, cancelled or skipped tasks again in the same team (finished tasks and their "
+            "results stay), optionally with provider/model/reasoning. Team apply copies the finished tasks' isolated "
+            "changes into the source checkout in task order, the last of each dependent chain only, and leaves results "
+            "that change the same files listed; dry_run=true shows that plan without changing anything."
         ),
     )
     def _agent_action(action: str, agent_id: Optional[str] = None, team_id: Optional[str] = None,
                       message: Optional[str] = None, signal: str = "TERM", task: Optional[Dict[str, Any]] = None,
-                      expected_revision: Optional[int] = None) -> Dict[str, Any]:
+                      expected_revision: Optional[int] = None, task_ids: Optional[List[str]] = None,
+                      provider: Optional[str] = None, model: Optional[str] = None, reasoning: Optional[str] = None,
+                      dry_run: bool = False) -> Dict[str, Any]:
         return _log(audit_logger, "agent_action",
                     lambda: agent_action(settings, action=action, agent_id=agent_id, team_id=team_id,
                                          message=message, signal=signal, task=task,
-                                         expected_revision=expected_revision))
+                                         expected_revision=expected_revision, task_ids=task_ids, provider=provider,
+                                         model=model, reasoning=reasoning, dry_run=dry_run))
 
     # ── File tools ──────────────────────────────────────────────────────────
     @mcp.tool(name="write_file",

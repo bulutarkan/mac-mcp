@@ -92,6 +92,21 @@ class AgentGitWorktreeCoreTests(unittest.TestCase):
             self.assertEqual("agent-two\n", (repo / "b.txt").read_text())
             self.assertEqual("user-dirty\n", (repo / "user.txt").read_text())
 
+    def test_an_applied_worktree_stays_applied_on_the_next_inspection(self) -> None:
+        # Live (#129): each inspection made a new snapshot commit (clock dates), so an applied worktree read as
+        # pending again, a second apply failed as changed, and team despawn saw unapplied changes.
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(Path(td))
+            state = prepare_worktree(agent_id="agt_once", cwd=repo, path_roots=[str(repo)], mode="required")
+            self.addCleanup(cleanup_worktree, state, force=True)
+            (Path(state["path"]) / "new.txt").write_text("new\n", encoding="utf-8")
+            state, result = apply_worktree(state)
+            self.assertEqual("applied", result["status"])
+            time.sleep(1.1)  # past a clock-second boundary
+            again = inspect_worktree(state)
+            self.assertFalse(again["pending_changes"])
+            self.assertEqual("already_applied", apply_worktree(again)[1]["status"])
+
     def test_apply_handles_create_delete_and_rename_without_global_git_reset(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = init_repo(Path(td))
@@ -628,6 +643,9 @@ class AgentGitWorktreeSpawnIntegrationTests(unittest.TestCase):
                 "gate_feedback": None, "failure_reason": None,
             }],
         })
+        (agents.AGENTS_DIR / "agt_previous").mkdir(parents=True, exist_ok=True)
+        agents._write_meta("agt_previous", {"agent_id": "agt_previous", "status": "completed",
+                                            "worktree": {"enabled": True, "path": str(self.repo)}})
         captured = []
         def fake_spawn(*args, **kwargs):
             captured.append(kwargs)
@@ -637,6 +655,8 @@ class AgentGitWorktreeSpawnIntegrationTests(unittest.TestCase):
         self.assertEqual(1, len(captured))
         self.assertEqual("agt_previous", captured[0]["reuse_worktree_agent_id"])
         self.assertEqual("required", captured[0]["git_isolation"])
+        # A last agent without a worktree (a read-only team) leaves nothing to reuse: the task starts clean.
+        self.assertFalse(agents._agent_has_worktree("agt_missing"))
 
 
 class AgentGitWorktreeLifecycleTests(unittest.TestCase):

@@ -117,6 +117,16 @@ struct TeamMemoryView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.04)))
                 .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
+                .overlay(alignment: .topLeading) {
+                    if length == 0 {
+                        Text(placeholder(id))
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 13).padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
                 .accessibilityLabel("Memory of \(title(id))")
             HStack {
                 Text(limit > 0 ? "\(length) of \(limit) characters" : "\(length) characters")
@@ -144,6 +154,12 @@ struct TeamMemoryView: View {
         }
         return "Only \(title(id)) reads this, along with the team's memory. Above the Notes line is your text "
             + "for \(title(id)); below it are the notes \(title(id)) kept from earlier runs."
+    }
+
+    /// The file's shape, shown while it is empty.
+    private func placeholder(_ id: String) -> String {
+        let rules = id == "team" ? "The team's rules, e.g. how to build and test this project." : "Notes for \(title(id)) only."
+        return rules + "\n\n## Notes\n- Notes kept after runs appear here, one per line."
     }
 
     private func title(_ id: String) -> String {
