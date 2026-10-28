@@ -498,6 +498,8 @@ struct TeamPresetBuilder: View {
 
     @MacMCPState private var targetedSlot: Int?
     @MacMCPState private var benchTargeted = false
+    /// Scrolls the page while a drag is held near its top or bottom edge, so slots below the fold can be reached.
+    @MacMCPState private var autoscroll = DragAutoscroll()
     @MacMCPState private var confirmDiscard = false
     /// An empty name is not called an error before the owner has typed in the field.
     @MacMCPState private var nameTouched = false
@@ -518,6 +520,7 @@ struct TeamPresetBuilder: View {
             bench
             board(issues)
         }
+        .background(DragAutoscrollAnchor(autoscroll: autoscroll))
         .confirmationDialog("Discard your changes to this team?", isPresented: $confirmDiscard) {
             Button("Discard Changes", role: .destructive, action: close)
             Button("Keep Editing", role: .cancel) {}
@@ -649,7 +652,10 @@ struct TeamPresetBuilder: View {
                 guard let id = memberID(items.first) else { return false }
                 withAnimation(AppMotion.spatial) { preset.removeMember(id: id) }
                 return true
-            } isTargeted: { benchTargeted = $0 && !preset.members.isEmpty }
+            } isTargeted: { inside in
+                if inside { autoscroll.begin() }
+                benchTargeted = inside && !preset.members.isEmpty
+            }
         }
     }
 
@@ -720,7 +726,7 @@ struct TeamPresetBuilder: View {
         .dropDestination(for: String.self) { items, _ in
             drop(items.first, at: index)
         } isTargeted: { inside in
-            if inside { targetedSlot = index } else if targetedSlot == index { targetedSlot = nil }
+            if inside { autoscroll.begin(); targetedSlot = index } else if targetedSlot == index { targetedSlot = nil }
         }
     }
 
@@ -771,6 +777,96 @@ struct TeamPresetBuilder: View {
         } else {
             close()
         }
+    }
+}
+
+/// Scrolls the page while a drag is held near the top or bottom of its visible area. A SwiftUI ScrollView does not
+/// do this on its own, so with four members on the board the open slots below the fold could not take a drop.
+@MainActor
+private final class DragAutoscroll: NSObject {
+    /// How close to an edge, in points, the pointer must be before the page moves, and the fastest step per tick.
+    nonisolated static let edge: CGFloat = 56
+    nonisolated static let maxStep: CGFloat = 16
+
+    weak var scrollView: NSScrollView?
+    private var timer: Timer?
+
+    nonisolated override init() { super.init() }
+
+    /// Called when a drag enters a drop target on the page; runs until the mouse button is let go.
+    func begin() {
+        guard timer == nil, scrollView != nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
+        // .common keeps it firing inside the drag's event-tracking run loop.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    @objc private func tick() {
+        guard NSEvent.pressedMouseButtons & 1 != 0, let window = scrollView?.window else { return stop() }
+        follow(window.convertPoint(fromScreen: NSEvent.mouseLocation))
+    }
+
+    /// Moves the page one step toward a pointer (window coordinates) held near or past its top or bottom edge.
+    func follow(_ pointer: NSPoint) {
+        guard let scrollView, let document = scrollView.documentView else { return }
+        let frame = scrollView.convert(scrollView.bounds, to: nil)
+        guard pointer.x >= frame.minX, pointer.x <= frame.maxX else { return }
+        let step = Self.step(pointerY: pointer.y, bottom: frame.minY, top: frame.maxY)
+        guard step != 0 else { return }
+        let clip = scrollView.contentView
+        let limit = max(0, document.frame.height - clip.bounds.height)
+        // Measured from the top of the page, whichever way the document view is flipped.
+        let current = document.isFlipped ? clip.bounds.minY : limit - clip.bounds.minY
+        let next = min(max(current + step, 0), limit)
+        guard next != current else { return }
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: document.isFlipped ? next : limit - next))
+        scrollView.reflectScrolledClipView(clip)
+    }
+
+    /// Points to move this tick: positive toward the end of the page, negative toward its top, 0 away from the
+    /// edges. Window coordinates, so y grows upward; past an edge the step stays at its fastest.
+    nonisolated static func step(pointerY y: CGFloat, bottom: CGFloat, top: CGFloat) -> CGFloat {
+        if y < bottom + edge { return maxStep * min(1, (bottom + edge - y) / edge) }
+        if y > top - edge { return -maxStep * min(1, (y - (top - edge)) / edge) }
+        return 0
+    }
+}
+
+/// Hands DragAutoscroll the NSScrollView the team builder is drawn in.
+private struct DragAutoscrollAnchor: NSViewRepresentable {
+    let autoscroll: DragAutoscroll
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.autoscroll = autoscroll
+        return view
+    }
+
+    func updateNSView(_ view: AnchorView, context: Context) {
+        view.autoscroll = autoscroll
+        if autoscroll.scrollView == nil { autoscroll.scrollView = view.enclosingScrollView }
+    }
+
+    static func dismantleNSView(_ view: AnchorView, coordinator: ()) {
+        view.autoscroll?.stop()
+    }
+
+    final class AnchorView: NSView {
+        weak var autoscroll: DragAutoscroll?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            autoscroll?.scrollView = window == nil ? nil : enclosingScrollView
+            if window == nil { autoscroll?.stop() }
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 
