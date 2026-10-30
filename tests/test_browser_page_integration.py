@@ -563,6 +563,35 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(chosen["ok"], chosen)
         self.assertEqual("Free", tools.page.js("document.getElementById('plan').textContent"))
 
+    def test_fill_sets_several_dropdowns_in_one_call_from_their_own_lists_only(self) -> None:
+        # #389: one fill still opens, picks and closes every dropdown itself; the options come only from the
+        # list each one opened (named by aria-controls or drawn at the end of the page), never from the page's
+        # links that share their names.
+        tools = self.tools("dropdowns.html")
+        filled = tools.act([{"type": "fill", "values": {
+            "Full name": "Integration Tester", "Plan": "Business", "Size": "Large", "Color": "Blue", "Note": "One call",
+        }}])
+        self.assertTrue(filled["ok"], filled)
+        self.assertEqual(1, len(filled["actions"]))
+        self.assertEqual(
+            ["Integration Tester", "Business", "Large", "Blue", "One call", 0, 0],
+            tools.page.js("[document.getElementById('name').value,plan.textContent,size.textContent,color.textContent,"
+                          "document.getElementById('note').value,window.__navClicks,window.__footerClicks]"))
+
+    def test_a_dropdown_never_takes_a_page_link_for_a_missing_option(self) -> None:
+        tools = self.tools("dropdowns.html")
+        missing = tools.act([{"type": "select", "query": "Plan", "option": "Free"}])
+        self.assertFalse(missing["ok"], missing)
+        self.assertEqual("option_not_found", missing["actions"][0]["error"])
+        self.assertEqual(["Choose a plan", 0], tools.page.js("[plan.textContent,window.__navClicks]"))
+
+    def test_two_options_with_the_same_name_are_a_tie_nothing_is_chosen_for(self) -> None:
+        tools = self.tools("dropdowns.html")
+        tie = tools.act([{"type": "select", "query": "Color", "option": "Red"}])
+        self.assertFalse(tie["ok"], tie)
+        self.assertEqual("option_ambiguous", tie["actions"][0]["error"])
+        self.assertEqual(["Choose a color", "false"], tools.page.js("[color.textContent,color.getAttribute('aria-expanded')]"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.

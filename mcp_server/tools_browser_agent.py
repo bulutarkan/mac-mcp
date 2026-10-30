@@ -1785,6 +1785,16 @@ def _batch_js(actions: List[Dict[str, Any]], observation_id: Optional[str]) -> s
     })
 
 
+# Containers a custom select or menu draws its options in (#389): options are looked for only inside the
+# list the control opened, never among the page's other links and buttons.
+_POPUP_SELECTOR = (
+    '[role="listbox"],[role="menu"],[role="tree"],[role="grid"],[role="dialog"],[class*="dropdown"],'
+    '[class*="listbox"],[class*="option"],[class*="suggest"],[class*="menu"],[class*="popover"],[class*="popup"],'
+    '[class*="results"],[class*="autocomplete"],[class*="select"],[class*="choices"],[class*="picker"],'
+    '[class*="combobox"],[class*="list"]'
+)
+
+
 def _select_prepare_js(element_id: str, observation_id: Optional[str], option: Any) -> str:
     eid = json.dumps(str(element_id or ""))
     obs = json.dumps(observation_id)
@@ -1813,6 +1823,9 @@ if((el.tagName||'').toLowerCase()==='select'){{
   return __mcpB64({{ok:true,native:true,selected:String(chosen.text||chosen.value),element_id:eid}});
 }}
 __mcpScrollIntoView(el);
+/* The lists already shown before the press: one that appears after it is the list this control opened. */
+s.popupsBefore=s.popupsBefore||{{}};
+s.popupsBefore[eid]=__mcpQueryAll({json.dumps(_POPUP_SELECTOR)}).filter(function(p){{return __mcpVisible(p);}});
 __mcpActivate(el);
 return __mcpB64({{ok:true,native:false,needs_option_wait:true,element_id:eid,revision:s.mutationRevision}});
 }})()'''
@@ -1834,7 +1847,35 @@ var s=__mcpState(), origin=s.elements[{eid}], wanted=norm({wanted});
 __mcpStartMutationWatch(s,3000);
 var originRect=origin&&origin.getBoundingClientRect?origin.getBoundingClientRect():{{left:0,top:0,width:0,height:0}};
 var selectors='[role="option"],[role="menuitem"],option,li,[class*="option"],[class*="suggest"],[class*="dropdown"] a,[class*="menu"] a,button,a';
-var all=__mcpQueryAll(selectors).filter(rendered);
+function holdsOrigin(el){{return !!origin&&(el===origin||el.contains(origin));}}
+function outermost(list){{return list.filter(function(el){{return !list.some(function(o){{return o!==el&&o.contains(el);}});}});}}
+function gap(el){{var r=el.getBoundingClientRect();return Math.abs((r.left+r.width/2)-(originRect.left+originRect.width/2))+Math.abs((r.top+r.height/2)-(originRect.top+originRect.height/2));}}
+/* #389: the list this control opened. First what it names (aria-controls/aria-owns, also on its inner box or
+   its wrapper), else a list shown since it was pressed, else an open list nearest to it; never the page at large. */
+var roots=[],how='';
+var named=origin?[origin]:[];
+if(origin){{try{{named=named.concat(Array.from(origin.querySelectorAll('[aria-controls],[aria-owns]')));}}catch(e){{}}
+  for(var up=origin.parentElement,k=0;up&&k<3;up=up.parentElement,k++){{if(up.hasAttribute('aria-controls')||up.hasAttribute('aria-owns'))named.push(up);}}}}
+named.forEach(function(n){{['aria-controls','aria-owns'].forEach(function(attr){{String(n.getAttribute(attr)||'').split(/\\s+/).forEach(function(id){{
+  var r=id?document.getElementById(id):null;if(r&&rendered(r)&&roots.indexOf(r)<0)roots.push(r);}});}});}});
+if(roots.length)how='named';
+var lists=outermost(__mcpQueryAll({json.dumps(_POPUP_SELECTOR)}).filter(function(el){{return rendered(el)&&!holdsOrigin(el);}}));
+if(!roots.length){{
+  var before=(s.popupsBefore&&s.popupsBefore[{eid}])||[];
+  roots=lists.filter(function(el){{return before.indexOf(el)<0&&!before.some(function(b){{return b.contains(el);}});}});
+  if(roots.length)how='opened';
+}}
+if(!roots.length){{
+  roots=lists.filter(function(el){{var o=el.closest('[aria-expanded="true"],.open,.show,.active,.is-open,.is-active,[data-state="open"]');
+    var role=String(el.getAttribute('role')||'');return !!o||role==='listbox'||role==='menu';}});
+  if(roots.length)how='open_nearby';
+}}
+roots.sort(function(a,b){{return gap(a)-gap(b);}});
+var all=[];
+/* Inside the list any shown element can be an option (plain divs too); a very large container keeps to option-like ones. */
+roots.forEach(function(root){{var pool=root.querySelectorAll('*');if(pool.length>2000)pool=root.querySelectorAll(selectors);
+  Array.from(pool).filter(rendered).forEach(function(el){{if(all.indexOf(el)<0&&!holdsOrigin(el))all.push(el);}});}});
+function rootOf(el){{for(var i=0;i<roots.length;i++)if(roots[i].contains(el))return i;return -1;}}
 function label(el){{return norm(__mcpText(el)||el.getAttribute('aria-label')||el.getAttribute('title')||'');}}
 function clickPriority(el){{
   var tag=(el.tagName||'').toLowerCase(), role=(el.getAttribute('role')||'').toLowerCase();
@@ -1846,14 +1887,20 @@ function clickPriority(el){{
 function openBoost(el){{return el.closest('.active,.open,.show,[aria-expanded="true"],.address-pane.active,.select2-container--open,.dropdown-menu')?3:0;}}
 function distance(el){{var r=el.getBoundingClientRect();return Math.abs((r.left+r.width/2)-(originRect.left+originRect.width/2))+Math.abs((r.top+r.height/2)-(originRect.top+originRect.height/2));}}
 function best(arr){{return arr.sort(function(a,b){{var d=(clickPriority(b)+openBoost(b))-(clickPriority(a)+openBoost(a));if(d)return d;var da=distance(a),db=distance(b);if(da!==db)return da-db;return label(a).length-label(b).length;}})[0]||null;}}
-var exact=all.filter(function(el){{return label(el)===wanted;}});
-var prefix=all.filter(function(el){{var t=label(el);return t.indexOf(wanted+' ')===0||t.indexOf(wanted+' (')===0;}});
+if(!roots.length) return __mcpB64({{ok:true,found:false,candidate_count:0,list_found:false}});
+/* The nearest list holding the option wins; inside it, an option and the link wrapped in it are one choice,
+   and two separate options with the same name are a tie nothing is clicked for. */
+function inNearest(arr){{if(!arr.length)return arr;var first=Math.min.apply(null,arr.map(rootOf));return arr.filter(function(el){{return rootOf(el)===first;}});}}
+function distinct(arr){{return arr.filter(function(el){{return !arr.some(function(o){{return o!==el&&(el.contains(o)||o.contains(el))&&!el.contains(o);}});}});}}
+var exact=inNearest(all.filter(function(el){{return label(el)===wanted;}}));
+var prefix=inNearest(all.filter(function(el){{var t=label(el);return t.indexOf(wanted+' ')===0||t.indexOf(wanted+' (')===0;}}));
+if(distinct(exact).length>1) return __mcpB64({{ok:true,found:false,ambiguous:true,matches:distinct(exact).length,list:how}});
 var chosen=(best(exact)||best(prefix)||null);
-if(!chosen) return __mcpB64({{ok:true,found:false,candidate_count:all.length}});
+if(!chosen) return __mcpB64({{ok:true,found:false,candidate_count:all.length,list:how}});
 var txt=__mcpText(chosen);
 __mcpScrollIntoView(chosen);
 __mcpActivate(chosen);
-return __mcpB64({{ok:true,found:true,selected:txt,tag:(chosen.tagName||'').toLowerCase(),role:chosen.getAttribute('role')||''}});
+return __mcpB64({{ok:true,found:true,selected:txt,tag:(chosen.tagName||'').toLowerCase(),role:chosen.getAttribute('role')||'',list:how}});
 }})()'''
 
 
@@ -2056,6 +2103,16 @@ def _select_action(
             return {
                 "ok": True, "type": "select", "element_id": element_id,
                 "selected": found.get("selected"), "native": False,
+                "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+            }
+        if found.get("ambiguous"):
+            # Two options in the list this control opened have the asked name: nothing is chosen.
+            _run_json_js(settings, browser, _select_toggle_js(element_id, "closed"), window_index, tab_index, tab_handle)
+            js_calls += 1
+            return {
+                "ok": False, "type": "select", "element_id": element_id, "native": False,
+                "error": "option_ambiguous", "reason_code": "OPTION_AMBIGUOUS", "matches": found.get("matches"),
+                "hint": "The list holds more than one option with that name; give the option's full text.",
                 "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
             }
         if not reopened and time.perf_counter() - started >= _SELECT_REOPEN_AFTER_S:
@@ -4363,7 +4420,7 @@ _KNOWN_FAILURE_ERRORS = frozenset({
     "element_not_ready", "stale_observation", "field_not_found", "invalid_input_mode",
     "trusted_input_not_supported_for_action", "post_field_not_found", "post_field_ambiguous",
     "post_field_outside_item", "post_submit_not_found", "post_submit_ambiguous", "chrome_debugger_blocked",
-    "stale_target_ambiguous", "choice_not_kept", "value_not_kept",
+    "stale_target_ambiguous", "choice_not_kept", "value_not_kept", "option_ambiguous",
 })
 _LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
 
