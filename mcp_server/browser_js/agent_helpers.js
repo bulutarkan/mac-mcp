@@ -74,7 +74,29 @@ function __mcpState(){
   if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:__mcpPageToken(),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),observationMeta:Object.create(null),rootObservers:[],observerTimer:null};}
 if(!s.observationMeta)s.observationMeta=Object.create(null);
 if(!s.targetFp)s.targetFp=Object.create(null);
+  __mcpBackgroundFrames();
   return s;
+}
+/* A tab the browser is not showing runs no animation frames, so a menu or list that opens on the next frame
+   never opened while an agent worked in a background tab (Safari: LIST_NEEDS_VISIBLE_TAB). While the tab is
+   hidden, a frame request also runs on a short timer, once, whichever comes first; once the tab is shown the
+   page has its own requestAnimationFrame back. Installed only when a Mac MCP script runs in a hidden tab. */
+function __mcpBackgroundFrames(){
+  try{
+    var w=window;if(w.__macMcpFrames||!document.hidden||typeof w.requestAnimationFrame!=='function')return;
+    var orig=w.requestAnimationFrame,origCancel=w.cancelAnimationFrame,pending=new Map(),next=0;
+    var frames={orig:orig,cancel:origCancel};w.__macMcpFrames=frames;
+    var shim=function(cb){var id=2000000000+(next++),done=false;
+      var run=function(t){if(done)return;done=true;var p=pending.get(id);pending.delete(id);
+        if(p){try{origCancel.call(w,p.frame);}catch(e){}clearTimeout(p.timer);}cb(typeof t==='number'?t:performance.now());};
+      pending.set(id,{frame:orig.call(w,run),timer:setTimeout(run,16)});return id;};
+    var shimCancel=function(id){var p=pending.get(id);if(!p)return origCancel.call(w,id);pending.delete(id);
+      try{origCancel.call(w,p.frame);}catch(e){}clearTimeout(p.timer);};
+    w.requestAnimationFrame=shim;w.cancelAnimationFrame=shimCancel;
+    document.addEventListener('visibilitychange',function back(){if(document.hidden)return;
+      if(w.requestAnimationFrame===shim)w.requestAnimationFrame=orig;if(w.cancelAnimationFrame===shimCancel)w.cancelAnimationFrame=origCancel;
+      delete w.__macMcpFrames;document.removeEventListener('visibilitychange',back);});
+  }catch(e){}
 }
 function __mcpVisualTarget(el){
   try{if(!el||el.nodeType!==1)return 'Page';var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase(),type=(el.getAttribute('type')||'').toLowerCase(),aria=(el.getAttribute('aria-label')||'');

@@ -735,6 +735,21 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertEqual("done", state.get("status"), state.get("error"))
         self.assertTrue(str(state.get("data") or "").startswith("data:image/jpeg"))
 
+    def test_a_list_that_opens_on_the_next_frame_opens_in_a_hidden_tab(self) -> None:
+        # Live (Safari, background tab): a hidden tab runs no animation frames, so a dropdown that opens on the
+        # next frame never opened and fill said LIST_NEEDS_VISIBLE_TAB. Here the tab is made to look hidden with
+        # frames that never come, as Safari does.
+        tools = self.tools("frames.html")
+        tools.page.js("Object.defineProperty(document,'hidden',{configurable:true,get:function(){return true;}});"
+                      "window.requestAnimationFrame=function(){return 1;};window.cancelAnimationFrame=function(){};1")
+        filled = tools.act([{"type": "fill", "values": {"Full name": "Hidden Tester", "Plan": "Pro"}}])
+        self.assertTrue(filled["ok"], filled)
+        self.assertEqual(["Hidden Tester", "Pro"], tools.page.js("[document.getElementById('name').value,plan.textContent]"))
+        # Shown again: the page has its own requestAnimationFrame back.
+        tools.page.js("Object.defineProperty(document,'hidden',{configurable:true,get:function(){return false;}});"
+                      "document.dispatchEvent(new Event('visibilitychange'));1")
+        self.assertEqual("function(){return1;}", tools.page.js("String(window.requestAnimationFrame).replace(/\\s/g,'')"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.
