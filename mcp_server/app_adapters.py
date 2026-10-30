@@ -29,6 +29,7 @@ from .app_adapter_core import (  # noqa: F401  (re-exported: tests and app_adapt
     _MAILBOX_EXPRESSIONS, _RS, _US, AppAdapterError, _clean_field, _date_setup, _event_datetime, _mailbox_expr,
     _parse_date_bound, _parse_records, _plain_text, _run, _single_line,
 )
+from . import app_adapters_dev as dev
 from . import app_adapters_docs as docs
 from . import app_adapters_more as more
 from . import app_adapters_music as music
@@ -58,6 +59,9 @@ _APP_ALIASES = {
     "imessage": "Messages",
     "imessages": "Messages",
     "xcode": "Xcode",
+    "simulator": "Simulator",
+    "ios simulator": "Simulator",
+    "simctl": "Simulator",
     "contacts": "Contacts",
     "address book": "Contacts",
     "shortcuts": "Shortcuts",
@@ -84,7 +88,9 @@ _ACTIONS = {
     "Music": ("now_playing", "find_playlists", "find_tracks", "play", "pause", "next_track", "previous_track"),
     "System Settings": ("list_panes", "open_pane", "read_settings", "change_setting"),
     "Messages": ("find_chats", "read_messages", "search_messages", "send_message"),
-    "Xcode": ("list_workspaces",),
+    "Xcode": ("list_workspaces", "build", "test", "build_result"),
+    "Simulator": ("list_devices", "boot", "shutdown", "erase", "install_app", "launch_app", "terminate_app",
+                  "screenshot", "read_log"),
     "Contacts": ("find_contacts", "create_contact", "update_contact", "undo"),
     "Shortcuts": ("list_shortcuts", "run_shortcut"),
     "Photos": ("list_albums", "find_photos", "export_photos", "set_favorite", "add_to_album", "remove_from_album"),
@@ -118,6 +124,10 @@ _READ_ACTIONS = {
     "now_playing",
     "find_playlists",
     "find_tracks",
+    "build_result",
+    "list_devices",
+    "screenshot",
+    "read_log",
 }
 
 # Change app data (or Music's player) through the app's own scripting model; they never drive the UI,
@@ -126,10 +136,11 @@ _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "cre
                        "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
                        "update_message", "create_contact", "update_contact", "schedule_reminders", "export_photos",
                        "set_favorite", "add_to_album", "remove_from_album", "change_setting", "undo",
-                       "play", "pause", "next_track", "previous_track"}
-# A shortcut can do anything its actions do, so running one is gated like run_command: the shell
-# switch and the permission profile decide, as for any other command (no new approval prompt).
-_RUN_ACTIONS = {"run_shortcut"}
+                       "play", "pause", "next_track", "previous_track",
+                       "boot", "shutdown", "erase", "install_app", "launch_app", "terminate_app"}
+# A shortcut can do anything its actions do, and a build runs the project's build scripts, so they are
+# gated like run_command: the shell switch and the permission profile decide (no new approval prompt).
+_RUN_ACTIONS = {"run_shortcut", "build", "test"}
 _RUN_TIMEOUT_S = 120.0
 # Reach other people through the app's scripting model; the person confirms each
 # one in a native panel unless they turned that off (send_approval).
@@ -144,7 +155,7 @@ _BUNDLE_IDS = {
     "Finder": "com.apple.finder", "Notes": "com.apple.Notes", "Mail": "com.apple.mail", "Calendar": "com.apple.iCal",
     "Reminders": "com.apple.reminders", "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences",
     "Messages": "com.apple.MobileSMS", "Xcode": "com.apple.dt.Xcode", "Contacts": "com.apple.AddressBook",
-    "Shortcuts": "com.apple.shortcuts", "Photos": "com.apple.Photos", "Numbers": "com.apple.iWork.Numbers",
+    "Shortcuts": "com.apple.shortcuts", "Photos": "com.apple.Photos", "Simulator": "com.apple.iphonesimulator", "Numbers": "com.apple.iWork.Numbers",
     "Keynote": "com.apple.iWork.Keynote", "Pages": "com.apple.iWork.Pages", "Music": "com.apple.Music",
 }
 
@@ -167,11 +178,13 @@ _SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
     "Xcode": {
         "aliases": ("xcode",),
         "bundle_paths": ("/Applications/Xcode.app",),
-        "native_api": "AppleScript dictionary (workspace documents, schemes, targets); xcodebuild is the stable "
-                      "command-line path for builds",
+        "native_api": "AppleScript dictionary (workspace documents, schemes, targets); xcodebuild in a background "
+                      "job for builds and tests, their result bundle read with xcresulttool",
         "tasks": {
             "inspect_project": "first_party: list_workspaces (open projects, schemes, active scheme, targets)",
-            "build_or_test": "run_command or start_background_job: xcodebuild build/test",
+            "build_or_test": "first_party: build / test start xcodebuild as a job; build_result gives errors with "
+                             "file and line, failing tests and the built app",
+            "verify_in_simulator": "first_party: the Simulator adapter installs, launches and screenshots the app",
             "inspect_window": "generic_ax: mac_observe the project window and navigator",
         },
     },
@@ -234,6 +247,7 @@ def support_matrix() -> Dict[str, Any]:
 
 
 _ACTION_WORDS = {"selection": "See what is selected", "list_workspaces": "List open projects",
+                 "build_result": "Read a build's result", "read_log": "Read the device log",
                  "plan_day": "Plan a day", "find_free_time": "Find free time", "now_playing": "See what is playing",
                  "next_track": "Skip to the next song", "previous_track": "Go back a song"}
 _HOW_WORDS = {"first_party": "Built in", "generic_ax": "By looking at the window and clicking",
@@ -2400,6 +2414,16 @@ return outText'''
     return {"ok": True, "count": len(workspaces), "workspaces": workspaces, "truncated": len(workspaces) >= limit}
 
 
+def _xcode_active_path(timeout_s: float) -> str:
+    """The project open in Xcode's front window, when no path is given; empty when Xcode is closed."""
+    try:
+        workspaces = _xcode_list_workspaces(limit=_MAX_LIMIT, timeout_s=timeout_s)["workspaces"]
+    except AppAdapterError:
+        return ""
+    active = [item for item in workspaces if item["active"] and item["path"]]
+    return str(active[0]["path"]) if active else ""
+
+
 def _settings_list(*, limit: int, timeout_s: float) -> Dict[str, Any]:
     script = f'''set rs to ASCII character 30
 set us to ASCII character 31
@@ -2673,6 +2697,8 @@ def mac_app(
     album: Optional[str] = None,
     media_type: Optional[str] = None,
     favorite: Optional[bool] = None,
+    destination: Optional[str] = None,
+    tests: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -2727,12 +2753,16 @@ def mac_app(
             return {**_base(canonical, normalized_action), "ok": False, "reason_code": exc.code,
                     "error": str(exc.detail), "retryable": False, "privacy_blocked": True}
 
-    # With running commands off, only shortcuts the owner listed in Settings › Apps can run (#195).
-    if normalized_action in _RUN_ACTIONS and not settings.allow_shell and not more.owner_allowed_shortcuts():
+    # With running commands off, only shortcuts the owner listed in Settings › Apps can run (#195);
+    # builds never do.
+    if normalized_action in _RUN_ACTIONS and not getattr(settings, "allow_shell", False) and (
+            normalized_action != "run_shortcut" or not more.owner_allowed_shortcuts()):
         return {
             **_base(canonical, normalized_action), "ok": False, "reason_code": "SHELL_DISABLED",
-            "error": "Running shortcuts is off because running commands is off (MCP_ALLOW_SHELL=false) and no "
-                     "shortcut is allowed in Settings › Apps.",
+            "error": ("Running shortcuts is off because running commands is off (MCP_ALLOW_SHELL=false) and no "
+                      "shortcut is allowed in Settings › Apps." if normalized_action == "run_shortcut" else
+                      "Building runs the project's build scripts, so it needs running commands to be allowed "
+                      "(MCP_ALLOW_SHELL=false now)."),
         }
 
     if normalized_action not in _READ_ACTIONS | _DATA_WRITE_ACTIONS | _SEND_ACTIONS | _RUN_ACTIONS | _DESKTOP_ACTIONS:
@@ -2955,7 +2985,26 @@ def mac_app(
             else:
                 payload = _messages_find_chats(query, limit=bounded, timeout_s=timeout)
         elif canonical == "Xcode":
-            payload = _xcode_list_workspaces(limit=bounded, timeout_s=timeout)
+            if normalized_action in {"build", "test"}:
+                payload = dev.start(settings, normalized_action, str(path or "").strip() or _xcode_active_path(timeout),
+                                    scheme=item_id, destination=destination, tests=tests)
+            elif normalized_action == "build_result":
+                payload = dev.result(settings, item_id)
+            else:
+                payload = _xcode_list_workspaces(limit=bounded, timeout_s=timeout)
+        elif canonical == "Simulator":
+            if normalized_action == "list_devices":
+                payload = dev.list_devices(query, limit=bounded)
+            elif normalized_action in {"boot", "shutdown", "erase"}:
+                payload = getattr(dev, normalized_action)(item_id)
+            elif normalized_action == "install_app":
+                payload = dev.install_app(item_id, path)
+            elif normalized_action in {"launch_app", "terminate_app"}:
+                payload = getattr(dev, normalized_action)(item_id, target_app)
+            elif normalized_action == "screenshot":
+                payload = dev.screenshot(item_id, path)
+            else:
+                payload = dev.read_log(item_id, query, minutes=duration_min)
         elif canonical == "Photos":
             payload = _photos(normalized_action, item_id=item_id, query=query, path=path, date_from=date_from,
                               date_to=date_to, album=album, media_type=media_type, favorite=favorite,

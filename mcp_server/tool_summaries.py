@@ -84,8 +84,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
     ),
     "mac_app": (
         "Adapters: Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Photos, Preview, Numbers, "
-        "Keynote, Pages, Music, Settings, Messages, Xcode, Mission Control; use before UI. Sends ask first. "
-        "action=capabilities."
+        "Keynote, Pages, Music, Settings, Messages, Xcode, Simulator, Mission Control; use before UI. Sends ask "
+        "first."
     ),
     "computer_plan": (
         "One bounded macOS/browser plan in a call. Step: {id:'a', tool:'mac_app', arguments:{...}}; "

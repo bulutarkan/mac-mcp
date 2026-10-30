@@ -388,9 +388,10 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
         "find_chats", "list_workspaces", "find_free_time", "find_contacts", "list_shortcuts", "plan_day",
         "list_desktops", "read_messages", "search_messages", "list_albums", "find_photos",
         "read_document", "read_table", "read_slides", "now_playing", "find_playlists", "find_tracks",
+        "build_result", "list_devices", "screenshot", "read_log",
     }
-    # A shortcut runs whatever its actions do, like a command.
-    if action == "run_shortcut":
+    # A shortcut runs whatever its actions do, and a build runs the project's build scripts: like a command.
+    if action in {"run_shortcut", "build", "test"}:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.RAW_EXECUTION, Capability.EXTERNAL_SIDE_EFFECT),
             destructive=False,
@@ -412,7 +413,8 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
                   "create_reminder", "append_to_note", "update_reminder", "update_message",
                   "create_contact", "update_contact", "schedule_reminders", "export_photos",
                   "set_favorite", "add_to_album", "remove_from_album", "change_setting",
-                  "play", "pause", "next_track", "previous_track"}:
+                  "play", "pause", "next_track", "previous_track",
+                  "boot", "shutdown", "erase", "install_app", "launch_app", "terminate_app"}:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
             destructive=False,

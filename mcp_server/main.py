@@ -1699,7 +1699,7 @@ def create_app():
         name="mac_app",
         title="Use semantic first-party macOS app adapter",
         description=(
-            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, Numbers, Keynote, Pages, Music, System Settings, Messages, Xcode and Mission Control. "
+            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, Numbers, Keynote, Pages, Music, System Settings, Messages, Xcode, Simulator and Mission Control. "
             "Common action=capabilities reports app-specific actions; app='all' lists every app's support with the "
             "reliable path per task (Slack and VS Code use generic AX). Messages: find_chats (query matches chat name, "
             "person or handle; with Messages closed it lists chats from its database, newest first, by number or "
@@ -1709,7 +1709,18 @@ def create_app():
             "only, every message carries chat_id, sender and date (attachments: name, kind, type, size and date, never "
             "the file), and need Full Disk Access for Mac MCP Messages "
             "Reader (MESSAGES_FULL_DISK_ACCESS_REQUIRED: the owner turns it on, do not work around it)|send_message "
-            "(body, plus item_id = a chat_id from find_chats or a query matching exactly one chat). Xcode: list_workspaces (projects, schemes, targets). "
+            "(body, plus item_id = a chat_id from find_chats or a query matching exactly one chat). Xcode: list_workspaces (projects, schemes, targets)|"
+            "build / test (path = .xcodeproj, .xcworkspace or package folder, default the project open in Xcode; "
+            "item_id = scheme, default the only one; destination in xcodebuild syntax, default a booted simulator, "
+            "else this Mac, else an iPhone simulator; test: optional tests = test ids for -only-testing): starts "
+            "xcodebuild as a background job (needs running commands allowed) and returns job_id; wait_jobs, then "
+            "build_result (item_id = job_id): errors and warnings with file and line, test counts and failures, and "
+            "for a build the built apps (app_path, bundle_id). DerivedData is never deleted. "
+            "Simulator (xcrun simctl; item_id = a device udid or name, default the only booted one): list_devices "
+            "(optional query)|boot (headless, waits until ready)|shutdown|erase (shut-down device only; its apps "
+            "and data go)|install_app (path = built .app)|launch_app / terminate_app (target_app = bundle id)|"
+            "screenshot (PNG path plus the text on screen, read on this Mac; optional path)|read_log (query = "
+            "process name, duration_min = minutes back, default 2). "
             "These read actions never launch the app; a closed app returns APP_NOT_RUNNING. "
             "Finder: selection (in any view)|select_file. "
             "Notes: find_notes (query; search_in = title (default), body or both: body matches return a short masked snippet; matching ignores case and accents, Turkish letters included)|open_note|create_note (title, optional body/folder/account)|append_to_note (item_id or "
@@ -1841,6 +1852,8 @@ def create_app():
         album: Optional[str] = None,
         media_type: Optional[str] = None,
         favorite: Optional[bool] = None,
+        destination: Optional[str] = None,
+        tests: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1893,6 +1906,8 @@ def create_app():
                 album=album,
                 media_type=media_type,
                 favorite=favorite,
+                destination=destination,
+                tests=tests,
             ),
         )
 

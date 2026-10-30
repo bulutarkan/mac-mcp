@@ -3914,7 +3914,7 @@ struct SettingsView: View {
         "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences", "Messages": "com.apple.MobileSMS",
         "Photos": "com.apple.Photos", "Numbers": "com.apple.Numbers,com.apple.iWork.Numbers",
         "Keynote": "com.apple.Keynote,com.apple.iWork.Keynote", "Pages": "com.apple.Pages,com.apple.iWork.Pages",
-        "Music": "com.apple.Music", "Mission Control": "com.apple.exposelauncher", "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
+        "Music": "com.apple.Music", "Simulator": "com.apple.iphonesimulator", "Mission Control": "com.apple.exposelauncher", "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
     ]
 
     /// Loading, a list (possibly empty) and an error are three different answers (#19).
