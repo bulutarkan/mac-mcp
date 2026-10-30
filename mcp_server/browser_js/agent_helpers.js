@@ -108,7 +108,12 @@ function __mcpAnimatingMs(){try{if(document.visibilityState==='hidden'||!documen
   document.getAnimations().forEach(function(a){try{if(a.playState!=='running')return;var t=a.effect.getComputedTiming();
     if(!isFinite(t.endTime)||t.endTime>2000)return;left=Math.max(left,t.endTime-(t.localTime||0));}catch(e){}});
   return Math.max(0,Math.min(1000,Math.round(left)));}catch(e){return 0;}}
-function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
+function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;if(__mcpHiddenByOpacity(el))return false;var r=__mcpTopRect(el);if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
+/* Hidden only because a box around it is at opacity 0, as a row shows its icons on hover (#386). */
+function __mcpHiddenByOpacity(el){try{return typeof el.checkVisibility==='function'&&el.checkVisibility()&&!el.checkVisibility({opacityProperty:true});}catch(e){return false;}}
+function __mcpHoverRevealed(el){if(!el||el.nodeType!==1||!__mcpHiddenByOpacity(el))return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);return r.width>=1&&r.height>=1;}
+function __mcpLabelledBy(el){var ids=el&&el.getAttribute&&el.getAttribute('aria-labelledby');if(!ids)return '';var root=(el.getRootNode&&el.getRootNode().getElementById)?el.getRootNode():document;
+  return String(ids).split(/\s+/).map(function(i){var n=i&&root.getElementById(i);return n?String(n.textContent||'').replace(/\s+/g,' ').trim():'';}).filter(Boolean).join(' ');}
 function __mcpActionable(el){
   var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();
   if(['a','button','input','textarea','select','summary','details','label'].indexOf(tag)>=0)return true;
@@ -119,7 +124,9 @@ function __mcpActionable(el){
     if(__mcpStyle(el).cursor==='pointer'){
       var parent=__mcpParent(el),parentPointer=false;try{parentPointer=!!parent&&__mcpStyle(parent).cursor==='pointer';}catch(_){}
       var pointerTag=String(el.tagName||'').toLowerCase();
-      if(!parentPointer&&['path','g','use','circle','rect','polygon','polyline'].indexOf(pointerTag)<0)return true;
+      /* Inside a clickable row a part counts on its own only when it is named (an icon with aria-label, title or aria-labelledby). */
+      var ownName=!!(el.getAttribute('aria-label')||el.getAttribute('title')||el.getAttribute('aria-labelledby'));
+      if((!parentPointer||ownName)&&['path','g','use','circle','rect','polygon','polyline'].indexOf(pointerTag)<0)return true;
     }
   }catch(e){}
   var ti=el.getAttribute('tabindex');return ti!==null&&Number(ti)>=0;
@@ -182,7 +189,7 @@ function __mcpSemanticVisible(el){
     }catch(e){}
     cur=__mcpFlatParent(cur);
   }
-  if(__mcpVisible(el))return true;
+  if(__mcpVisible(el)||__mcpHoverRevealed(el))return true;
   var role=String(__mcpRole(el)||'').toLowerCase(),tag=String(el&&el.tagName||'').toLowerCase(),type=String(el&&el.getAttribute&&el.getAttribute('type')||'').toLowerCase();
   if(['radio','checkbox','switch'].indexOf(role)<0&&!(tag==='input'&&['radio','checkbox'].indexOf(type)>=0))return false;
   var a=__mcpAssociation(el);return !a.ambiguous&&!!a.label&&__mcpVisible(a.label);
@@ -315,7 +322,7 @@ function __mcpDescribe(el,s){
   if(assoc.ambiguous)out.association_ambiguous=true;
   if(out.actionable){var rd=__mcpElementReadiness(el,'observe',0);out.ready=!!rd.ready;if(rd.reason_code)out.readiness_reason=rd.reason_code;if(rd.hit_target)out.hit_target=rd.hit_target;}
   var context=__mcpContext(el);if(context)out.context=context;
-  var aria=el.getAttribute('aria-label')||'';if(!aria&&el.getAttribute('aria-labelledby')){var lroot=(el.getRootNode&&el.getRootNode().getElementById)?el.getRootNode():document;aria=String(el.getAttribute('aria-labelledby')).split(/\s+/).map(function(i){var n=i&&lroot.getElementById(i);return n?String(n.textContent||'').replace(/\s+/g,' ').trim():'';}).filter(Boolean).join(' ');}var ph=__mcpPlaceholder(el),name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
+  var aria=el.getAttribute('aria-label')||__mcpLabelledBy(el);if(__mcpHoverRevealed(el))out.hover_revealed=true;var ph=__mcpPlaceholder(el),name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
   try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=__mcpSafeValue(el).slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(tag==='input'&&__mcpSuggests(el))out.suggests=true;if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
 }
 /* A text box that offers a list while typing (a search box, an autocomplete): marked by ARIA, or by a
@@ -374,7 +381,8 @@ function __mcpActivate(el){
   try{el.addEventListener('click',targetRecorder,{capture:true,once:true});win.addEventListener('click',windowRecorder,{capture:false,once:true});}catch(e){}
   var events=['pointerover','mouseover','pointermove','mousemove','pointerdown','mousedown'];for(var i=0;i<events.length;i++){var ev=__mcpMouseEvent(el,events[i]);if(ev)try{if(!el.dispatchEvent(ev))trace.dispatch_canceled.push(events[i]);}catch(e){}}
   try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}events=['pointerup','mouseup'];for(var j=0;j<events.length;j++){var up=__mcpMouseEvent(el,events[j]);if(up)try{if(!el.dispatchEvent(up))trace.dispatch_canceled.push(events[j]);}catch(e){}}
-  try{el.click();}finally{try{el.removeEventListener('click',targetRecorder,true);win.removeEventListener('click',windowRecorder,false);}catch(e){}}
+  /* An SVG icon (a star drawn as svg role=button) has no click(): it gets the click event itself. */
+  try{if(typeof el.click==='function')el.click();else{var ck=__mcpMouseEvent(el,'click');if(ck)el.dispatchEvent(ck);}}finally{try{el.removeEventListener('click',targetRecorder,true);win.removeEventListener('click',windowRecorder,false);}catch(e){}}
   s.lastActivationTrace=trace;return el;
 }
 function __mcpDoubleActivate(el){el=__mcpActivate(el);__mcpActivate(el);var ev=__mcpMouseEvent(el,'dblclick');if(ev)try{el.dispatchEvent(ev);}catch(e){}return el;}

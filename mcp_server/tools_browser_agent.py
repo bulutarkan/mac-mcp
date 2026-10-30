@@ -1046,6 +1046,11 @@ def _observe_payload(
             )
             payload["requested_max_elements"] = requested
             payload["_remote_js_calls"] = remote_js_calls
+            canvas = payload.get("canvas")
+            if isinstance(canvas, dict) and canvas.get("canvas_heavy") and _norm_browser(browser) != "Google Chrome":
+                # x,y clicks and hovers are Chrome-only; never point a Safari agent at them (#386).
+                canvas["hint"] = ("Controls are drawn in a canvas, which Safari cannot click into in the background. "
+                                  + _SAFARI_POINTER_RECOVERY)
             if attempt != requested:
                 payload["payload_limited"] = True
                 payload["effective_max_elements"] = attempt
@@ -2133,8 +2138,8 @@ def _select_action(
     if page_hidden:
         # Some list scripts open on the next screen refresh, which a background tab never gets.
         missed.update(reason_code="LIST_NEEDS_VISIBLE_TAB",
-                      hint="The list did not open while the tab is in the background. Show the tab "
-                           "(browser_activate_tab) and choose again, or check the option text.")
+                      hint="The list did not open while the tab is in the background. Ask the owner to show the "
+                           "tab (Show Tab in Mac MCP) and choose again, or check the option text.")
     return missed
 
 
@@ -3263,6 +3268,15 @@ return __mcpB64({{ok:true,x:r.left+r.width/2,y:r.top+r.height/2,w:r.width,h:r.he
 }})()"""
 
 
+# #386: what an agent can do in a background Safari tab instead of a hover or a click at x,y.
+_SAFARI_POINTER_RECOVERY = (
+    "In Safari act on elements, not on points: controls that show on hover are listed by browser_observe with "
+    "hover_revealed:true and are clicked by their element_id or query without a hover. Content drawn in a "
+    "canvas or a cross-origin frame needs Chrome with the Mac MCP companion; the agent cannot bring a tab forward, "
+    "the owner can with Show Tab."
+)
+
+
 def _point_check_js(observation_id: str, x: float, y: float) -> str:
     obs = json.dumps(str(observation_id or ""))
     return f"""(function(){{
@@ -3310,7 +3324,7 @@ def _point_action(
     if _norm_browser(browser) != "Google Chrome":
         return {**base, "ok": False, "error": "point_input_unsupported", "reason_code": "POINT_INPUT_UNSUPPORTED_SAFARI",
                 "message": "Coordinate input needs Chrome with the Mac MCP companion; Safari has no background pointer.",
-                "_js_calls": 0}
+                "recovery": _SAFARI_POINTER_RECOVERY, "automatic_retry": False, "_js_calls": 0}
     obs = str(action.get("observation_id") or observation_id or "")
     check = _run_json_js(settings, browser, _point_check_js(obs, x, y), window_index, tab_index, tab_handle)
     if not check.get("ok"):
@@ -3438,7 +3452,7 @@ def _gesture_action(
     if _norm_browser(browser) != "Google Chrome":
         return {**base, "ok": False, "error": "gesture_unsupported", "reason_code": "GESTURE_UNSUPPORTED_SAFARI",
                 "message": "Safari has no background pointer; hover and drag need Chrome with the Mac MCP companion.",
-                "_js_calls": 0}
+                "recovery": _SAFARI_POINTER_RECOVERY, "automatic_retry": False, "_js_calls": 0}
     js_calls = 0
 
     def center(element_id: str, scroll: bool) -> Dict[str, Any]:
@@ -6169,8 +6183,8 @@ def _safari_frame_call(browser: str, frame: Optional[str], tab_handle: Optional[
         if not target.active:
             payload = safari_frames.unavailable(
                 "Safari shows this tab's frames to Accessibility only while the tab is the one its window shows.",
-                reason="frame_tab_not_shown", hint="Bring the tab forward in its window with browser_activate_tab, "
-                "then try again; Safari itself stays in the background.")
+                reason="frame_tab_not_shown", hint="Ask the owner to show this tab in its window (Show Tab in Mac MCP), "
+                "then observe again; Safari itself stays in the background.")
         else:
             payload = call(target, selector)
         payload["frame"] = {"selector": selector, "url": payload.get("url"), "transport": "accessibility"}

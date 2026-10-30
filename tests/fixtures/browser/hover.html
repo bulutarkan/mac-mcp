@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Hover fixture</title>
+<style>
+body{font:14px system-ui;margin:0;padding:16px}
+.row{display:flex;gap:8px;align-items:center;padding:6px;border-bottom:1px solid #ddd;width:460px;cursor:pointer}
+.row span.address{flex:1}
+.row .actions{opacity:0;display:flex;gap:6px}
+.row:hover .actions{opacity:1}
+svg{width:16px;height:16px}
+</style></head>
+<body>
+<!-- #386: like an account page, each address row shows its Make primary star and Delete only on hover;
+     the row itself is clickable (cursor:pointer) and the star is an SVG named by aria-labelledby. -->
+<div class="row" onclick="record('open-'+this.dataset.who)" data-who="old"><span class="address">old@example.com</span>
+  <span class="actions">
+    <span id="star-old-name" hidden>Make primary old@example.com</span>
+    <svg role="button" tabindex="0" aria-labelledby="star-old-name" onclick="event.stopPropagation();record('star-old')"><path d="M8 1l2 5h5l-4 3 2 6-5-4-5 4 2-6-4-3h5z"/></svg>
+    <button aria-label="Delete old@example.com" onclick="event.stopPropagation();record('delete-old')">🗑</button></span></div>
+<div class="row" onclick="record('open-'+this.dataset.who)" data-who="new"><span class="address">new@example.com</span>
+  <span class="actions">
+    <span id="star-new-name" hidden>Make primary new@example.com</span>
+    <svg role="button" tabindex="0" aria-labelledby="star-new-name" onclick="event.stopPropagation();record('star-new')"><path d="M8 1l2 5h5l-4 3 2 6-5-4-5 4 2-6-4-3h5z"/></svg>
+    <button aria-label="Delete new@example.com" onclick="event.stopPropagation();record('delete-new')">🗑</button></span></div>
+<p id="log"></p>
+<script>window.__clicks=[];function record(x){window.__clicks.push(x);document.getElementById('log').textContent=window.__clicks.join(', ');}</script>
+</body></html>

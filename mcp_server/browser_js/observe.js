@@ -64,7 +64,7 @@ for(var i=0;i<all.length && (ranked || picked.length<__MAX_ELEMENTS__);i++){
     var inView=rect.width>0&&rect.height>0&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;
     rank=(focusLayer&&layer===focusLayer)?0:(layer?1:(inView?2:3));
     if(layer&&!layerOrder.has(layer))layerOrder.set(layer,i);
-    var label=String(el.getAttribute('aria-label')||el.getAttribute('title')||__mcpPlaceholder(el)||'');
+    var label=String(el.getAttribute('aria-label')||el.getAttribute('title')||__mcpLabelledBy(el)||__mcpPlaceholder(el)||'');
     if(!/^(input|textarea|select)$/i.test(el.tagName||'')&&!el.isContentEditable&&!String(el.textContent||'').replace(/[\s\u200b\u00a0]+/g,''))rank+=label?0.25:4;
   }
   picked.push({el:el,actionable:actionable,rank:rank,order:i,layer:Math.floor(rank)%4===1?layerOrder.get(layer):0});

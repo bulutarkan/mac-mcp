@@ -616,6 +616,31 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(star["ok"], star)
         self.assertEqual(["delete-bob", "star-alice"], tools.page.js("window.__clicks"))
 
+    def test_controls_shown_on_hover_are_listed_and_clicked_in_their_own_row_without_a_hover(self) -> None:
+        # #386 (live: Zoho account emails): the star and Delete show only while the row is hovered, and
+        # a background Safari tab gets no hover. They are listed as hover-revealed, named (the star by
+        # aria-labelledby, inside a clickable row), and clicked in the right row; a hover is refused with
+        # what to do instead, never faked.
+        tools = self.tools("hover.html")
+        observed = tools.observe(max_elements=60)
+        by_name = {str(e.get("aria_label") or e.get("text")): e for e in observed["elements"]}
+        for name in ("Make primary new@example.com", "Delete old@example.com"):
+            self.assertIn(name, by_name, sorted(by_name))
+            self.assertTrue(by_name[name].get("hover_revealed"), by_name[name])
+            self.assertTrue(by_name[name].get("actionable"), by_name[name])
+        self.assertFalse(tools.page.payload("(function(){" + agent._browser_state_bootstrap() +
+                         "function __mcpB64(o){return btoa(JSON.stringify(o));}"
+                         "return __mcpB64({v:__mcpVisible(document.querySelector('[aria-label=\"Delete old@example.com\"]'))});})()")["v"])
+        hover = tools.act([{"type": "hover", "element_id": by_name["Delete old@example.com"]["element_id"]}])
+        self.assertFalse(hover["ok"], hover)
+        self.assertEqual("GESTURE_UNSUPPORTED_SAFARI", hover["actions"][0]["reason_code"])
+        self.assertIn("hover_revealed", hover["actions"][0]["recovery"])
+        star = tools.act([{"type": "click", "element_id": by_name["Make primary new@example.com"]["element_id"]}])
+        self.assertTrue(star["ok"], star)
+        delete = tools.act([{"type": "click", "query": "Delete old@example.com"}])
+        self.assertTrue(delete["ok"], delete)
+        self.assertEqual(["star-new", "delete-old"], tools.page.js("window.__clicks"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.
