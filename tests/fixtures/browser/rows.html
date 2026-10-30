@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Rows fixture</title>
+<style>
+body{font:14px system-ui;margin:0;padding:16px}
+.row{display:flex;gap:8px;align-items:center;padding:6px;border-bottom:1px solid #ddd;width:420px}
+.row span{flex:1}
+</style></head>
+<body>
+<!-- #390: a row box is not a button; with several controls inside it stands for none of them. -->
+<div class="row" id="both"><span>alice@example.com</span>
+  <button aria-label="Make primary" onclick="record('star-alice')">☆</button>
+  <button aria-label="Delete" onclick="record('delete-alice')">🗑</button></div>
+<div class="row" id="reversed"><span>carol@example.com</span>
+  <button aria-label="Delete" onclick="record('delete-carol')">🗑</button>
+  <button aria-label="Make primary" onclick="record('star-carol')">☆</button></div>
+<div class="row" id="single"><span>bob@example.com</span>
+  <button aria-label="Delete" onclick="record('delete-bob')">🗑</button></div>
+<p id="log"></p>
+<script>window.__clicks=[];function record(x){window.__clicks.push(x);document.getElementById('log').textContent=window.__clicks.join(', ');}</script>
+</body></html>

@@ -2241,7 +2241,8 @@ def _wait_for_element_readiness(
         )
         js_calls += 1
         now = time.perf_counter()
-        if last.get("ready"):
+        if last.get("ready") or last.get("reason_code") == "AMBIGUOUS_ACTIVATION_TARGET":
+            # A box with several controls stays one: waiting would not choose between them (#390).
             last.update({"duration_ms": int((now - started) * 1000), "_js_calls": js_calls})
             return last
         if action.get("_list_cover_ok") and last.get("reason_code") == "ELEMENT_OCCLUDED" \
@@ -2596,6 +2597,15 @@ def _verified_dom_action(
         )
         js_calls += int(readiness.pop("_js_calls", 0))
     phases["readiness_ms"] = int((_phase_clock() - phase_started) * 1000)
+    if readiness.get("reason_code") == "AMBIGUOUS_ACTIVATION_TARGET":
+        return {
+            "ok": False, "type": typ, "element_id": element_id or None,
+            "error": "ambiguous_activation_target", "reason_code": "AMBIGUOUS_ACTIVATION_TARGET",
+            "controls": readiness.get("controls") or [],
+            "message": "That element holds several separate controls; nothing was clicked. Target the one you "
+                       "mean (its own element_id, or query with its label).",
+            "observe_again": True, "retryable": False, "_js_calls": js_calls,
+        }
     if not readiness.get("ready"):
         return {
             "ok": False,
@@ -4421,6 +4431,7 @@ _KNOWN_FAILURE_ERRORS = frozenset({
     "trusted_input_not_supported_for_action", "post_field_not_found", "post_field_ambiguous",
     "post_field_outside_item", "post_submit_not_found", "post_submit_ambiguous", "chrome_debugger_blocked",
     "stale_target_ambiguous", "choice_not_kept", "value_not_kept", "option_ambiguous",
+    "ambiguous_activation_target",
 })
 _LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
 

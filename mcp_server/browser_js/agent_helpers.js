@@ -218,6 +218,8 @@ function __mcpElementReadiness(el,kind,minStableMs){
 function __mcpElementReadinessOnce(el,kind,minStableMs){
   kind=String(kind||'click').toLowerCase();minStableMs=Math.max(0,Number(minStableMs||0));
   if(!el||el.nodeType!==1||!el.isConnected)return {ready:false,reason_code:'ELEMENT_DETACHED'};
+  if((kind==='click'||kind==='double_click'||kind==='select')&&__mcpActivationAmbiguous(el))
+    return {ready:false,reason_code:'AMBIGUOUS_ACTIVATION_TARGET',controls:__mcpInnerControls(el).slice(0,6).map(function(c){return __mcpNorm(__mcpText(c)||c.getAttribute('aria-label')||c.getAttribute('title')||'').slice(0,60);})};
   var target=(kind==='click'||kind==='double_click'||kind==='select')?__mcpActivationTarget(el):el;
   if(!target||!target.isConnected)return {ready:false,reason_code:'ELEMENT_DETACHED'};
   var s=__mcpState(),st=null,r=null,topRect=null;
@@ -331,8 +333,21 @@ function __mcpActivationTarget(el){
     if(__mcpVisible(assoc.control))return assoc.control;
   }
   if(__mcpActionable(el))return el;
+  var inner=__mcpInnerControls(el);
+  /* A box holding one control stands for it; one holding several (Star and Delete in a row) stands for none (#390). */
+  if(inner.length===1)return inner[0];if(inner.length>1)return el;
+  var p=__mcpParent(el),n=0;while(p&&n++<4){if(__mcpActionable(p))return p;p=__mcpParent(p);}return el;
+}
+/* The separate controls shown inside a box that is not a control itself; a control inside another counts once. */
+function __mcpInnerControls(el){
   var selector='button,a,input,textarea,select,summary,label,[role="button"],[role="link"],[role="combobox"],[role="option"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[tabindex],[draggable="true"]';
-  try{var child=el.querySelector(selector);if(child&&__mcpVisible(child))return child;}catch(e){}var p=__mcpParent(el),n=0;while(p&&n++<4){if(__mcpActionable(p))return p;p=__mcpParent(p);}return el;
+  var found=[];try{found=Array.from(el.querySelectorAll(selector)).filter(function(c){return __mcpVisible(c);});}catch(e){return [];}
+  return found.filter(function(c){return !found.some(function(o){return o!==c&&o.contains(c);});});
+}
+function __mcpActivationAmbiguous(el){
+  if(!el||el.nodeType!==1||__mcpActionable(el))return false;
+  var tag=String(el.tagName||'').toLowerCase();if(tag==='label'||tag==='input')return false;
+  return __mcpInnerControls(el).length>1;
 }
 function __mcpScrollIntoView(el){if(!el)return;try{el.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}var win=__mcpOwnerWindow(el),guard=0;while(win&&win!==window&&guard++<10){var frame=null;try{frame=win.frameElement;}catch(e){}if(!frame)break;try{frame.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}win=__mcpOwnerWindow(frame);}}
 function __mcpMouseEvent(el,type){var win=__mcpOwnerWindow(el),r=el.getBoundingClientRect(),x=Math.max(0,Math.round(r.left+r.width/2)),y=Math.max(0,Math.round(r.top+r.height/2)),common={bubbles:true,cancelable:true,composed:true,view:win,clientX:x,clientY:y,button:0,buttons:(type==='pointerdown'||type==='mousedown')?1:0};try{if(type.indexOf('pointer')===0&&typeof win.PointerEvent==='function')return new win.PointerEvent(type,Object.assign({pointerId:1,pointerType:'mouse',isPrimary:true},common));return new win.MouseEvent(type,common);}catch(e){return null;}}
@@ -351,6 +366,7 @@ function __mcpStartActionNetworkProbe(s,trace){
   setTimeout(function(){if(Number(s.networkProbeGeneration||0)!==gen)return;try{if(s.networkProbeFetchWrapper&&win.fetch===s.networkProbeFetchWrapper)win.fetch=s.networkProbeOriginalFetch;}catch(e){}try{if(X&&X.prototype&&s.networkProbeOpenWrapper&&X.prototype.open===s.networkProbeOpenWrapper)X.prototype.open=s.networkProbeOriginalXhrOpen;if(X&&X.prototype&&s.networkProbeSendWrapper&&X.prototype.send===s.networkProbeSendWrapper)X.prototype.send=s.networkProbeOriginalXhrSend;}catch(e){}s.networkProbeInstalled=false;s.networkProbeTrace=null;s.networkProbeFetchWrapper=null;s.networkProbeOpenWrapper=null;s.networkProbeSendWrapper=null;},250);
 }
 function __mcpActivate(el){
+  if(__mcpActivationAmbiguous(el))throw new Error('ambiguous_activation_target');
   el=__mcpActivationTarget(el);if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');__mcpScrollIntoView(el);
   var s=__mcpState(),win=__mcpOwnerWindow(el),trace={mode:'synthetic_dom',target_click_seen:false,window_click_seen:false,click_is_trusted:null,click_default_prevented:null,dispatch_canceled:[]};__mcpStartActionNetworkProbe(s,trace);
   var targetRecorder=function(ev){trace.target_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;};

@@ -592,6 +592,30 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertEqual("option_ambiguous", tie["actions"][0]["error"])
         self.assertEqual(["Choose a color", "false"], tools.page.js("[color.textContent,color.getAttribute('aria-expanded')]"))
 
+    def element_id_for(self, tools: "Tools", dom_id: str) -> str:
+        """An element_id for a node observe would not offer by itself (a plain row box)."""
+        return tools.page.js("(function(){" + agent._browser_state_bootstrap() +
+                             f"var s=__mcpState(),el=document.getElementById({json.dumps(dom_id)}),id=__mcpId(el,s);"
+                             "s.elements[id]=el;return id;})()")
+
+    def test_a_box_with_several_controls_is_clicked_for_none_of_them(self) -> None:
+        # #390: a row holding Make primary and Delete used to click whichever came first.
+        tools = self.tools("rows.html")
+        for row in ("both", "reversed"):
+            with self.subTest(row=row):
+                result = tools.act([{"type": "click", "element_id": self.element_id_for(tools, row)}])
+                self.assertFalse(result["ok"], result)
+                self.assertEqual("ambiguous_activation_target", result["actions"][0]["error"])
+                self.assertEqual(["make primary", "delete"] if row == "both" else ["delete", "make primary"],
+                                 result["actions"][0]["controls"])
+        self.assertEqual([], tools.page.js("window.__clicks"))
+        # A box with one control still stands for it, and a control named by its label is clicked as before.
+        single = tools.act([{"type": "click", "element_id": self.element_id_for(tools, "single")}])
+        self.assertTrue(single["ok"], single)
+        star = tools.act([{"type": "click", "query": "Make primary", "within": "alice@example.com"}])
+        self.assertTrue(star["ok"], star)
+        self.assertEqual(["delete-bob", "star-alice"], tools.page.js("window.__clicks"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.
