@@ -41,9 +41,12 @@ function __mcpTopRect(el){
 function __mcpStopMutationWatch(s){
   if(s.observerTimer){try{clearTimeout(s.observerTimer);}catch(e){}s.observerTimer=null;}
   var obs=s.rootObservers||[];for(var i=0;i<obs.length;i++){try{obs[i].disconnect();}catch(e){}}s.rootObservers=[];
+  /* Changes after this are not counted: an observation older than the next watch is not known to be current (#393). */
+  s.watchSince=null;
 }
 function __mcpStartMutationWatch(s,ttl){
-  __mcpStopMutationWatch(s);var roots=__mcpRoots(),bump=function(records){
+  var since=s.observerTimer?s.watchSince:null;
+  __mcpStopMutationWatch(s);s.watchSince=since||Date.now();var roots=__mcpRoots(),bump=function(records){
     for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;s.mutationRevision+=1;s.lastMutationAt=Date.now();break;}
   };
   for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}

@@ -1016,12 +1016,21 @@ var meta=known&&s.observationMeta?s.observationMeta[prev]:null;
 var compatible=!!(meta&&String(meta.scope||'')==={wanted_scope}&&Number(meta.max_elements||0)==={wanted_max});
 var previousRevision=known?Number(s.observations[prev]):null;
 var currentRevision=Number(s.mutationRevision||0);
+/* #393: an unchanged revision only proves an unchanged page while changes were being counted all along,
+   from that observation until now; a scroll, a resize or another URL shows other elements as well. */
+var view=meta&&meta.view,stale=null;
+if(!s.observerTimer||!s.watchSince||!meta||!meta.at||s.watchSince>meta.at)stale='changes_not_watched';
+else if(!view||view.sx!==scrollX||view.sy!==scrollY||view.w!==innerWidth||view.h!==innerHeight)stale='viewport_changed';
+else if(meta.url&&meta.url!==String(location.href))stale='url_changed';
+/* Still current: keep counting, so the next repeat can be answered from this observation as well. */
+if(!stale&&known&&compatible)__mcpStartMutationWatch(s,5000);
 return __mcpB64({{
   ok:true,
   known:known,
   compatible:compatible,
   /* A typed or chosen value moves no DOM node: the controls' values must match too. */
-  not_modified:known&&compatible&&previousRevision===currentRevision&&(!meta||!meta.values||meta.values===__mcpValuesFp()),
+  not_modified:known&&compatible&&!stale&&previousRevision===currentRevision&&(!meta||!meta.values||meta.values===__mcpValuesFp()),
+  stale_reason:stale,
   previous_observation_id:prev,
   dom_revision:currentRevision,
   url:String(location.href),
@@ -1243,6 +1252,7 @@ def _browser_observe_locked(
     max_elements = max(1, min(int(max_elements), _MAX_OBSERVE_ELEMENTS))
     started = time.perf_counter()
     conditional_js_calls = 0
+    conditional_stale_reason: Optional[str] = None
     if (
         previous_observation_id
         and visual == "none"
@@ -1261,6 +1271,7 @@ def _browser_observe_locked(
             tab_index=tab_index,
             tab_handle=tab_handle,
         )
+        conditional_stale_reason = conditional.get("stale_reason") if conditional.get("known") else None
         if bool(conditional.get("known")) and bool(conditional.get("not_modified")):
             out: Dict[str, Any] = {
                 "ok": True,
@@ -1368,6 +1379,8 @@ def _browser_observe_locked(
     payload["not_modified"] = False
     if previous_observation_id:
         payload["previous_observation_id"] = str(previous_observation_id)
+        if conditional_stale_reason:
+            payload["refreshed_because"] = conditional_stale_reason
     remote_js_calls = int(payload.pop("_remote_js_calls", 1) or 1) + conditional_js_calls
     visual_meta = payload.get("visual") if isinstance(payload.get("visual"), dict) else {}
     visual_bytes = int((visual_meta or {}).get("bytes") or (len(image_data) if image_data else 0))

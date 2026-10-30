@@ -654,6 +654,26 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(stale["actions"][0]["observe_again"])
         self.assertEqual([], tools.page.js("window.__deleted"))
 
+    def test_a_repeat_observe_is_cached_only_while_the_page_is_known_to_be_unchanged(self) -> None:
+        # #393: after the change watch lapsed, a new button went unnoticed and observe said not_modified.
+        tools = self.tools("rows.html")
+        tools.page.js("document.body.appendChild(Object.assign(document.createElement('div'),{style:'height:3000px'}));1")
+        first = tools.observe(max_elements=40)
+        again = tools.observe(max_elements=40, previous_observation_id=first["observation_id"])
+        self.assertTrue(again.get("not_modified"), again)  # nothing changed while it was watched
+        time.sleep(5.6)  # the watch the repeat started has lapsed
+        tools.page.js("document.body.prepend(Object.assign(document.createElement('button'),{textContent:'Added later'}));1")
+        later = tools.observe(max_elements=40, previous_observation_id=first["observation_id"])
+        self.assertFalse(later.get("not_modified"), later)
+        self.assertEqual("changes_not_watched", later.get("refreshed_because"))
+        self.assertIn("Added later", [e.get("text") for e in later["elements"]])
+        fresh = tools.observe(max_elements=40, previous_observation_id=later["observation_id"])
+        self.assertTrue(fresh.get("not_modified"), fresh)
+        tools.page.js("window.scrollTo(0,800);1")
+        scrolled = tools.observe(max_elements=40, previous_observation_id=later["observation_id"])
+        self.assertFalse(scrolled.get("not_modified"), scrolled)
+        self.assertEqual("viewport_changed", scrolled.get("refreshed_because"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.
