@@ -20,14 +20,25 @@ _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", 
 # Separates document, sheet and table in a Numbers table's item_id.
 TABLE_SEP = " › "
 
-_IWORK = {"Numbers": "com.apple.iWork.Numbers", "Keynote": "com.apple.iWork.Keynote", "Pages": "com.apple.iWork.Pages"}
+# The Creator Studio apps (2026) have new bundle ids; the classic iWork apps keep theirs. Either may be installed.
+IWORK_BUNDLE_IDS = {
+    "Numbers": ("com.apple.Numbers", "com.apple.iWork.Numbers"),
+    "Keynote": ("com.apple.Keynote", "com.apple.iWork.Keynote"),
+    "Pages": ("com.apple.Pages", "com.apple.iWork.Pages"),
+}
 
-# Every iWork script starts here: argv[0] is the bundle id. The app must be installed and running, and
-# `pick(sel)` finds an open document by name or file path (the front one when sel is empty).
+# Every iWork script starts here: argv[0] is the app's bundle ids, comma-separated. The app must be installed
+# and running, and `pick(sel)` finds an open document by name or file path (the front one when sel is empty).
 _IWORK_JS = """
 function fail(code, message) { return JSON.stringify({error: code, message: message, retryable: false}); }
 function fileOf(d) { try { var f = d.file(); return f ? String(f) : null; } catch (e) { return null; } }
-function opened(id) { try { return Application(id); } catch (e) { return null; } }
+// The running one of the installed apps, else the first installed one.
+function opened(ids) {
+  var found = [];
+  ids.split(',').forEach(function (id) { try { var a = Application(id); a.id(); found.push(a); } catch (e) {} });
+  for (var i = 0; i < found.length; i++) if (found[i].running()) return found[i];
+  return found.length ? found[0] : null;
+}
 function pick(app, sel) {
   var n = app.documents.length;
   if (!n) return null;
@@ -71,7 +82,7 @@ def _cursor(value: Optional[str], *, name: str = "cursor") -> int:
 
 
 def _bundle_id(app: str) -> str:
-    return _IWORK[app]
+    return ",".join(IWORK_BUNDLE_IDS[app])
 
 
 def _selector(item_id: Optional[str], path: Optional[str]) -> str:
@@ -255,6 +266,19 @@ function run(argv) {
   return JSON.stringify({paths: out});
 }
 """
+
+
+_INSTALLED_JS = _IWORK_JS + """
+function run(argv) { var app = opened(argv[0]); return JSON.stringify({bundle_id: app ? app.id() : null}); }
+"""
+
+
+def installed_bundle_id(app: str, *, timeout_s: float = 5.0) -> str:
+    """Which of the app's bundle ids is on this Mac (the running one first), for open_document."""
+    payload = _run_js(_INSTALLED_JS, [_bundle_id(app)], timeout_s=timeout_s, code=f"{app.upper()}_LIST_FAILED")
+    if not payload.get("bundle_id"):
+        raise AppAdapterError("APP_NOT_INSTALLED", f"{app} is not installed on this Mac.", retryable=False)
+    return str(payload["bundle_id"])
 
 
 def document_paths(app: str, *, timeout_s: float = 3.0) -> List[str]:

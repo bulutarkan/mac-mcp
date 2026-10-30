@@ -3912,8 +3912,9 @@ struct SettingsView: View {
         "Finder": "com.apple.finder", "Notes": "com.apple.Notes", "Mail": "com.apple.mail", "Calendar": "com.apple.iCal",
         "Reminders": "com.apple.reminders", "Contacts": "com.apple.AddressBook", "Shortcuts": "com.apple.shortcuts",
         "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences", "Messages": "com.apple.MobileSMS",
-        "Photos": "com.apple.Photos", "Numbers": "com.apple.iWork.Numbers", "Keynote": "com.apple.iWork.Keynote",
-        "Pages": "com.apple.iWork.Pages", "Music": "com.apple.Music", "Mission Control": "com.apple.exposelauncher", "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
+        "Photos": "com.apple.Photos", "Numbers": "com.apple.Numbers,com.apple.iWork.Numbers",
+        "Keynote": "com.apple.Keynote,com.apple.iWork.Keynote", "Pages": "com.apple.Pages,com.apple.iWork.Pages",
+        "Music": "com.apple.Music", "Mission Control": "com.apple.exposelauncher", "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
     ]
 
     /// Loading, a list (possibly empty) and an error are three different answers (#19).
@@ -4007,9 +4008,12 @@ struct SettingsView: View {
         }
     }
 
-    private func appIcon(_ bundleId: String) -> NSImage {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-            return NSWorkspace.shared.icon(forFile: url.path)
+    /// The first installed app of a comma-separated list (the iWork apps have a newer and an older bundle id).
+    private func appIcon(_ bundleIds: String) -> NSImage {
+        for bundleId in bundleIds.split(separator: ",") {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: String(bundleId)) {
+                return NSWorkspace.shared.icon(forFile: url.path)
+            }
         }
         return NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
     }

@@ -195,13 +195,37 @@ class NumbersTests(unittest.TestCase):
             target.mkdir()  # iWork documents can be packages
             with patch("mcp_server.app_adapters.subprocess.run",
                        return_value=subprocess.CompletedProcess([], 0, "", "")) as opened, \
+                    patch("mcp_server.app_adapters_docs.installed_bundle_id", return_value="com.apple.Numbers"), \
                     patch("mcp_server.app_adapters_docs.document_paths", return_value=[str(target.resolve())]), \
                     patch("mcp_server.app_adapters._focus_begin", return_value=None), \
                     patch("mcp_server.app_adapters._focus_finish", return_value={"status": "preserved"}):
                 result = mac_app(SETTINGS, app="Numbers", action="open_document", path=str(target))
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["verified"])
-        self.assertEqual(["open", "-g", "-a", "Numbers"], opened.call_args.args[0][:4])
+        self.assertEqual(["open", "-g", "-b", "com.apple.Numbers"], opened.call_args.args[0][:4])
+
+    def test_scripts_get_both_bundle_ids(self) -> None:
+        # The Creator Studio apps (com.apple.Numbers) and the classic iWork ones (com.apple.iWork.Numbers).
+        with patch("mcp_server.app_adapters_docs._run_js", return_value={"documents": [], "total": 0}) as run:
+            mac_app(SETTINGS, app="Numbers", action="list_documents")
+        self.assertEqual("com.apple.Numbers,com.apple.iWork.Numbers", run.call_args.args[1][0])
+
+    def test_an_excluded_bundle_id_blocks_either_version(self) -> None:
+        from mcp_server import privacy_policy
+
+        rules = {"paused": False, "excluded_apps": ["com.apple.keynote"], "blocked_categories": []}
+        with patch.object(privacy_policy, "policy", return_value=rules), \
+                patch("mcp_server.app_adapters_docs._run_js") as run:
+            result = mac_app(SETTINGS, app="Keynote", action="list_documents")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result.get("privacy_blocked"))
+        run.assert_not_called()
+
+    def test_installed_bundle_id_says_when_neither_is_installed(self) -> None:
+        with patch("mcp_server.app_adapters_docs._run_js", return_value={"bundle_id": None}):
+            with self.assertRaises(AppAdapterError) as caught:
+                docs.installed_bundle_id("Pages")
+        self.assertEqual("APP_NOT_INSTALLED", caught.exception.code)
 
 
 class KeynotePagesTests(unittest.TestCase):

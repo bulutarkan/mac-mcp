@@ -2179,7 +2179,9 @@ def _open_document(app: str, path: str, *, preserve_focus: bool, timeout_s: floa
     args = ["open"]
     if preserve_focus:
         args.append("-g")
-    args.extend(["-a", app, str(target)])
+    # An iWork app is opened by the bundle id that is installed: its name differs between versions.
+    args.extend(["-a", "Preview"] if app == "Preview" else ["-b", docs.installed_bundle_id(app)])
+    args.append(str(target))
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=max(1.0, min(timeout_s, 10.0)))
     except subprocess.TimeoutExpired as exc:
@@ -2720,7 +2722,7 @@ def mac_app(
         from . import privacy_policy
 
         try:
-            privacy_policy.check_app(canonical, _BUNDLE_IDS[canonical])
+            privacy_policy.check_app(canonical, _BUNDLE_IDS[canonical], *docs.IWORK_BUNDLE_IDS.get(canonical, ()))
         except privacy_policy.PrivacyBlocked as exc:
             return {**_base(canonical, normalized_action), "ok": False, "reason_code": exc.code,
                     "error": str(exc.detail), "retryable": False, "privacy_blocked": True}
