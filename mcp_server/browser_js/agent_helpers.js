@@ -47,7 +47,12 @@ function __mcpStopMutationWatch(s){
 function __mcpStartMutationWatch(s,ttl){
   var since=s.observerTimer?s.watchSince:null;
   __mcpStopMutationWatch(s);s.watchSince=since||Date.now();var roots=__mcpRoots(),bump=function(records){
-    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;s.mutationRevision+=1;s.lastMutationAt=Date.now();break;}
+    var counted=false,list=s.recentMutations=s.recentMutations||[],now=Date.now();
+    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;
+      if(!counted){s.mutationRevision+=1;s.lastMutationAt=now;counted=true;}
+      /* Where it happened, so an action is credited only with changes near it (#391). */
+      if(list.length<400||j<8){list.push({at:now,node:rec.target,added:Array.prototype.slice.call(rec.addedNodes||[],0,3)});}}
+    if(list.length>200)s.recentMutations=list.slice(-120);
   };
   for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}
   s.observerTimer=setTimeout(function(){__mcpStopMutationWatch(s);},Math.max(500,Math.min(Number(ttl||3000),8000)));
@@ -375,8 +380,23 @@ function __mcpStartActionNetworkProbe(s,trace){
   }
   setTimeout(function(){if(Number(s.networkProbeGeneration||0)!==gen)return;try{if(s.networkProbeFetchWrapper&&win.fetch===s.networkProbeFetchWrapper)win.fetch=s.networkProbeOriginalFetch;}catch(e){}try{if(X&&X.prototype&&s.networkProbeOpenWrapper&&X.prototype.open===s.networkProbeOpenWrapper)X.prototype.open=s.networkProbeOriginalXhrOpen;if(X&&X.prototype&&s.networkProbeSendWrapper&&X.prototype.send===s.networkProbeSendWrapper)X.prototype.send=s.networkProbeOriginalXhrSend;}catch(e){}s.networkProbeInstalled=false;s.networkProbeTrace=null;s.networkProbeFetchWrapper=null;s.networkProbeOpenWrapper=null;s.networkProbeSendWrapper=null;},250);
 }
+/* A change counts as the effect of an action only near it: in its row, form, card or dialog, or four boxes up;
+   or a dialog, alert or status message added anywhere. A clock or a feed elsewhere is not its effect (#391).
+   null: no record of where changes happened. */
+function __mcpRelatedMutation(el,since){
+  var s=__mcpState(),list=s.recentMutations;if(!list||!el)return null;
+  var scope=null;try{scope=el.closest('form,dialog,[role=dialog],li,tr,article,section,[role=row],[role=listitem],[role=tabpanel]');}catch(e){}
+  var up=el;for(var i=0;i<4&&up&&up.parentElement&&up.parentElement!==document.body&&up.parentElement!==document.documentElement;i++)up=up.parentElement;
+  function near(n){return !!n&&(n===el||(el.contains&&el.contains(n))||(scope&&scope.contains(n))||(up&&up.contains(n)));}
+  function notice(n){if(!n||n.nodeType!==1)return false;var role=String(n.getAttribute('role')||''),cls=String(n.className||'');
+    return /^(dialog|alertdialog|alert|status)$/.test(role)||!!n.getAttribute('aria-live')||String(n.tagName).toLowerCase()==='dialog'||/toast|snackbar|notification|modal/i.test(cls);}
+  for(var j=list.length-1;j>=0;j--){var m=list[j];if(m.at<since)break;if(near(m.node))return true;
+    for(var k=0;k<m.added.length;k++)if(notice(m.added[k])||near(m.added[k]))return true;}
+  return false;
+}
 function __mcpActivate(el){
   if(__mcpActivationAmbiguous(el))throw new Error('ambiguous_activation_target');
+  __mcpState().lastActivationAt=Date.now();
   el=__mcpActivationTarget(el);if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');__mcpScrollIntoView(el);
   var s=__mcpState(),win=__mcpOwnerWindow(el),trace={mode:'synthetic_dom',target_click_seen:false,window_click_seen:false,click_is_trusted:null,click_default_prevented:null,dispatch_canceled:[]};__mcpStartActionNetworkProbe(s,trace);
   var targetRecorder=function(ev){trace.target_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;};

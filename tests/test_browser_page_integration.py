@@ -674,6 +674,37 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertFalse(scrolled.get("not_modified"), scrolled)
         self.assertEqual("viewport_changed", scrolled.get("refreshed_because"))
 
+    def test_a_choice_the_page_undoes_is_not_reported_as_made(self) -> None:
+        # #391 (a): a change handler puts the old value back; a custom list closes without taking the choice.
+        tools = self.tools("outcomes.html")
+        native = tools.act([{"type": "select", "query": "Size", "option": "Large"}])
+        self.assertFalse(native["ok"], native)
+        self.assertEqual("choice_not_kept", native["actions"][0]["error"])
+        custom = tools.act([{"type": "select", "query": "Tier", "option": "Gold"}])
+        self.assertFalse(custom["ok"], custom)
+        self.assertEqual("choice_not_kept", custom["actions"][0]["error"])
+        self.assertEqual(["Small", "Basic"], tools.page.js("[size.value,tier.textContent]"))
+
+    def test_a_change_elsewhere_on_the_page_is_not_a_click_effect(self) -> None:
+        # #391 (c): a clock elsewhere changes the DOM all the time; a button that does nothing has no effect.
+        tools = self.tools("outcomes.html")
+        time.sleep(0.4)
+        nothing = tools.act([{"type": "click", "query": "Does nothing"}])
+        self.assertFalse(nothing["ok"], nothing)
+        self.assertEqual("action_no_effect", nothing["actions"][0]["error"])
+        counted = tools.act([{"type": "click", "query": "Count"}])
+        self.assertTrue(counted["ok"], counted)
+
+    def test_an_earlier_step_navigation_does_not_satisfy_a_later_url_change(self) -> None:
+        # #391 (d): the link moves to page B; the next click does nothing, so its url_change must not hold.
+        tools = self.tools("outcomes.html")
+        batch = tools.act([{"type": "click", "query": "Go to page B"},
+                           {"type": "click", "query": "Does nothing", "expect": {"url_change": True, "timeout_s": 1}}])
+        self.assertFalse(batch["ok"], batch)
+        self.assertTrue(tools.page.js("location.hash==='#/page-b'"))
+        self.assertTrue(any(a.get("_expect_for") is not None or a.get("for") == "url_change" for a in batch["actions"])
+                        or batch.get("error"), batch)
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.

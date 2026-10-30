@@ -1838,9 +1838,11 @@ if((el.tagName||'').toLowerCase()==='select'){{
   if(!chosen) return __mcpB64({{ok:false,error:'option_not_found',native:true,element_id:eid}});
   el.value=chosen.value;
   try{{el.dispatchEvent(new Event('input',{{bubbles:true}}));el.dispatchEvent(new Event('change',{{bubbles:true}}));}}catch(e){{}}
-  return __mcpB64({{ok:true,native:true,selected:String(chosen.text||chosen.value),element_id:eid}});
+  return __mcpB64({{ok:true,native:true,selected:String(chosen.text||chosen.value),value:String(chosen.value),element_id:eid}});
 }}
 __mcpScrollIntoView(el);
+/* What the control showed before the choice, to tell a choice the page kept from one it undid (#391). */
+s.selectBefore=s.selectBefore||{{}};s.selectBefore[eid]={{text:__mcpText(el),value:String(el.value==null?'':el.value)}};
 /* The lists already shown before the press: one that appears after it is the list this control opened. */
 s.popupsBefore=s.popupsBefore||{{}};
 s.popupsBefore[eid]=__mcpQueryAll({json.dumps(_POPUP_SELECTOR)}).filter(function(p){{return __mcpVisible(p);}});
@@ -1919,6 +1921,27 @@ var txt=__mcpText(chosen);
 __mcpScrollIntoView(chosen);
 __mcpActivate(chosen);
 return __mcpB64({{ok:true,found:true,selected:txt,tag:(chosen.tagName||'').toLowerCase(),role:chosen.getAttribute('role')||'',list:how}});
+}})()'''
+
+
+def _select_kept_js(element_id: str, chosen: Any, native_value: Optional[str] = None) -> str:
+    """Whether the page kept a choice (#391): a native select still holds the value; a control that shows
+    its choice (a button or combobox box) shows it, or shows what it did before. kept=null: cannot tell."""
+    eid = json.dumps(str(element_id or ""))
+    wanted = json.dumps(str(chosen if chosen is not None else ""))
+    value = json.dumps(native_value)
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),el=s.elements[{eid}],native={value};
+if(!el||!el.isConnected)return __mcpB64({{ok:true,kept:null}});
+if(native!==null)return __mcpB64({{ok:true,kept:String(el.value)===native,now:String(el.value)}});
+var tag=String(el.tagName||'').toLowerCase();
+if(tag==='input'||tag==='textarea'||el.isContentEditable)return __mcpB64({{ok:true,kept:null}});
+var now=__mcpNorm(__mcpText(el)),want=__mcpNorm({wanted}),was=(s.selectBefore||{{}})[{eid}];
+if(want&&now.indexOf(want)>=0)return __mcpB64({{ok:true,kept:true}});
+if(was&&__mcpNorm(was.text)===now&&now!==want)return __mcpB64({{ok:true,kept:false,now:__mcpText(el).slice(0,120)}});
+return __mcpB64({{ok:true,kept:null}});
 }})()'''
 
 
@@ -2078,9 +2101,22 @@ def _select_action(
         prep.update({"type": "select", "_js_calls": js_calls, "duration_ms": int((time.perf_counter()-started)*1000)})
         return prep
     if prep.get("native"):
+        # A change handler can put the old value back: the choice counts once it is still there (#391).
+        cancellable_sleep(0.15)
+        kept = _run_json_js(settings, browser, _select_kept_js(element_id, option, str(prep.get("value") or "")),
+                            window_index, tab_index, tab_handle)
+        js_calls += 1
+        if kept.get("kept") is False:
+            return {
+                "ok": False, "type": "select", "element_id": element_id, "native": True,
+                "error": "choice_not_kept", "reason_code": "SELECT_CHOICE_NOT_KEPT", "selected": prep.get("selected"),
+                "now": kept.get("now"), "automatic_retry": False,
+                "hint": "The page put another value back after the choice; observe the field before choosing again.",
+                "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+            }
         return {
             "ok": True, "type": "select", "element_id": element_id,
-            "selected": prep.get("selected"), "native": True,
+            "selected": prep.get("selected"), "native": True, "verified": True,
             "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
         }
     reopened = False
@@ -2118,9 +2154,22 @@ def _select_action(
                 elif (time.perf_counter() - stable_since) * 1000 >= stable_ms:
                     break
                 cancellable_sleep(0.06)
+            kept = _run_json_js(settings, browser, _select_kept_js(element_id, found.get("selected") or option),
+                                window_index, tab_index, tab_handle)
+            js_calls += 1
+            if kept.get("kept") is False:
+                return {
+                    "ok": False, "type": "select", "element_id": element_id, "native": False,
+                    "error": "choice_not_kept", "reason_code": "SELECT_CHOICE_NOT_KEPT",
+                    "selected": found.get("selected"), "now": kept.get("now"), "automatic_retry": False,
+                    "hint": "The option was pressed but the field still shows what it did before; observe it before "
+                            "choosing again.",
+                    "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+                }
             return {
                 "ok": True, "type": "select", "element_id": element_id,
                 "selected": found.get("selected"), "native": False,
+                **({"verified": True} if kept.get("kept") else {}),
                 "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
             }
         if found.get("ambiguous"):
@@ -2284,12 +2333,12 @@ def _element_effect_state_js(element_id: str) -> str:
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
 var s=__mcpState(),el=__mcpRecoverElement({eid},s);
-if(!el) return __mcpB64({{ok:true,connected:false,url:location.href,title:document.title,dom_revision:s.mutationRevision,modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:Number(s.lastActivationTrace&&s.lastActivationTrace.network_count||0),activation_trace:s.lastActivationTrace||null}});
+if(!el) return __mcpB64({{ok:true,connected:false,related_mutation:null,url:location.href,title:document.title,dom_revision:s.mutationRevision,modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:Number(s.lastActivationTrace&&s.lastActivationTrace.network_count||0),activation_trace:s.lastActivationTrace||null}});
 var tag=String(el.tagName||'').toLowerCase(),role=__mcpRole(el),value='',text='';
 try{{value=('value' in el)?__mcpSafeValue(el):'';}}catch(e){{}}
 try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
 var focused=false;try{{focused=!!(el.ownerDocument&&el.ownerDocument.activeElement===el);}}catch(e){{}}
-return __mcpB64({{ok:true,connected:!!el.isConnected,url:location.href,title:document.title,dom_revision:s.mutationRevision,tag:tag,role:role,value:value,text:text,
+return __mcpB64({{ok:true,connected:!!el.isConnected,related_mutation:__mcpRelatedMutation(el,Number(s.lastActivationAt||0)),url:location.href,title:document.title,dom_revision:s.mutationRevision,tag:tag,role:role,value:value,text:text,
 checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),focused:focused,modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:Number(s.lastActivationTrace&&s.lastActivationTrace.network_count||0),activation_trace:s.lastActivationTrace||null}});
 }})()'''
 
@@ -2386,7 +2435,7 @@ if(eid){{el=__mcpRecoverElement(eid,s);if(!el)return __mcpB64({{ok:false,error:'
 else{{el=document.activeElement;while(el&&el.shadowRoot&&el.shadowRoot.activeElement)el=el.shadowRoot.activeElement;}}
 if(!el||el===document.body||el===document.documentElement)return __mcpB64({{ok:false,error:'no_focused_element',reason_code:'DOM_KEY_TARGET_REQUIRED',observe_again:true}});
 __mcpFlushMutations(s);__mcpStartMutationWatch(s,3000);
-var before=__mcpEffectState(el),revision=s.mutationRevision,url=location.href,title=document.title;
+var before=__mcpEffectState(el),revision=s.mutationRevision,url=location.href,title=document.title;s.lastActivationAt=Date.now();
 try{{if(el.ownerDocument.activeElement!==el)el.focus({{preventScroll:true}});}}catch(e){{}}
 var win=__mcpOwnerWindow(el);
 function make(type){{
@@ -2467,21 +2516,29 @@ def _dom_key_action(
             )
             js_calls += 1
         except HTTPException:
-            result.update({"effect_observed": True, "verification": "async_navigation"})
-            break
+            moved = _moved_after_lost_page(settings, browser, window_index, tab_index, tab_handle, before.get("url"))
+            js_calls += 1
+            if moved is None:
+                result.update(_OUTCOME_UNKNOWN)
+                break
+            if moved:
+                result.update({"effect_observed": True, "verification": "async_navigation"})
+                break
+            continue
         if _effect_changed(before, post):
             result.update({"effect_observed": True, "verification": "state_changed"})
-        elif before_revision is not None and post.get("dom_revision") != before_revision:
+        elif (before_revision is not None and post.get("dom_revision") != before_revision
+              and post.get("related_mutation") is not False):
             result.update({"effect_observed": True, "verification": "dom_mutated"})
         if result["effect_observed"]:
             compact_state = post
             break
-    if not result["effect_observed"] and (result["keydown_handled"] or result["form_submitted"]):
+    if not result["effect_observed"] and not result.get("outcome_unknown") and (result["keydown_handled"] or result["form_submitted"]):
         result.update({
             "effect_observed": True,
             "verification": "form_submitted" if result["form_submitted"] else "keydown_handled_by_page",
         })
-    if not result["effect_observed"]:
+    if not result["effect_observed"] and not result.get("outcome_unknown"):
         result.update({
             "ok": False, "error": "action_no_effect", "reason_code": "ACTION_NO_EFFECT",
             "verification": "no_effect_after_bounded_wait", "observe_again": True, "automatic_retry": False,
@@ -2494,6 +2551,30 @@ def _dom_key_action(
     if compact_state is not None:
         result["_compact_state"] = compact_state
     return result
+
+
+def _moved_after_lost_page(
+    settings: Settings, browser: str, window_index: int, tab_index: Optional[int], tab_handle: Optional[str],
+    before_url: Optional[str],
+) -> Optional[bool]:
+    """After the page stopped answering during verification (#391): True when the tab now shows another
+    URL, False when the same page answers again, None when it still cannot be read. A lost bridge, a 403
+    or a timeout alone is no proof that the action navigated."""
+    cancellable_sleep(0.3)
+    try:
+        state = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index, tab_handle)
+    except HTTPException:
+        return None
+    url = state.get("url")
+    return bool(before_url is not None and url and url != before_url)
+
+
+_OUTCOME_UNKNOWN = {
+    "ok": False, "effect_observed": False, "error": "action_outcome_unknown", "reason_code": "ACTION_OUTCOME_UNKNOWN",
+    "verification": "verification_unavailable", "outcome_unknown": True, "automatic_retry": False,
+    "observe_again": True,
+    "reason": "The action was sent, then the page could not be read to see what it did. Observe before acting again.",
+}
 
 
 def _effect_changed(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
@@ -2872,9 +2953,11 @@ def _verified_dom_action(
                     or (before_url is not None and post.get("url") != before_url)
                     or (before_title is not None and post.get("title") != before_title)
                 )
+                # A change elsewhere on the page (a clock, a feed) is not this click's effect (#391).
                 dom_progressed = (
                     page_was_quiet and before_revision is not None
                     and post.get("dom_revision") is not None and post.get("dom_revision") != before_revision
+                    and post.get("related_mutation") is not False
                 )
                 if progressed or dom_progressed:
                     result["effect_observed"] = True
@@ -2886,14 +2969,21 @@ def _verified_dom_action(
                     compact_state = post
                     break
             except HTTPException:
-                # Navigation can invalidate the previous document while the deferred click
-                # is taking effect. Losing that document is itself evidence of progress.
-                result["effect_observed"] = True
-                result["verification"] = "async_navigation"
-                result.pop("observe_again", None)
-                break
+                # Navigation can drop the old document while the click takes effect, but so can a lost
+                # bridge or a timeout: only another URL afterwards counts as the click's effect (#391).
+                moved = _moved_after_lost_page(settings, browser, window_index, tab_index, tab_handle, before_url)
+                js_calls += 1
+                if moved is None:
+                    result.update(_OUTCOME_UNKNOWN)
+                    break
+                if moved:
+                    result["effect_observed"] = True
+                    result["verification"] = "async_navigation"
+                    result.pop("observe_again", None)
+                    break
+                continue
 
-        if not result.get("effect_observed"):
+        if not result.get("effect_observed") and not result.get("outcome_unknown"):
             result.update({
                 "ok": False,
                 "error": "action_no_effect",
@@ -5666,12 +5756,26 @@ def _browser_act_locked(
     typ = ""
     # When each action began (epoch ms): expect download matches files from the start of its action.
     action_started_ms: Optional[int] = None
+    # #391: a url_change wait (or expect) compares with the URL just before the action it follows, not with
+    # the URL the whole batch started on: an earlier step's navigation is not the later step's effect.
+    url_baselines: Dict[int, str] = {}
     try:
-        for action in actions:
+        for position, action in enumerate(actions):
             if not isinstance(action, dict):
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object.")
             previous_started_ms, action_started_ms = action_started_ms, int(time.time() * 1000)
             typ = str(action.get("type") or "").lower().replace("-", "_")
+            following = actions[position + 1] if position + 1 < len(actions) else None
+            if (
+                typ != "wait" and isinstance(following, dict)
+                and str(following.get("type") or "").lower() == "wait"
+                and str(following.get("for") or following.get("condition") or "").lower().strip() == "url_change"
+            ):
+                if not flush_pending():
+                    break
+                baseline = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index, tab_handle)
+                internal_js_calls += 1
+                url_baselines[position + 1] = str(baseline.get("url") or initial_url)
             in_flight = []
             resolved_target: Optional[Dict[str, Any]] = None
             work_action = dict(action)
@@ -5923,7 +6027,7 @@ def _browser_act_locked(
                             action,
                             window_index,
                             tab_index,
-                            initial_url,
+                            url_baselines.get(position, initial_url),
                             tab_handle,
                         )
                     wait_result.pop("_compact_state", None)

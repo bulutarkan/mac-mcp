@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Outcomes fixture</title>
+<style>body{font:14px system-ui;margin:0;padding:16px}.row{margin:10px 0}</style></head>
+<body>
+<!-- #391: results that only look like success. -->
+<header><span id="clock">0</span></header>
+<div class="row"><label for="size">Size</label>
+  <select id="size"><option>Small</option><option>Large</option></select></div>
+<div class="row"><span id="tier-label">Tier</span>
+  <button type="button" id="tier" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="tier-list"
+          aria-labelledby="tier-label">Basic</button>
+  <ul role="listbox" id="tier-list" hidden><li role="option">Basic</li><li role="option">Gold</li></ul></div>
+<div class="row"><button type="button" id="nothing">Does nothing</button></div>
+<div class="row"><button type="button" id="counter" onclick="this.parentNode.querySelector('output').textContent++">Count</button> <output>0</output></div>
+<div class="row"><a href="#/page-b" id="go">Go to page B</a></div>
+<script>
+// A clock elsewhere on the page changes the DOM all the time.
+setInterval(function(){var c=document.getElementById('clock');c.textContent=Number(c.textContent)+1;},700);
+// The page puts the old size back right after a change, as some forms refuse a choice.
+var size=document.getElementById('size');
+size.addEventListener('change',function(){setTimeout(function(){size.value='Small';},30);});
+// The tier list closes on a choice but never takes it.
+var tier=document.getElementById('tier'),list=document.getElementById('tier-list');
+tier.addEventListener('click',function(){var open=list.hidden;list.hidden=!open;tier.setAttribute('aria-expanded',String(open));});
+Array.from(list.children).forEach(function(o){o.addEventListener('click',function(){list.hidden=true;tier.setAttribute('aria-expanded','false');});});
+</script>
+</body></html>
