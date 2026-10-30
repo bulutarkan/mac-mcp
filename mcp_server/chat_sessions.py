@@ -681,7 +681,9 @@ class Chat:
             item["rev"] = self.seq
         else:
             self.meta["rev"] = self.seq
-        if touch:  # pinning or archiving is not using the chat: it keeps its place and its retention clock
+        # Pinning, archiving, opening it and the agent's own session news are not using the chat: it keeps its
+        # place in the list, its date and its retention clock (#387).
+        if touch:
             self.meta["updated_at"] = _now()
         # Wake whoever streams this chat (the app's event stream), and the chat list's stream.
         waiters, self.waiters = self.waiters, []
@@ -1239,7 +1241,7 @@ class ChatHost:
                 self._set_config(chat, [])
             await self._apply_choices(chat)
             chat.meta.pop("agent_error", None)
-            chat.bump()
+            chat.bump(touch=False)
             chat.save()
 
     async def _open_session(self, chat: Chat, init: Dict[str, Any], servers: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1318,7 +1320,7 @@ class ChatHost:
         else:
             if chat.turn is None or chat.turn.done():
                 self._arm_idle(chat)
-        chat.bump()
+        chat.bump(touch=False)
         chat.save()
 
     def connect(self, chat_id: str) -> Dict[str, Any]:
@@ -1415,10 +1417,10 @@ class ChatHost:
             title = str(update.get("title") or "").strip()
             if title and not chat.meta.get("titled"):
                 chat.meta["title"] = _cut(title, MAX_TITLE)
-                chat.bump()
+                chat.bump(touch=False)
         elif kind == "config_option_update":
             self._set_config(chat, update.get("configOptions"))
-            chat.bump()
+            chat.bump(touch=False)
         elif kind == "available_commands_update":
             commands = []
             for command in update.get("availableCommands") or []:
@@ -1428,15 +1430,15 @@ class ChatHost:
                                      "description": _cut(str(command.get("description") or ""), 200),
                                      "hint": _cut(str(hint or ""), 80)})
             chat.meta["commands"] = commands[:500]  # Claude lists its skills as commands too
-            chat.bump()
+            chat.bump(touch=False)
         elif kind == "current_mode_update":
             for option in chat.meta.get("config") or []:
                 if option["category"] == "mode":
                     option["current"] = str(update.get("currentModeId") or option["current"])
-            chat.bump()
+            chat.bump(touch=False)
         elif kind == "usage_update":
             chat.meta["context"] = {"used": int(update.get("used") or 0), "size": int(update.get("size") or 0)}
-            chat.bump()
+            chat.bump(touch=False)
         else:
             return
         self._schedule_save(chat)

@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -795,6 +796,40 @@ class ChatHostTest(unittest.TestCase):
         self.assertIs(state["chat"]["takes_images"], True)  # the fake agent says promptCapabilities.image
         self.assertIs(without, False)
         self.assertNotIn("takes_images", json.loads((chat_sessions.chats_root() / created["id"] / "chat.json").read_text()))
+
+    def test_opening_a_chat_keeps_its_date_and_place_until_it_is_used(self):
+        async def first():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "hello")
+            await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return chat_id
+
+        chat_id = self.run_async(first())
+        record = chat_sessions.chats_root() / chat_id / "chat.json"
+        meta = json.loads(record.read_text())
+        earlier = time.time() - 3600  # used an hour ago (well inside chat retention)
+        meta["updated_at"] = earlier
+        record.write_text(json.dumps(meta))
+        chat_sessions.reset_host_for_tests()
+
+        async def reopen():
+            host = chat_sessions.get_host()
+            host.connect(chat_id)  # what opening the chat in the app does (#387)
+            await host._chats[chat_id].warming
+            opened = host.read(chat_id)["chat"]
+            saved = json.loads(record.read_text())["updated_at"]
+            await host.prompt(chat_id, "again")
+            used = (await self.wait_idle(host, chat_id))["chat"]
+            await host.shutdown()
+            return opened, saved, used
+
+        opened, saved, used = self.run_async(reopen())
+        self.assertTrue(opened["commands"])  # the agent did start and send its session news
+        self.assertEqual(opened["updated_at"], earlier)
+        self.assertEqual(saved, earlier)
+        self.assertGreater(used["updated_at"], earlier)
 
     def test_rename_keeps_the_owner_title_and_commands_are_listed(self):
         async def scenario():
