@@ -717,6 +717,24 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertEqual("ELEMENT_UNSTABLE", busy["actions"][0].get("reason_code"))
         self.assertEqual(0, tools.page.js("window.__busyClicks"))
 
+    def test_the_background_screenshot_loads_on_a_page_with_an_amd_loader(self) -> None:
+        # Live (Instagram, a background Safari tab): the page defines define.amd, so html2canvas registered in
+        # its module system, window.html2canvas never appeared and the screenshot failed to start.
+        tools = self.tools("form.html")
+        tools.page.js("window.__amdCalls=0;window.define=function(){window.__amdCalls++;};window.define.amd=true;1")
+        tools.page.js(agent._dom_rasterizer_source())
+        self.assertEqual(["function", 0], tools.page.js("[typeof window.html2canvas,window.__amdCalls]"))
+        tools.page.js(f"window.{agent._DOM_RASTERIZER_GLOBAL}=window.html2canvas;1")
+        tools.page.js(agent._dom_capture_start_js("viewport", None, "__macMcpVisualCapture_amd"))
+        state = {}
+        for _ in range(100):
+            state = json.loads(tools.page.js(agent._dom_capture_status_js("__macMcpVisualCapture_amd", 0)))
+            if state.get("status") != "running":
+                break
+            time.sleep(0.1)
+        self.assertEqual("done", state.get("status"), state.get("error"))
+        self.assertTrue(str(state.get("data") or "").startswith("data:image/jpeg"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.

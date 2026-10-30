@@ -430,7 +430,10 @@ def _dom_rasterizer_source() -> str:
                     "DOM screenshot rasterizer does not match the expected html2canvas build.",
                 )
             source = source.replace(original, patched)
-        source = _TRUSTED_TYPES_PRELUDE + source
+        # A page with an AMD loader (Instagram: define.amd) or CommonJS globals would take html2canvas into its
+        # own module system and window.html2canvas would never appear; in this scope the library always
+        # registers on the window, and the page's own define is left alone.
+        source = _TRUSTED_TYPES_PRELUDE + "(function(define,module,exports){\n" + source + "\n}).call(window);"
         _DOM_RASTERIZER_RUNTIME["source"] = source
         return source
 
