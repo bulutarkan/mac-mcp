@@ -6200,7 +6200,13 @@ def _browser_act_locked(
         return response
     try:
         summary: Optional[Dict[str, Any]] = None
-        if return_state in {"compact", "none"}:
+        if return_state in {"compact", "none"} and not mutation_dispatched:
+            # A batch that only read (extract, scan, read, waits) changed nothing: no change summary to
+            # work out, and the light state only when it is asked for (#394).
+            if return_state == "compact":
+                summary = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index, tab_handle)
+                response["internal_js_calls"] += 1
+        elif return_state in {"compact", "none"}:
             # One read gives the light state and what the batch changed, so the
             # caller rarely needs another observe to verify or continue.
             summary = _run_json_js(

@@ -27,9 +27,11 @@ var all=__mcpQueryAll('*');
 for(var i=0;i<all.length&&out.length<__COLLECT_LIMIT__;i++){
   var el=all[i]; if(!rendered(el))continue;
   if(modal&&el!==modal&&!__mcpComposedContains(modal,el))continue;
-  var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el); if(offscreen.has(el))d.offscreen=true;
-  if(actionableOnly && !d.actionable)continue;
-  if(wantedRole&&norm(d.role)!==wantedRole)continue;
+  var actionable=__mcpActionable(el);
+  if(actionableOnly && !actionable)continue;
+  if(wantedRole&&norm(__mcpRole(el))!==wantedRole)continue;
+  /* Matched on its names first; the full describe (layout, readiness) only for a match (#394). */
+  var d=__mcpNameFields(el);
   var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||'',d.association_text||''];
   fields.push(fields.filter(Boolean).join(' '));
   if(wantedText){var tl=0;fields.forEach(function(v){tl=Math.max(tl,level(v,wantedText));});if(!tl)continue;}
@@ -38,6 +40,7 @@ for(var i=0;i<all.length&&out.length<__COLLECT_LIMIT__;i++){
     if(d.options){d.options.forEach(function(o){ql=Math.max(ql,level(o.text||'',q),level(o.value||'',q));});}
     if(!ql)continue;
   }
+  d=__mcpDescribe(el,s); d.actionable=actionable; if(offscreen.has(el))d.offscreen=true;
   out.push(d);els.push(el);
 }
 function contains(a,b){try{if(a.contains(b))return true;}catch(e){}return __mcpComposedContains(a,b);}

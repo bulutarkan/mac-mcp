@@ -8,7 +8,18 @@ function __mcpInternalMutation(rec){
   var nodes=Array.prototype.concat.call([],Array.prototype.slice.call(rec.addedNodes||[]),Array.prototype.slice.call(rec.removedNodes||[]));
   return nodes.length>0&&nodes.every(function(n){return __mcpInternalHost(n);});
 }
+/* Walking every element for shadow roots and frames is the costliest part of a query; one page script
+   asks for the roots many times. They are kept until the script ends (a microtask) and while the page
+   has the same number of elements, so a script that adds elements finds their roots too (#394). */
+var __mcpRootsCache=null;
 function __mcpRoots(){
+  var count=0;try{count=document.getElementsByTagName('*').length;}catch(e){}
+  if(__mcpRootsCache&&__mcpRootsCache.count===count)return __mcpRootsCache.roots.slice();
+  var roots=__mcpWalkRoots();__mcpRootsCache={count:count,roots:roots};
+  try{Promise.resolve().then(function(){__mcpRootsCache=null;});}catch(e){__mcpRootsCache=null;}
+  return roots.slice();
+}
+function __mcpWalkRoots(){
   var roots=[],seen=new Set();
   function visit(root,depth){
     if(!root||seen.has(root)||depth>10)return;seen.add(root);roots.push(root);
@@ -320,6 +331,17 @@ function __mcpContext(el){
   return '';
 }
 function __mcpRect(el){var r=__mcpTopRect(el),ox=(window.outerWidth-window.innerWidth),oy=(window.outerHeight-window.innerHeight),viewportX=window.screenX+Math.max(0,Math.round(ox/2)),viewportY=window.screenY+Math.max(0,Math.round(oy));return{viewport:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},document:{x:Math.round(r.left+scrollX),y:Math.round(r.top+scrollY),w:Math.round(r.width),h:Math.round(r.height)},screen:{x:Math.round(viewportX+r.left),y:Math.round(viewportY+r.top),w:Math.round(r.width),h:Math.round(r.height),estimated:true}};}
+/* The names a query is matched against, as describe reports them, without its layout and readiness work:
+   find and recovery describe only the elements that match (#394). */
+function __mcpNameFields(el){
+  var tag=(el.tagName||'').toLowerCase(),f={text:__mcpText(el)},aria=el.getAttribute('aria-label')||__mcpLabelledBy(el);
+  var ph=__mcpPlaceholder(el),name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';
+  if(aria)f.aria_label=aria.slice(0,120);if(ph)f.placeholder=ph.slice(0,100);if(name)f.name=name.slice(0,100);if(title)f.title=title.slice(0,100);
+  if(['input','textarea','select'].indexOf(tag)>=0)f.value=__mcpSafeValue(el).slice(0,160);
+  var context=__mcpContext(el);if(context)f.context=context;var at=__mcpAssociationText(el);if(at)f.association_text=at;
+  if(tag==='select')f.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90)};});
+  return f;
+}
 function __mcpDescribe(el,s){
   var tag=(el.tagName||'').toLowerCase(),rect=__mcpRect(el),out={element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),viewport_rect:rect.viewport,screen_rect:rect.screen,actionable:__mcpActionable(el)};
   var shadowHost=__mcpShadowHost(el);if(shadowHost)out.shadow_host=String(shadowHost.tagName||'').toLowerCase();
@@ -438,7 +460,7 @@ function __mcpRecoverAction(a,s){
     if(topModal&&el!==topModal&&!__mcpComposedContains(topModal,el))continue;
     if(!__mcpSemanticVisible(el)||!__mcpActionable(el))continue;
     var role=__mcpNorm(__mcpRole(el));if(wantedRole&&role!==wantedRole)continue;
-    var d=__mcpDescribe(el,s),fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||'',d.association_text||''],score=wantedRole?2:0;
+    var d=__mcpNameFields(el),fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||'',d.association_text||''],score=wantedRole?2:0;
     for(var j=0;j<fields.length;j++){
       var f=__mcpNorm(fields[j]);if(!f)continue;
       if(query&&f===query)score=Math.max(score,12);
