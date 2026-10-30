@@ -8,6 +8,8 @@ from mcp_server.tools_browser_agent import _batch_js, _browser_act_locked, _sele
 
 _STALE = {"ok": False, "type": "click", "element_id": "e_old", "error": "stale_target",
           "reason_code": "ROUTE_CHANGED", "observe_again": True, "no_side_effect": True}
+# The same page re-rendered the target: it may be found again once.
+_RERENDERED = {**_STALE, "reason_code": "TARGET_CHANGED"}
 
 
 class StaleTargetJsTests(unittest.TestCase):
@@ -57,11 +59,27 @@ class StaleTargetActTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         find.assert_not_called()
 
-    def test_stale_id_with_a_locator_is_resolved_again_once(self) -> None:
+    def test_a_target_from_another_route_is_never_looked_for_again(self) -> None:
+        # #388: the Delete observed on /items/A must not become the Delete on /items/B.
         fresh = {"element_id": "e_new", "text": "Delete", "role": "button", "confidence": 1.0}
         result, calls, find = self._act(
             [{"type": "click", "element_id": "e_old", "query": "Delete", "role": "button"}],
             [_STALE, {"ok": True, "type": "click", "element_id": "e_new"}],
+            [{"ok": True, "best_match": fresh, "matches": [fresh]}],
+        )
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["mutation_dispatched"])
+        self.assertEqual(["e_old"], [call["element_id"] for call in calls])
+        find.assert_not_called()
+        self.assertEqual("ROUTE_CHANGED", result["actions"][0]["reason_code"])
+        self.assertTrue(result["actions"][0]["observe_again"])
+        self.assertNotIn("re_resolved", result["actions"][0])
+
+    def test_stale_id_with_a_locator_is_resolved_again_once(self) -> None:
+        fresh = {"element_id": "e_new", "text": "Delete", "role": "button", "confidence": 1.0}
+        result, calls, find = self._act(
+            [{"type": "click", "element_id": "e_old", "query": "Delete", "role": "button"}],
+            [_RERENDERED, {"ok": True, "type": "click", "element_id": "e_new"}],
             [{"ok": True, "best_match": fresh, "matches": [fresh]}],
         )
         self.assertTrue(result["ok"], result)
@@ -69,12 +87,12 @@ class StaleTargetActTests(unittest.TestCase):
         self.assertEqual(["e_old", "e_new"], [call["element_id"] for call in calls])
         self.assertEqual(1, find.call_count)
         self.assertEqual("Delete", find.call_args.kwargs["query"])
-        self.assertEqual({"stale_element_id": "e_old", "reason_code": "ROUTE_CHANGED"}, result["actions"][0]["re_resolved"])
+        self.assertEqual({"stale_element_id": "e_old", "reason_code": "TARGET_CHANGED"}, result["actions"][0]["re_resolved"])
 
     def test_locator_that_no_longer_matches_stops_safely(self) -> None:
         result, calls, _find = self._act(
             [{"type": "click", "element_id": "e_old", "query": "Delete"}],
-            [_STALE],
+            [_RERENDERED],
             [{"ok": True, "best_match": None, "matches": []}],
         )
         self.assertFalse(result["ok"])

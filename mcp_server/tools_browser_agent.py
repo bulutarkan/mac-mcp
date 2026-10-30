@@ -4380,6 +4380,10 @@ def _stale_target_locator(
     The caller's own locator wins; otherwise the role and label observe/find saw for that
     element_id, turned into a locator the way computer_plan's recovery does.
     """
+    # Another route is another record: the same "Delete" on /items/B is not the one observed on /items/A,
+    # so a target from an earlier page is never looked for again; the agent observes the new page (#388).
+    if result.get("reason_code") == "ROUTE_CHANGED":
+        return None
     untouched = bool(result.get("no_side_effect")) or (
         result.get("reason_code") == "ELEMENT_DETACHED" and result.get("error") in {"element_not_ready", "stale_element"}
     )
