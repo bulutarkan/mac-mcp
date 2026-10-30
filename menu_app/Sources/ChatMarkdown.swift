@@ -72,6 +72,26 @@ enum MarkdownParser {
         return URL(fileURLWithPath: (target as NSString).expandingTildeInPath).absoluteString
     }
 
+    private final class Blocks {
+        let blocks: [MarkdownBlock]
+        init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
+    }
+
+    private static let parsed: NSCache<NSString, Blocks> = {
+        let cache = NSCache<NSString, Blocks>()
+        cache.countLimit = 600
+        return cache
+    }()
+
+    /// parse(_:), kept per text: a finished answer is parsed once, not each time its turn is drawn again.
+    static func blocks(_ source: String) -> [MarkdownBlock] {
+        let key = source as NSString
+        if let kept = parsed.object(forKey: key) { return kept.blocks }
+        let blocks = parse(source)
+        parsed.setObject(Blocks(blocks), forKey: key)
+        return blocks
+    }
+
     static func parse(_ source: String) -> [MarkdownBlock] {
         let lines = citations(source).replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
@@ -227,17 +247,29 @@ struct MarkdownView: View {
     var size: CGFloat = 14
     /// How many of the last characters are still settling in (a streaming answer); 0 draws all at once.
     var fade: Int = 0
+    /// Text that changes many times a second: parsed as it is, never kept.
+    var streaming = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            let blocks = MarkdownParser.parse(text)
+            let blocks = streaming ? MarkdownParser.parse(text) : MarkdownParser.blocks(text)
+            // Each block is drawn again only when it changed: while an answer streams, that is the last one.
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                view(for: block, fade: index == blocks.count - 1 ? fade : 0)
+                MarkdownBlockView(block: block, size: size, fade: index == blocks.count - 1 ? fade : 0)
+                    .equatable()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
     }
+}
+
+private struct MarkdownBlockView: View, Equatable {
+    let block: MarkdownBlock
+    let size: CGFloat
+    let fade: Int
+
+    var body: some View { view(for: block, fade: fade) }
 
     @ViewBuilder private func view(for block: MarkdownBlock, fade: Int) -> some View {
         switch block {

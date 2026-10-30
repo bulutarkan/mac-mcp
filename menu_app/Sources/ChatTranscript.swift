@@ -39,6 +39,16 @@ struct ChatTurn: Identifiable, Equatable {
             return turn
         }
     }
+
+    /// Changes whenever any of its items changes: a drawn turn's height is kept for this revision.
+    var revision: Int {
+        var hasher = Hasher()
+        for item in [user, answer, summary].compactMap({ $0 }) + steps + asks + notices {
+            hasher.combine(item.id)
+            hasher.combine(item.rev)
+        }
+        return hasher.finalize()
+    }
 }
 
 struct ChatConversation: View {
@@ -46,6 +56,11 @@ struct ChatConversation: View {
     @MacMCPState private var atBottom = true
     /// Stay at the newest words until the owner scrolls up; scrolling back to the end follows again.
     @MacMCPState private var following = true
+    /// The part of the transcript drawn in full (content coordinates); nil until the scroll view has said.
+    @MacMCPState private var band: ClosedRange<CGFloat>?
+    /// The height each finished turn was drawn at; bumping `measuredAgain` draws them all after a width change.
+    @MacMCPState private var heights = TurnHeights()
+    @MacMCPState private var measuredAgain = 0
 
     init(model: ChatModel) {
         self.model = model
@@ -56,13 +71,21 @@ struct ChatConversation: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     // A plain stack: a lazy one guessed the heights of rows it had not drawn, so the content changed
-                    // height while the owner scrolled and the scroll bar jumped. Turns are Equatable, so this stays cheap.
+                    // height while the owner scrolled and the scroll bar jumped. Laying out every turn on each change
+                    // made a long chat stall while an answer streamed, though (#121), so finished turns far from what
+                    // the owner sees are drawn as empty space of the height they had when drawn (TurnHistory).
                     VStack(alignment: .leading, spacing: 26) {
-                        ForEach(model.turns) { turn in
+                        if model.turns.count > 1 {
+                            TurnHistory(turns: model.turns.dropLast(), agent: model.chat?.agent ?? "", agentLabel: agentLabel,
+                                        band: band, heights: heights, measuredAgain: measuredAgain,
+                                        widthChanged: { DispatchQueue.main.async { measuredAgain += 1 } },
+                                        answer: answer, retry: retry, edit: edit)
+                                .equatable()
+                        }
+                        if let turn = model.turns.last {
                             TurnView(turn: turn, agent: model.chat?.agent ?? "", agentLabel: agentLabel,
-                                     live: running && turn.id == lastTurnID, startedAt: model.chat?.turnStartedAt ?? 0,
-                                     answer: { item, option in model.answer(item, option: option) },
-                                     retry: { model.retry($0) }, edit: { model.edit($0) })
+                                     live: running, startedAt: model.chat?.turnStartedAt ?? 0,
+                                     answer: answer, retry: retry, edit: edit)
                                 .equatable()
                                 .id(turn.id)
                         }
@@ -81,7 +104,15 @@ struct ChatConversation: View {
                             if bottom != atBottom { atBottom = bottom }
                             if bottom && !following { following = true }
                         },
-                        scrolledUp: { if following { following = false } }
+                        scrolledUp: { if following { following = false } },
+                        visibleChanged: { visible in
+                            // Two screens around what is visible, moved in half-screen steps: scrolling redraws the
+                            // history only when a step is crossed.
+                            let step = max(visible.height / 2, 200)
+                            let next = (floor((visible.minY - 2 * visible.height) / step) * step)
+                                ... (ceil((visible.maxY + 2 * visible.height) / step) * step)
+                            if next != band { band = next }
+                        }
                     ))
                 }
                 .onChange(of: model.items.last?.rev) { _ in
@@ -129,11 +160,116 @@ struct ChatConversation: View {
     }
 
     private var running: Bool { model.chat?.running == true }
-    private var lastTurnID: String? { model.turns.last?.id }
     private var showJump: Bool { !atBottom && (!following || !running) }
+    private var answer: (ChatItem, ChatPermissionOption) -> Void { { [model] in model.answer($0, option: $1) } }
+    private var retry: (String) -> Void { { [model] in model.retry($0) } }
+    private var edit: (ChatItem) -> Void { { [model] in model.edit($0) } }
 
     private var agentLabel: String {
         model.agents.first { $0.id == model.chat?.agent }?.label ?? "The agent"
+    }
+}
+
+/// Every turn but the last. Those inside `band` (and any not drawn yet at this width) are drawn; the others
+/// are empty space of the height they were drawn at, so the transcript keeps its exact height while only what
+/// is near the owner's view is laid out. Without a band (a chat just opened) all are drawn.
+private struct TurnHistory: View, Equatable {
+    let turns: ArraySlice<ChatTurn>
+    let agent: String
+    let agentLabel: String
+    let band: ClosedRange<CGFloat>?
+    let heights: TurnHeights
+    let measuredAgain: Int
+    let widthChanged: () -> Void
+    let answer: (ChatItem, ChatPermissionOption) -> Void
+    let retry: (String) -> Void
+    let edit: (ChatItem) -> Void
+
+    static let spacing: CGFloat = 26
+    /// Where the history starts in the transcript: the stack's top padding.
+    static let top: CGFloat = 22
+
+    static func == (lhs: TurnHistory, rhs: TurnHistory) -> Bool {
+        lhs.turns == rhs.turns && lhs.agent == rhs.agent && lhs.agentLabel == rhs.agentLabel && lhs.band == rhs.band
+            && lhs.measuredAgain == rhs.measuredAgain
+    }
+
+    var body: some View {
+        let kept = keptHeights
+        VStack(alignment: .leading, spacing: Self.spacing) {
+            ForEach(turns) { turn in
+                if let height = kept[turn.id] {
+                    Color.clear.frame(height: height)
+                } else {
+                    TurnView(turn: turn, agent: agent, agentLabel: agentLabel, live: false, startedAt: 0,
+                             answer: answer, retry: retry, edit: edit)
+                        .equatable()
+                        // Full width, so every turn reports the transcript's width and a narrow one is no width change.
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(HeightReader(id: turn.id, revision: turn.revision, heights: heights,
+                                                 widthChanged: widthChanged))
+                        .id(turn.id)
+                }
+            }
+        }
+    }
+
+    /// The turns drawn as empty space: outside the band, with a height kept for their current revision.
+    private var keptHeights: [String: CGFloat] {
+        guard let band else { return [:] }
+        var out: [String: CGFloat] = [:]
+        var y = Self.top
+        for turn in turns {
+            guard let height = heights.height(turn.id, revision: turn.revision) else {
+                return out  // below a turn of unknown height the positions are unknown: draw the rest
+            }
+            if y + height < band.lowerBound || y > band.upperBound { out[turn.id] = height }
+            y += height + Self.spacing
+        }
+        return out
+    }
+}
+
+/// Each drawn turn's height at the transcript's width. Kept in an object, not in state: recording a height
+/// must not draw the transcript again (a state change driven by layout made SwiftUI lay out forever, a0abd55).
+final class TurnHeights {
+    private var kept: [String: (revision: Int, height: CGFloat)] = [:]
+    private(set) var width: CGFloat = 0
+
+    func height(_ id: String, revision: Int) -> CGFloat? {
+        guard let entry = kept[id], entry.revision == revision else { return nil }
+        return entry.height
+    }
+
+    /// Returns true when the width changed: every kept height is then stale and the turns must be drawn again.
+    func record(_ id: String, revision: Int, size: CGSize) -> Bool {
+        var widthChanged = false
+        if abs(size.width - width) > 0.5 {
+            widthChanged = width > 0
+            width = size.width
+            kept.removeAll()
+        }
+        kept[id] = (revision, size.height)
+        return widthChanged
+    }
+}
+
+private struct HeightReader: View {
+    let id: String
+    let revision: Int
+    let heights: TurnHeights
+    let widthChanged: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { record(proxy.size) }
+                .onChange(of: proxy.size) { record($0) }
+        }
+    }
+
+    private func record(_ size: CGSize) {
+        if heights.record(id, revision: revision, size: size) { widthChanged() }
     }
 }
 
@@ -293,7 +429,7 @@ private struct StreamingAnswer: View {
 
     var body: some View {
         let visible = shown < 0 ? text.count : min(shown, text.count)
-        MarkdownView(text: String(text.prefix(visible)), fade: min(48, max(0, visible - settled)))
+        MarkdownView(text: String(text.prefix(visible)), fade: min(48, max(0, visible - settled)), streaming: true)
             .onAppear {
                 shown = text.count
                 settled = text.count
@@ -620,23 +756,28 @@ private struct NoticeLine: View {
 private struct ScrollPositionReader: NSViewRepresentable {
     let bottomChanged: (Bool) -> Void
     let scrolledUp: () -> Void
+    let visibleChanged: (CGRect) -> Void
 
     func makeNSView(context: Context) -> ScrollPositionView {
         let view = ScrollPositionView()
         view.bottomChanged = bottomChanged
         view.scrolledUp = scrolledUp
+        view.visibleChanged = visibleChanged
         return view
     }
 
     func updateNSView(_ view: ScrollPositionView, context: Context) {
         view.bottomChanged = bottomChanged
         view.scrolledUp = scrolledUp
+        view.visibleChanged = visibleChanged
     }
 }
 
 final class ScrollPositionView: NSView {
     var bottomChanged: ((Bool) -> Void)?
     var scrolledUp: (() -> Void)?
+    /// What is visible, in the transcript's coordinates (from its top).
+    var visibleChanged: ((CGRect) -> Void)?
     private weak var watched: NSScrollView?
     private var lastBottom: Bool?
     private var wheel: Any?
@@ -666,6 +807,9 @@ final class ScrollPositionView: NSView {
         let visible = scrollView.documentVisibleRect
         let height = document.bounds.height
         let distance = document.isFlipped ? height - visible.maxY : visible.minY
+        let fromTop = document.isFlipped ? visible.minY : height - visible.maxY
+        let shown = CGRect(x: visible.minX, y: fromTop, width: visible.width, height: visible.height)
+        DispatchQueue.main.async { [weak self] in self?.visibleChanged?(shown) }
         let bottom = distance <= 48
         guard bottom != lastBottom else { return }
         lastBottom = bottom
