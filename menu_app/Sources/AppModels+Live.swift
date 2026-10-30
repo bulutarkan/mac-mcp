@@ -77,6 +77,16 @@ enum IPhoneNotice {
               call.action?.lowercased() == "act" else { return nil }
         return call.sessionID ?? call.agentID ?? "local"
     }
+
+    /// Steps closer together than this are one stretch of iPhone use, whatever session they come from.
+    static let quietGap: TimeInterval = 600
+
+    /// Whether a step starts a new stretch: no iPhone step for `quietGap`. Some clients (Grok) open a
+    /// new MCP session for every tool call, so the session alone would bring the note back on every step.
+    static func startsNewStretch(at now: Date, lastStep: Date?) -> Bool {
+        guard let lastStep else { return true }
+        return now.timeIntervalSince(lastStep) >= quietGap
+    }
 }
 
 /// Something that happened, for the island's Recent list.

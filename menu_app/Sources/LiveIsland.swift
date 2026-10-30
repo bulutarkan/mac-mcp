@@ -309,6 +309,8 @@ final class LiveIslandController {
     private var peekQueue: [LivePeek] = []
     /// Sessions already told that iPhone steps borrow the pointer and keyboard.
     private var iPhoneNoticeShown = Set<String>()
+    /// When any session last drove the iPhone.
+    private var lastIPhoneStepAt: Date?
     private var peekTask: Task<Void, Never>?
     private var finishTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
@@ -389,10 +391,17 @@ final class LiveIslandController {
         tools[call.eventID] = call
         rebuild()
         refreshSlot()
-        // The first time a session drives the iPhone, say that each step borrows the pointer and keyboard.
-        if let session = IPhoneNotice.sessionKey(for: call), iPhoneNoticeShown.insert(session).inserted {
-            enqueuePeek(LivePeek(id: "iphone-notice-\(session)", symbol: "iphone", title: IPhoneNotice.title,
-                                 detail: IPhoneNotice.detail, tone: .notice))
+        // The first time a session drives the iPhone, say that each step borrows the pointer and keyboard;
+        // a step that continues a stretch of iPhone use (even from a new session) says nothing.
+        if let session = IPhoneNotice.sessionKey(for: call) {
+            let now = Date()
+            let newStretch = IPhoneNotice.startsNewStretch(at: now, lastStep: lastIPhoneStepAt)
+            lastIPhoneStepAt = now
+            if iPhoneNoticeShown.count > 200 { iPhoneNoticeShown.removeAll(keepingCapacity: true) }
+            if iPhoneNoticeShown.insert(session).inserted, newStretch {
+                enqueuePeek(LivePeek(id: "iphone-notice-\(session)", symbol: "iphone", title: IPhoneNotice.title,
+                                     detail: IPhoneNotice.detail, tone: .notice))
+            }
         }
     }
 

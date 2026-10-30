@@ -3,6 +3,8 @@
 iphone act brings iPhone Mirroring forward, hides the owner's pointer and sends keys on every step.
 The first time a session does that, the island opens a short heads-up peek. see, read and find only
 capture the screen, so they show nothing; tool_invoke calls of iphone act count as well.
+Some clients (Grok) open a new MCP session for every tool call, so steps less than ten minutes apart
+are one stretch of iPhone use and show the note once, whatever session they come from.
 """
 from __future__ import annotations
 
@@ -39,6 +41,11 @@ struct IPhoneNoticeHarness {
         for (name, item) in cases {
             print(name, IPhoneNotice.sessionKey(for: item) ?? "-")
         }
+        let start = Date()
+        print("stretch_first", IPhoneNotice.startsNewStretch(at: start, lastStep: nil))
+        print("stretch_next_step", IPhoneNotice.startsNewStretch(at: start.addingTimeInterval(40), lastStep: start))
+        print("stretch_after_9m", IPhoneNotice.startsNewStretch(at: start.addingTimeInterval(540), lastStep: start))
+        print("stretch_after_10m", IPhoneNotice.startsNewStretch(at: start.addingTimeInterval(600), lastStep: start))
         print("title", IPhoneNotice.title)
         print("detail", IPhoneNotice.detail)
     }
@@ -61,14 +68,21 @@ class IPhoneNoticeTests(unittest.TestCase):
         result = dict(line.split(" ", 1) for line in out.stdout.splitlines())
         self.assertEqual({"direct_act": "s1", "claude_name": "s1", "invoke_act": "s1", "see": "-", "read": "-",
                           "other_tool": "-", "invoke_other": "-", "agent_only": "agt_1"},
-                         {key: result[key] for key in result if key not in {"title", "detail"}})
+                         {key: result[key] for key in result
+                          if key not in {"title", "detail"} and not key.startswith("stretch_")})
+        self.assertEqual({"stretch_first": "true", "stretch_next_step": "false", "stretch_after_9m": "false",
+                          "stretch_after_10m": "true"},
+                         {key: result[key] for key in result if key.startswith("stretch_")})
         self.assertEqual("iPhone Mirroring", result["title"])
         self.assertEqual("Each step briefly takes your pointer and keyboard.", result["detail"])
 
-    def test_island_shows_it_once_per_session_as_a_quiet_peek(self) -> None:
+    def test_island_shows_it_once_per_session_and_stretch_as_a_quiet_peek(self) -> None:
         island = (SOURCES / "LiveIsland.swift").read_text(encoding="utf-8")
         started = island[island.index("private func toolStarted(_ call: LiveToolCall)"):island.index("private func toolFinished(")]
-        self.assertIn("if let session = IPhoneNotice.sessionKey(for: call), iPhoneNoticeShown.insert(session).inserted {", started)
+        self.assertIn("if let session = IPhoneNotice.sessionKey(for: call) {", started)
+        self.assertIn("let newStretch = IPhoneNotice.startsNewStretch(at: now, lastStep: lastIPhoneStepAt)", started)
+        self.assertIn("lastIPhoneStepAt = now", started)
+        self.assertIn("if iPhoneNoticeShown.insert(session).inserted, newStretch {", started)
         self.assertIn('symbol: "iphone"', started)
         self.assertIn("tone: .notice", started)
         self.assertIn("next.tone == .attention || next.tone == .notice ? 5_000_000_000", island)
