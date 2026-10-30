@@ -184,10 +184,34 @@ _METADATA_TEXT_KEYS = {
     "event_id", "chat_id", "item_id", "undo_id",
 }
 # Arguments additionally keep what was run; their typed text, bodies and scripts are sized.
-_METADATA_ARGUMENT_TEXT_KEYS = _METADATA_TEXT_KEYS | {"command", "commands", "app_name", "role", "key"}
+_METADATA_ARGUMENT_TEXT_KEYS = _METADATA_TEXT_KEYS | {"command", "commands", "app_name", "role", "key",
+                                                     # choices from a fixed set, not content
+                                                     "visual", "scope", "return_state", "input_mode", "for",
+                                                     "condition"}
 _URL_KEYS = {"url", "origin"}
 # Markers left by the redaction layers say what was deliberately removed; keep them.
 _REDACTION_MARKER_RE = re.compile(r"^\[[A-Za-z][A-Za-z ._-]{0,60}(?:REDACTED|not stored|omitted)\]$")
+
+
+def _decoded_content(result: Any) -> Any:
+    """A tool that returns a picture answers with a list: its JSON as text, then the image. The JSON is
+    read so its operational fields (ok, error, reason_code, capture_method) are kept like any other
+    result's; before, the whole answer became its length and a failure left no reason behind."""
+    if not isinstance(result, (list, tuple)):
+        return result
+    decoded = []
+    for item in result:
+        text = getattr(item, "text", item) if not isinstance(item, str) else item
+        if isinstance(text, str) and text[:1] == "{":
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                decoded.append(parsed)
+                continue
+        decoded.append(item)
+    return decoded
 
 
 def telemetry_content_preview_enabled() -> bool:
@@ -452,7 +476,7 @@ class TelemetryManager:
     def _telemetry_result(self, result: Any) -> Any:
         if self.content_preview:
             return sanitize_value(result, preview_chars=self.preview_chars)
-        return metadata_value(result)
+        return metadata_value(_decoded_content(result))
 
     def _connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

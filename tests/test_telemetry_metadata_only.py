@@ -35,6 +35,23 @@ class TelemetryMetadataTests(unittest.TestCase):
         manager.finish_call(event_id, result=result)
         return next(row for row in manager.query_events(hours=1) if row["event_id"] == event_id)
 
+    def test_a_picture_answer_keeps_why_its_capture_failed_but_not_the_page(self) -> None:
+        # Live (Instagram): observe with a picture answers [json text, image]; the whole answer was stored as
+        # its length, so the capture error could not be read back.
+        answer = json.dumps({"ok": True, "url": "https://www.instagram.com/p/x/?token=1", "elements": [{"text": PAGE}],
+                             "visual": {"ok": False, "capture_method": "dom_rasterizer",
+                                        "error": "Could not initialize the DOM screenshot rasterizer in the target tab."}})
+        row = self.record(self.manager(), "browser_observe", {"visual": "viewport", "scope": "content",
+                                                              "tab_handle": "btab_safari_1"}, [answer, object()])
+        visual = row["result"][0]["visual"]
+        self.assertEqual("Could not initialize the DOM screenshot rasterizer in the target tab.", visual["error"])
+        self.assertEqual("dom_rasterizer", visual["capture_method"])
+        self.assertEqual(("viewport", "content"), (row["arguments"]["visual"], row["arguments"]["scope"]))
+        stored = self.raw_rows()
+        for secret in PII:
+            self.assertNotIn(secret, stored)
+        self.assertNotIn("token=1", stored)
+
     def raw_rows(self) -> str:
         con = sqlite3.connect(self.db)
         try:
