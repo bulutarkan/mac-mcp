@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Records</title>
+<style>body{font:14px system-ui;margin:0;padding:16px}</style></head>
+<body>
+<!-- #388: a single-page app shows one record per route, each with the same Delete button. -->
+<h1 id="title"></h1>
+<button id="delete" onclick="window.__deleted.push(current());document.getElementById('log').textContent=window.__deleted.join(', ')">Delete</button>
+<p id="log"></p>
+<script>
+window.__deleted=[];
+function current(){return (location.hash.match(/^#\/items\/(\w+)/)||[])[1]||'A';}
+function render(){
+  // Like React: the record view is drawn again for the new route, so the old Delete node is gone.
+  var old=document.getElementById('delete'),fresh=old.cloneNode(true);fresh.onclick=old.onclick;old.replaceWith(fresh);
+  document.getElementById('title').textContent='Record '+current();
+}
+window.addEventListener('hashchange',render);render();
+</script>
+</body></html>

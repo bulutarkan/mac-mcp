@@ -641,6 +641,19 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(delete["ok"], delete)
         self.assertEqual(["star-new", "delete-old"], tools.page.js("window.__clicks"))
 
+    def test_a_delete_seen_on_one_route_is_not_clicked_on_the_next(self) -> None:
+        # #388: the app moved from record A to record B; the old Delete must not become B's Delete.
+        tools = self.tools("spa.html#/items/A")
+        observed = tools.observe(max_elements=20)
+        delete_a = next(e for e in observed["elements"] if e.get("text") == "Delete")
+        tools.page.js("location.hash='#/items/B'")
+        time.sleep(0.3)
+        stale = tools.act([{"type": "click", "element_id": delete_a["element_id"]}], observed.get("observation_id"))
+        self.assertFalse(stale["ok"], stale)
+        self.assertEqual("ROUTE_CHANGED", stale["actions"][0]["reason_code"])
+        self.assertTrue(stale["actions"][0]["observe_again"])
+        self.assertEqual([], tools.page.js("window.__deleted"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.
