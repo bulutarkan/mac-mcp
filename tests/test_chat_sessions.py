@@ -831,6 +831,47 @@ class ChatHostTest(unittest.TestCase):
         self.assertEqual(saved, earlier)
         self.assertGreater(used["updated_at"], earlier)
 
+    def test_settings_names_and_new_chats_start_no_agent_and_keep_the_date(self):
+        # #387 follow-up (live: Fast mode made a chat "now" and a click alone started node): only a message
+        # starts the agent and moves the chat; options come from what the agent offered before.
+        async def first():
+            host = chat_sessions.get_host()
+            chat_id = host.create(str(self.project), "copilot")["chat"]["id"]
+            await host.prompt(chat_id, "hello")
+            await self.wait_idle(host, chat_id)
+            await host.shutdown()
+            return chat_id
+
+        chat_id = self.run_async(first())
+        record = chat_sessions.chats_root() / chat_id / "chat.json"
+        meta = json.loads(record.read_text())
+        earlier = time.time() - 3600
+        meta["updated_at"] = earlier
+        record.write_text(json.dumps(meta))
+        chat_sessions.reset_host_for_tests()
+        starts = sum(1 for entry in self.agent_log() if entry.get("method") == "initialize")
+
+        async def browse():
+            host = chat_sessions.get_host()
+            fresh = host.create(str(self.project), "copilot")["chat"]
+            await host.configure(chat_id, "effort", "low")
+            host.rename(chat_id, "Weekly report")
+            touched = host.read(chat_id)["chat"]
+            alive = host._chats[chat_id].conn is not None
+            await host.prompt(chat_id, "again")
+            used = (await self.wait_idle(host, chat_id))["chat"]
+            await host.shutdown()
+            return fresh, touched, alive, used
+
+        fresh, touched, alive, used = self.run_async(browse())
+        self.assertEqual(["model", "effort"], [option["id"] for option in fresh["config"]])  # before any start
+        self.assertFalse(alive)
+        self.assertEqual(starts, sum(1 for entry in self.agent_log() if entry.get("method") == "initialize") - 1)
+        self.assertEqual((touched["updated_at"], touched["title"]), (earlier, "Weekly report"))
+        self.assertEqual("low", next(o for o in touched["config"] if o["id"] == "effort")["current"])
+        self.assertGreater(used["updated_at"], earlier)  # the message moved it
+        self.assertEqual("low", next(o for o in used["config"] if o["id"] == "effort")["current"])
+
     def test_rename_keeps_the_owner_title_and_commands_are_listed(self):
         async def scenario():
             host = chat_sessions.get_host()

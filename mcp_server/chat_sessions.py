@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import copy
 import json
 import mimetypes
 import os
@@ -39,7 +40,7 @@ from .scoped_auth import get_scoped_credential_store
 from .version import __version__
 
 CHAT_ID = re.compile(r"^chat_[0-9a-f]{12}$")
-IDLE_STOP_S = 15 * 60  # an idle chat's agent process stops; the next message reopens the session
+IDLE_STOP_S = 3 * 60  # an idle chat's agent process stops; the next message reopens the session
 PERMISSION_WAIT_S = 30 * 60
 MAX_PENDING_PERMISSIONS = 8  # questions open at once in one chat; more are declined without asking (#119)
 CREDENTIAL_TTL_S = 24 * 3600
@@ -146,6 +147,11 @@ class ChatError(Exception):
 
 def chats_root() -> Path:
     return paths.state_dir() / "chats"
+
+
+def _agent_options_path() -> Path:
+    # The models, modes and switches each agent last offered: a new chat shows them before its agent starts.
+    return chats_root() / "agent_options.json"
 
 
 def _now() -> float:
@@ -681,8 +687,8 @@ class Chat:
             item["rev"] = self.seq
         else:
             self.meta["rev"] = self.seq
-        # Pinning, archiving, opening it and the agent's own session news are not using the chat: it keeps its
-        # place in the list, its date and its retention clock (#387).
+        # Only a message and its answer use the chat. Pinning, archiving, renaming, opening it, its settings
+        # and the agent's own session news keep its place in the list, its date and its retention clock (#387).
         if touch:
             self.meta["updated_at"] = _now()
         # Wake whoever streams this chat (the app's event stream), and the chat list's stream.
@@ -862,6 +868,10 @@ class ChatHost:
         }
         if privacy_policy.policy(fresh=True)["private_mode"]:
             meta["private"] = True  # nothing of it reaches the disk, also after private mode is turned off
+        known = _read_json(_agent_options_path(), {})
+        if isinstance(known, dict) and isinstance(known.get(agent), list):
+            # Shown before the agent starts with the first message; the agent's own list replaces it then.
+            meta["config"] = copy.deepcopy(known[agent])
         chat = Chat(meta, [])
         chat.on_change = self._changed
         if not chat.private:
@@ -879,7 +889,7 @@ class ChatHost:
             raise ChatError("Give the chat a name.", "empty")
         chat.meta["title"] = _cut(title, MAX_TITLE)
         chat.meta["titled"] = True  # the agent's own title no longer replaces it
-        chat.bump()
+        chat.bump(touch=False)
         chat.save()
         return {"ok": True, "chat": chat.public()}
 
@@ -1298,6 +1308,12 @@ class ChatHost:
         if AGENTS.get(chat.meta["agent"], {}).get("restart_options"):
             options += _local_options(chat, options)
         chat.meta["config"] = options
+        if options and not chat.private:
+            known = _read_json(_agent_options_path(), {})
+            known = known if isinstance(known, dict) else {}
+            known[chat.meta["agent"]] = [option for option in options if not option.get("local")]
+            with contextlib.suppress(OSError):
+                _write_json(_agent_options_path(), known)
 
     def _arm_idle(self, chat: Chat) -> None:
         if chat.idle is not None:
@@ -1345,10 +1361,10 @@ class ChatHost:
                 raise ChatError("Change it after this answer.", "busy", 409)
             chat.meta.setdefault("choices", {})[config_id] = value
             option["current"] = value
-            chat.bump()
+            chat.bump(touch=False)
             chat.save()
+            # A running agent takes it by starting again; that waits for the next message (#387).
             await self._stop_agent(chat)
-            chat.warming = asyncio.create_task(self._warm(chat))
             return {"ok": True, "chat": chat.public()}
         chat.meta.setdefault("choices", {})[config_id] = value
         if chat.conn is not None and chat.conn.running and chat.session_id:
@@ -1363,7 +1379,8 @@ class ChatHost:
                 option["current"] = value
         else:
             option["current"] = value  # set again when the agent starts
-        chat.bump()
+        # Choosing a model or Fast mode is not using the chat: it keeps its date and place (#387).
+        chat.bump(touch=False)
         chat.save()
         return {"ok": True, "chat": chat.public()}
 

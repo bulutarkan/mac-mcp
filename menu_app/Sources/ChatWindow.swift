@@ -387,8 +387,8 @@ final class ChatModel: ObservableObject {
         link = ChatLink()
         guard let id else { return }
         poller = Task { [weak self] in
-            // Opening a chat starts its agent, so the models and modes it offers show before the first message.
-            _ = await self?.api("dashboard/api/chats/\(id)/connect", [:])
+            // Opening a chat only reads it: its agent starts with the first message, so looking through chats
+            // starts no process. The models and modes shown are the ones the chat (or its agent) last had.
             await self?.follow(id)
         }
     }
@@ -938,12 +938,15 @@ struct ChatSettingsBar: View {
                 }
                 .font(.caption)
             } else if chat.config.isEmpty {
-                if chat.connecting || !chat.agentAlive {
+                if chat.connecting {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.mini)
                         Text("Connecting to \(agentLabel)…")
                     }
                     .font(.caption).foregroundStyle(.secondary)
+                } else if !chat.agentAlive {
+                    Text("\(agentLabel)'s models and modes show after the first message.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 HStack(spacing: 4) {
