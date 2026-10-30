@@ -54,12 +54,13 @@ class SupportMatrixTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         for app in GENERIC:
             self.assertEqual("generic_ax", result["apps"][app]["support"])
-        # Every Messages task has an adapter action now (#261), Xcode builds still run as commands.
+        # Every Messages task has an adapter action now (#261); Xcode builds and tests too (#133), its window
+        # is still read by looking at it.
         self.assertEqual("first_party", result["apps"]["Messages"]["support"])
         self.assertEqual("partial_first_party", result["apps"]["Xcode"]["support"])
         self.assertEqual(["find_chats", "read_messages", "search_messages", "send_message"],
                          result["apps"]["Messages"]["actions"])
-        self.assertEqual(["list_workspaces"], result["apps"]["Xcode"]["actions"])
+        self.assertEqual(["list_workspaces", "build", "test", "build_result"], result["apps"]["Xcode"]["actions"])
         self.assertEqual("first_party", result["apps"]["Notes"]["support"])
         self.assertIn("create_note", result["apps"]["Notes"]["actions"])
 
@@ -72,7 +73,7 @@ class SupportMatrixTests(unittest.TestCase):
         self.assertTrue(matrix["Messages"]["tasks"]["read_conversation"].startswith("first_party"))
         self.assertTrue(matrix["Xcode"]["tasks"]["inspect_window"].startswith("generic_ax"))
         self.assertIn("confirms", matrix["Messages"]["tasks"]["send_message"])
-        self.assertTrue(matrix["Xcode"]["tasks"]["build_or_test"].startswith("run_command"))
+        self.assertTrue(matrix["Xcode"]["tasks"]["build_or_test"].startswith("first_party"))
 
     def test_apps_outside_the_matrix_keep_the_generic_fallback(self) -> None:
         result = mac_app(SETTINGS, app="TextEdit", action="capabilities")

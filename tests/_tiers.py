@@ -10,6 +10,7 @@ from __future__ import annotations
 SWIFT_ONLY = (
     "test_browser_tab_pulse",
     "test_chat_library",
+    "test_chat_long_transcript",
     "test_live_island_hit_area",
     "test_live_island_iphone_notice",
     "test_live_island_waiting_peeks",
