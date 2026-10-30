@@ -2953,11 +2953,15 @@ def _verified_dom_action(
                     or (before_url is not None and post.get("url") != before_url)
                     or (before_title is not None and post.get("title") != before_title)
                 )
-                # A change elsewhere on the page (a clock, a feed) is not this click's effect (#391).
-                dom_progressed = (
-                    page_was_quiet and before_revision is not None
+                # A change elsewhere on the page (a clock, a feed) is not this click's effect (#391); a change
+                # next to the clicked element is, even on a page that never stops changing.
+                revision_moved = (
+                    before_revision is not None
                     and post.get("dom_revision") is not None and post.get("dom_revision") != before_revision
-                    and post.get("related_mutation") is not False
+                )
+                dom_progressed = revision_moved and (
+                    post.get("related_mutation") is True
+                    or (page_was_quiet and post.get("related_mutation") is not False)
                 )
                 if progressed or dom_progressed:
                     result["effect_observed"] = True

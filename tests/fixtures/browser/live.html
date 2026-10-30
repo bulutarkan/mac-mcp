@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Live page fixture</title>
+<style>body{font:14px system-ui;margin:0;padding:16px}.row{margin:10px 0}</style></head>
+<body>
+<!-- A live page: a ticker changes the DOM all the time, away from the controls. -->
+<header>Live: <span id="ticker">0</span></header>
+<div class="row"><button type="button" id="save" onclick="document.getElementById('saved').textContent='Saved'">Save</button>
+  <output id="saved"></output></div>
+<div class="row" id="busy-row"><button type="button" id="busy" onclick="window.__busyClicks++">Refresh</button>
+  <span id="busy-count">0</span></div>
+<script>
+window.__busyClicks=0;
+setInterval(function(){var t=document.getElementById('ticker');t.textContent=Number(t.textContent)+1;},80);
+// This row is redrawn all the time, right where its button is.
+setInterval(function(){var c=document.getElementById('busy-count');c.textContent=Number(c.textContent)+1;},60);
+</script>
+</body></html>

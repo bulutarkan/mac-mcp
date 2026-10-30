@@ -57,14 +57,7 @@ function __mcpStopMutationWatch(s){
 }
 function __mcpStartMutationWatch(s,ttl){
   var since=s.observerTimer?s.watchSince:null;
-  __mcpStopMutationWatch(s);s.watchSince=since||Date.now();var roots=__mcpRoots(),bump=function(records){
-    var counted=false,list=s.recentMutations=s.recentMutations||[],now=Date.now();
-    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;
-      if(!counted){s.mutationRevision+=1;s.lastMutationAt=now;counted=true;}
-      /* Where it happened, so an action is credited only with changes near it (#391). */
-      if(list.length<400||j<8){list.push({at:now,node:rec.target,added:Array.prototype.slice.call(rec.addedNodes||[],0,3)});}}
-    if(list.length>200)s.recentMutations=list.slice(-120);
-  };
+  __mcpStopMutationWatch(s);s.watchSince=since||Date.now();var roots=__mcpRoots(),bump=function(records){__mcpCountMutations(s,records);};
   for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}
   s.observerTimer=setTimeout(function(){__mcpStopMutationWatch(s);},Math.max(500,Math.min(Number(ttl||3000),8000)));
 }
@@ -268,7 +261,17 @@ function __mcpElementReadinessOnce(el,kind,minStableMs){
     if(!(tag==='input'||tag==='textarea'||target.isContentEditable||role==='textbox'||role==='searchbox'||tag==='select')){base.reason_code='ELEMENT_NOT_EDITABLE';return base;}
   }else if((kind==='click'||kind==='double_click'||kind==='select')&&!__mcpActionable(target)){base.reason_code='ELEMENT_NOT_ACTIONABLE';return base;}
   var p=target,depth=0,pointerBlocked=false;while(p&&depth++<12){try{if(__mcpStyle(p).pointerEvents==='none')pointerBlocked=true;if(p.getAttribute&&p.getAttribute('aria-busy')==='true'){base.reason_code='ELEMENT_BUSY';return base;}}catch(e){}p=__mcpParent(p);}
-  if(base.stable_for_ms<minStableMs){base.reason_code='ELEMENT_UNSTABLE';return base;}
+  if(base.stable_for_ms<minStableMs){
+    /* The page keeps changing (a clock, a live feed): what counts then is a change at this element, or the
+       element moving; elsewhere it is not this element being unstable. The position is read again on the
+       next check, so a moving element still waits. */
+    var now=Date.now(),rk=[Math.round(topRect.left),Math.round(topRect.top),Math.round(topRect.width),Math.round(topRect.height)].join(',');
+    s.rectSeen=s.rectSeen||new WeakMap();var seen=s.rectSeen.get(target);
+    if(!seen||seen.rect!==rk){seen={rect:rk,since:now};s.rectSeen.set(target,seen);}
+    var local=Math.min(now-seen.since,now-__mcpLastNearChange(target));
+    base.page_changing=true;base.stable_for_ms=Math.max(0,local);
+    if(base.stable_for_ms<minStableMs){base.reason_code='ELEMENT_UNSTABLE';return base;}
+  }
   try{
     var doc=target.ownerDocument||document,win=doc.defaultView||window,lr=target.getBoundingClientRect(),cx=lr.left+lr.width/2,cy=lr.top+lr.height/2;
     if(cx<0||cy<0||cx>=win.innerWidth||cy>=win.innerHeight){base.reason_code='ELEMENT_OFFSCREEN';return base;}
@@ -405,16 +408,25 @@ function __mcpStartActionNetworkProbe(s,trace){
 /* A change counts as the effect of an action only near it: in its row, form, card or dialog, or four boxes up;
    or a dialog, alert or status message added anywhere. A clock or a feed elsewhere is not its effect (#391).
    null: no record of where changes happened. */
-function __mcpRelatedMutation(el,since){
-  var s=__mcpState(),list=s.recentMutations;if(!list||!el)return null;
+function __mcpNearTest(el){
   var scope=null;try{scope=el.closest('form,dialog,[role=dialog],li,tr,article,section,[role=row],[role=listitem],[role=tabpanel]');}catch(e){}
   var up=el;for(var i=0;i<4&&up&&up.parentElement&&up.parentElement!==document.body&&up.parentElement!==document.documentElement;i++)up=up.parentElement;
-  function near(n){return !!n&&(n===el||(el.contains&&el.contains(n))||(scope&&scope.contains(n))||(up&&up.contains(n)));}
+  return function(n){return !!n&&(n===el||(el.contains&&el.contains(n))||(scope&&scope.contains(n))||(up&&up.contains(n)));};
+}
+function __mcpRelatedMutation(el,since){
+  var s=__mcpState(),list=s.recentMutations;if(!list||!el)return null;
+  var near=__mcpNearTest(el);
   function notice(n){if(!n||n.nodeType!==1)return false;var role=String(n.getAttribute('role')||''),cls=String(n.className||'');
     return /^(dialog|alertdialog|alert|status)$/.test(role)||!!n.getAttribute('aria-live')||String(n.tagName).toLowerCase()==='dialog'||/toast|snackbar|notification|modal/i.test(cls);}
   for(var j=list.length-1;j>=0;j--){var m=list[j];if(m.at<since)break;if(near(m.node))return true;
     for(var k=0;k<m.added.length;k++)if(notice(m.added[k])||near(m.added[k]))return true;}
   return false;
+}
+/* When the page last changed near this element; 0 when no recorded change was near it. */
+function __mcpLastNearChange(el){
+  var s=__mcpState(),list=s.recentMutations||[],near=__mcpNearTest(el);
+  for(var j=list.length-1;j>=0;j--){var m=list[j];if(near(m.node))return m.at;for(var k=0;k<m.added.length;k++)if(near(m.added[k]))return m.at;}
+  return 0;
 }
 function __mcpActivate(el){
   if(__mcpActivationAmbiguous(el))throw new Error('ambiguous_activation_target');
@@ -475,13 +487,23 @@ function __mcpRecoverAction(a,s){
   if(ranked.length>1&&ranked[0].score===ranked[1].score&&ranked[0].score<10)return null;
   var recovered=ranked[0].el;if(id){s.elements[id]=recovered;try{s.ids.set(recovered,id);}catch(e){}}return recovered;
 }
+/* Count page changes and keep where they happened, so an action is credited only with changes near it
+   (#391); the observer and a flush of its pending records both go through here. */
+function __mcpCountMutations(s,records){
+  var counted=false,list=s.recentMutations=s.recentMutations||[],now=Date.now();
+  for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;
+    if(!counted){s.mutationRevision+=1;s.lastMutationAt=now;counted=true;}
+    if(list.length<400||j<8)list.push({at:now,node:rec.target,added:Array.prototype.slice.call(rec.addedNodes||[],0,3)});}
+  if(list.length>200)s.recentMutations=list.slice(-120);
+  return counted;
+}
 function __mcpFlushMutations(s){
   var changed=false,obs=s.rootObservers||[];
   for(var i=0;i<obs.length;i++){
     var records=[];try{records=obs[i].takeRecords();}catch(e){}
-    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;changed=true;break;}
+    if(__mcpCountMutations(s,records))changed=true;
   }
-  if(changed){s.mutationRevision+=1;s.lastMutationAt=Date.now();}return changed;
+  return changed;
 }
 function __mcpModalEffectFingerprint(){
   var modal=__mcpTopBlockingModal();if(!modal)return '';

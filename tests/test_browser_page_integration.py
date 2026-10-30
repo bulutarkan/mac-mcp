@@ -705,6 +705,18 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(any(a.get("_expect_for") is not None or a.get("for") == "url_change" for a in batch["actions"])
                         or batch.get("error"), batch)
 
+    def test_a_live_ticker_elsewhere_does_not_make_every_control_unstable(self) -> None:
+        # A page that never stops changing (a clock, a feed) made every element ELEMENT_UNSTABLE; only changes
+        # at the element itself, or it moving, count now.
+        tools = self.tools("live.html")
+        save = tools.act([{"type": "click", "query": "Save"}])
+        self.assertTrue(save["ok"], save)
+        self.assertEqual("Saved", tools.page.js("document.getElementById('saved').textContent"))
+        busy = tools.act([{"type": "click", "query": "Refresh"}])
+        self.assertFalse(busy["ok"], busy)
+        self.assertEqual("ELEMENT_UNSTABLE", busy["actions"][0].get("reason_code"))
+        self.assertEqual(0, tools.page.js("window.__busyClicks"))
+
     def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
         # Live run on a real form: the date field left its calendar open over the range field,
         # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.

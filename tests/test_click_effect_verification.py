@@ -88,7 +88,10 @@ class ClickScriptTests(unittest.TestCase):
         parts = [Path(agent.__file__)] + sorted((Path(agent.__file__).parent / "browser_js").glob("*.js"))
         source = "".join(part.read_text(encoding="utf-8") for part in parts)
         self.assertNotIn("rec.attributeName==='data-mac-mcp-visual-event')continue", source)
-        self.assertEqual(3, source.count("if(__mcpInternalMutation(rec))continue;"))
+        # The change watch and a flush of its pending records share one counter; event waits have their own.
+        self.assertEqual(2, source.count("if(__mcpInternalMutation(rec))continue;"))
+        self.assertIn("bump=function(records){__mcpCountMutations(s,records);}", bootstrap)
+        self.assertIn("if(__mcpCountMutations(s,records))changed=true;", bootstrap)
 
 
 if __name__ == "__main__":
