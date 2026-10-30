@@ -89,9 +89,8 @@ SKIP_DIRS = frozenset({
     "node_modules", "__pycache__", "venv", "DerivedData", "build", "dist", "Library", "Pods",
 })
 
-# argv: path, mode (pdf|image), max pages, max OCR pages, min characters for a page to count as text.
-# A PDF page with too little text is rendered at 2x and read with Vision's on-device text recognition.
-_PDF_SCRIPT = """
+# Vision's on-device text recognition for JXA scripts that read PDFs and images (also the Preview adapter).
+OCR_JS = """
 ObjC.import('PDFKit');
 ObjC.import('AppKit');
 var visionReady = false;
@@ -115,6 +114,11 @@ function ocr(cg) {
 function cgOf(image, w, h) {
   return image.CGImageForProposedRectContextHints($.NSMakeRect(0, 0, w, h), $(), $());
 }
+"""
+
+# argv: path, mode (pdf|image), max pages, max OCR pages, min characters for a page to count as text.
+# A PDF page with too little text is rendered at 2x and read with Vision's on-device text recognition.
+_PDF_SCRIPT = OCR_JS + """
 function run(argv) {
   var path = argv[0], mode = argv[1], maxPages = Number(argv[2]), maxOcr = Number(argv[3]), minChars = Number(argv[4]);
   if (mode === 'image') {

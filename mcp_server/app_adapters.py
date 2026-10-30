@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import html
 import os
 import re
@@ -28,7 +29,9 @@ from .app_adapter_core import (  # noqa: F401  (re-exported: tests and app_adapt
     _MAILBOX_EXPRESSIONS, _RS, _US, AppAdapterError, _clean_field, _date_setup, _event_datetime, _mailbox_expr,
     _parse_date_bound, _parse_records, _plain_text, _run, _single_line,
 )
+from . import app_adapters_docs as docs
 from . import app_adapters_more as more
+from . import app_adapters_music as music
 from . import app_undo
 from . import desktops
 _ADAPTER_VERSION = 1
@@ -41,6 +44,12 @@ _APP_ALIASES = {
     "mail": "Mail",
     "calendar": "Calendar",
     "preview": "Preview",
+    "numbers": "Numbers",
+    "keynote": "Keynote",
+    "pages": "Pages",
+    "music": "Music",
+    "apple music": "Music",
+    "itunes": "Music",
     "reminders": "Reminders",
     "settings": "System Settings",
     "system settings": "System Settings",
@@ -68,7 +77,11 @@ _ACTIONS = {
                  "schedule_reminders", "undo"),
     "Reminders": ("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder",
                   "undo"),
-    "Preview": ("list_documents", "open_document"),
+    "Preview": ("list_documents", "open_document", "read_document"),
+    "Numbers": ("list_documents", "open_document", "read_table"),
+    "Keynote": ("list_documents", "open_document", "read_slides"),
+    "Pages": ("list_documents", "open_document", "read_document"),
+    "Music": ("now_playing", "find_playlists", "find_tracks", "play", "pause", "next_track", "previous_track"),
     "System Settings": ("list_panes", "open_pane", "read_settings", "change_setting"),
     "Messages": ("find_chats", "read_messages", "search_messages", "send_message"),
     "Xcode": ("list_workspaces",),
@@ -99,14 +112,21 @@ _READ_ACTIONS = {
     "list_desktops",
     "list_albums",
     "find_photos",
+    "read_document",
+    "read_table",
+    "read_slides",
+    "now_playing",
+    "find_playlists",
+    "find_tracks",
 }
 
-# Change app data through the app's own scripting model; they never drive the UI,
+# Change app data (or Music's player) through the app's own scripting model; they never drive the UI,
 # so a person using the app's window does not block them.
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
                        "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
                        "update_message", "create_contact", "update_contact", "schedule_reminders", "export_photos",
-                       "set_favorite", "add_to_album", "remove_from_album", "change_setting", "undo"}
+                       "set_favorite", "add_to_album", "remove_from_album", "change_setting", "undo",
+                       "play", "pause", "next_track", "previous_track"}
 # A shortcut can do anything its actions do, so running one is gated like run_command: the shell
 # switch and the permission profile decide, as for any other command (no new approval prompt).
 _RUN_ACTIONS = {"run_shortcut"}
@@ -124,7 +144,8 @@ _BUNDLE_IDS = {
     "Finder": "com.apple.finder", "Notes": "com.apple.Notes", "Mail": "com.apple.mail", "Calendar": "com.apple.iCal",
     "Reminders": "com.apple.reminders", "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences",
     "Messages": "com.apple.MobileSMS", "Xcode": "com.apple.dt.Xcode", "Contacts": "com.apple.AddressBook",
-    "Shortcuts": "com.apple.shortcuts", "Photos": "com.apple.Photos",
+    "Shortcuts": "com.apple.shortcuts", "Photos": "com.apple.Photos", "Numbers": "com.apple.iWork.Numbers",
+    "Keynote": "com.apple.iWork.Keynote", "Pages": "com.apple.iWork.Pages", "Music": "com.apple.Music",
 }
 
 
@@ -213,7 +234,8 @@ def support_matrix() -> Dict[str, Any]:
 
 
 _ACTION_WORDS = {"selection": "See what is selected", "list_workspaces": "List open projects",
-                 "plan_day": "Plan a day", "find_free_time": "Find free time"}
+                 "plan_day": "Plan a day", "find_free_time": "Find free time", "now_playing": "See what is playing",
+                 "next_track": "Skip to the next song", "previous_track": "Go back a song"}
 _HOW_WORDS = {"first_party": "Built in", "generic_ax": "By looking at the window and clicking",
               "run_command": "With a command", "run_command or start_background_job": "With a command"}
 _SUPPORT_WORDS = {"first_party": "Built in", "partial_first_party": "Partly built in",
@@ -2142,10 +2164,14 @@ return outText'''
     return [part for part in raw.split(_RS) if part]
 
 
-def _preview_open(path: str, *, preserve_focus: bool, timeout_s: float) -> Dict[str, Any]:
+def _open_document(app: str, path: str, *, preserve_focus: bool, timeout_s: float) -> Dict[str, Any]:
+    """Open a file in Preview, Numbers, Keynote or Pages and read back that the app shows it."""
+    prefix = app.upper()
+    open_paths = _preview_paths if app == "Preview" else functools.partial(docs.document_paths, app)
     target = Path(str(path or "")).expanduser().resolve(strict=True)
-    if not target.is_file():
-        raise AppAdapterError("PREVIEW_PATH_INVALID", "Preview open_document requires an existing regular file.")
+    if not target.exists() or (app == "Preview" and not target.is_file()):
+        # iWork documents can be packages (folders), so only Preview insists on a regular file.
+        raise AppAdapterError(f"{prefix}_PATH_INVALID", f"{app} open_document requires an existing file.")
     before = target.stat()
     before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
     deadline = time.monotonic() + max(2.0, min(float(timeout_s), 20.0))
@@ -2153,16 +2179,16 @@ def _preview_open(path: str, *, preserve_focus: bool, timeout_s: float) -> Dict[
     args = ["open"]
     if preserve_focus:
         args.append("-g")
-    args.extend(["-a", "Preview", str(target)])
+    args.extend(["-a", app, str(target)])
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=max(1.0, min(timeout_s, 10.0)))
     except subprocess.TimeoutExpired as exc:
-        raise AppAdapterError("PREVIEW_OPEN_TIMEOUT", "Preview open command timed out.") from exc
+        raise AppAdapterError(f"{prefix}_OPEN_TIMEOUT", f"{app} open command timed out.") from exc
     if proc.returncode != 0:
-        raise AppAdapterError("PREVIEW_OPEN_FAILED", (proc.stderr or "Preview open failed").strip()[:800])
+        raise AppAdapterError(f"{prefix}_OPEN_FAILED", (proc.stderr or f"{app} open failed").strip()[:800])
     verified = False
     while time.monotonic() < deadline:
-        for candidate in _preview_paths(timeout_s=min(2.0, max(0.5, deadline - time.monotonic()))):
+        for candidate in open_paths(timeout_s=min(2.0, max(0.5, deadline - time.monotonic()))):
             try:
                 if Path(candidate).expanduser().resolve(strict=False) == target:
                     verified = True
@@ -2173,13 +2199,13 @@ def _preview_open(path: str, *, preserve_focus: bool, timeout_s: float) -> Dict[
             break
         time.sleep(0.1)
     if not verified:
-        raise AppAdapterError("PREVIEW_DOCUMENT_NOT_VERIFIED", "Preview did not expose the requested document.")
+        raise AppAdapterError(f"{prefix}_DOCUMENT_NOT_VERIFIED", f"{app} did not expose the requested document.")
     after = target.stat()
     after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
     if after_identity != before_identity:
-        raise AppAdapterError("PREVIEW_FILE_IDENTITY_CHANGED", "The file changed while Preview was opening it.")
+        raise AppAdapterError(f"{prefix}_FILE_IDENTITY_CHANGED", f"The file changed while {app} was opening it.")
     result = {"ok": True, "verified": True, "path": str(target), "name": target.name}
-    result["focus"] = _focus_finish(focus, "Preview", deadline)
+    result["focus"] = _focus_finish(focus, app, deadline)
     return result
 
 
@@ -2883,12 +2909,41 @@ def mac_app(
                 if normalized_action == "list_shortcuts"
                 else more.shortcuts_run(item_id, title, body, timeout_s=timeout, allowed_only=not settings.allow_shell)
             )
+        elif normalized_action == "open_document":
+            payload = _open_document(canonical, str(path or ""), preserve_focus=preserve_focus, timeout_s=timeout)
         elif canonical == "Preview":
             payload = (
                 _preview_list(limit=bounded, timeout_s=timeout)
                 if normalized_action == "list_documents"
-                else _preview_open(str(path or ""), preserve_focus=preserve_focus, timeout_s=timeout)
+                else docs.preview_read(path, cursor=cursor, limit=bounded, timeout_s=timeout)
             )
+        elif canonical == "Numbers":
+            payload = (
+                docs.numbers_list(limit=bounded, timeout_s=timeout)
+                if normalized_action == "list_documents"
+                else docs.numbers_read(item_id, path=path, query=query, cursor=cursor, timeout_s=timeout)
+            )
+        elif canonical == "Keynote":
+            payload = (
+                docs.keynote_list(limit=bounded, timeout_s=timeout)
+                if normalized_action == "list_documents"
+                else docs.keynote_read(item_id, path=path, cursor=cursor, limit=bounded, timeout_s=timeout)
+            )
+        elif canonical == "Pages":
+            payload = (
+                docs.pages_list(limit=bounded, timeout_s=timeout)
+                if normalized_action == "list_documents"
+                else docs.pages_read(item_id, path=path, cursor=cursor, timeout_s=timeout)
+            )
+        elif canonical == "Music":
+            if normalized_action == "now_playing":
+                payload = music.now_playing(timeout_s=timeout)
+            elif normalized_action == "find_playlists":
+                payload = music.find_playlists(query, limit=bounded, timeout_s=timeout)
+            elif normalized_action == "find_tracks":
+                payload = music.find_tracks(query, limit=bounded, timeout_s=timeout)
+            else:
+                payload = music.control(normalized_action, item_id, timeout_s=timeout)
         elif canonical == "Messages":
             if normalized_action == "send_message":
                 payload = _messages_send(settings, item_id, query, body, timeout_s=timeout)

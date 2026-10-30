@@ -4,9 +4,11 @@ app_adapters and app_adapters_more both build on this, so neither imports the ot
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
+from .process_supervision import run_osascript
 from .tools_ui import _run_osascript
 
 _RS = chr(30)
@@ -28,6 +30,30 @@ def _run(script: str, *, timeout_s: float = 10.0, code: str = "APP_ADAPTER_SCRIP
         compile_error = "syntax error" in detail and "(-2741)" in detail
         raise AppAdapterError(code, detail[:800], **({"not_executed": True} if compile_error else {}))
     return (stdout or "").rstrip("\r\n")
+
+
+def _run_js(script: str, args: list[str], *, timeout_s: float = 10.0, code: str = "APP_ADAPTER_SCRIPT_FAILED") -> Dict[str, Any]:
+    """Run a JXA script whose run(argv) returns JSON; {"error": CODE, "message": ...} becomes an AppAdapterError.
+
+    JXA looks up an app's terms when it runs, so a script for an app that is not installed still starts
+    and says so, where AppleScript would not even compile. Data goes in as argv, never into the source.
+    """
+    result = run_osascript(script, max(0.5, min(float(timeout_s), 30.0)), args=[str(value) for value in args],
+                           language="JavaScript")
+    if result.timed_out:
+        raise AppAdapterError(code, f"The app did not answer within {timeout_s:g}s.", retryable=True)
+    if not result.ok:
+        raise AppAdapterError(code, (result.stderr or result.stdout or "JXA failed").strip()[:800])
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except ValueError as exc:
+        raise AppAdapterError("APP_ADAPTER_RESPONSE_INVALID", "The app's answer was not readable.") from exc
+    if not isinstance(payload, dict):
+        raise AppAdapterError("APP_ADAPTER_RESPONSE_INVALID", "The app's answer was not readable.")
+    if payload.get("error"):
+        raise AppAdapterError(str(payload["error"]), str(payload.get("message") or payload["error"]),
+                              **({"retryable": False} if payload.get("retryable") is False else {}))
+    return payload
 
 
 def _parse_records(raw: str, fields: tuple[str, ...]) -> list[Dict[str, str]]:

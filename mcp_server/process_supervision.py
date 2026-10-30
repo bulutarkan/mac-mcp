@@ -70,16 +70,17 @@ def run_osascript(
     script_on_stdin: bool = True,
     grace_s: float = 0.5,
     reap_s: float = 0.0,
+    language: Optional[str] = None,
 ) -> OsascriptResult:
     """Run one AppleScript in its own process group.
 
     The script goes on stdin by default (process arguments are visible to other
     processes); `args` reach the script's run handler as argv, so data stays out of the
-    script source. A timeout stops the group and returns timed_out=True. A cancelled tool
+    script source. `language="JavaScript"` runs JXA instead of AppleScript. A timeout stops the group and returns timed_out=True. A cancelled tool
     call, or any other failure while waiting, stops the group and re-raises. Errors
     starting osascript itself propagate unchanged.
     """
-    command = ["osascript", "-" if script_on_stdin else "-e"]
+    command = ["osascript", *(["-l", language] if language else []), "-" if script_on_stdin else "-e"]
     if not script_on_stdin:
         command.append(script)
     if args is not None:
