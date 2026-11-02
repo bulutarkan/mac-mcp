@@ -323,6 +323,7 @@ final class AppState: ObservableObject {
         refreshSafariExtensionState()
         refreshCloudflareCredentialState()
         refreshPersistedUpdateState()
+        startsBackgroundWork = startBackgroundTasks
         if startBackgroundTasks {
             AgentNotificationController.shared.configure(
                 openHandler: { [weak self] kind, targetID in
@@ -425,6 +426,39 @@ final class AppState: ObservableObject {
     }
 
     private static let loginStartGraceSeconds: TimeInterval = 180
+
+    /// Read once at launch: nothing has started the server since this boot (LoginStart).
+    private lazy var loginStartArguments: [String]? = {
+        let dir = Self.stateDirectoryURL()
+        return LoginStart.arguments(
+            intent: try? Data(contentsOf: dir.appendingPathComponent("server-intent.json")),
+            supervisorState: try? Data(contentsOf: dir.appendingPathComponent("supervisor-state.json")),
+            bootTime: Self.bootTime()
+        )
+    }()
+    /// Off for an AppState made without background tasks, so it never starts a server; a test turns it on.
+    var startsBackgroundWork = true
+    private var loginStartRequested = false
+
+    /// The first check after login found nothing listening: start the server now, once.
+    private func startAfterLoginIfNeeded() {
+        guard startsBackgroundWork, startingAfterLogin, !loginStartRequested,
+              let args = loginStartArguments else { return }
+        loginStartRequested = true
+        let cliPath = settings.cliPath
+        let settingsPath = settings.path.path
+        Task {
+            _ = await Self.runCLI(args: args, configuredPath: cliPath, settingsPath: settingsPath)
+            await refresh()
+        }
+    }
+
+    private static func bootTime() -> TimeInterval {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &boot, &size, nil, 0) == 0 else { return 0 }
+        return TimeInterval(boot.tv_sec) + TimeInterval(boot.tv_usec) / 1_000_000
+    }
 
     /// What the menu bar icon and the popup header say Mac MCP is doing (#123). The questions
     /// come from the owner-prompt queue, which lives outside AppState.
@@ -1447,6 +1481,7 @@ final class AppState: ObservableObject {
             )
             setIfChanged(\.permissionsSettingsState, permissionState)
             recordRefreshFailure(state: state, issue: Self.issueText(for: error))
+            if Self.serverDown(error) { startAfterLoginIfNeeded() }
         }
     }
 

@@ -79,3 +79,24 @@ struct MenuLiveStatus: Equatable {
         return parts.isEmpty ? "Ready" : parts.joined(separator: " · ")
     }
 }
+
+/// Right after login the app starts the server itself instead of waiting for the supervisor:
+/// launchd runs the supervisor's first pass a minute or more after login (measured 72 s), while
+/// the app opens within seconds. The rule is the supervisor's own login start: the server was
+/// meant to run, and the supervisor has not checked it since this boot. A start already under
+/// way is harmless, since `mac-mcp start` takes the start lock and adopts a running server.
+enum LoginStart {
+    /// The `mac-mcp start` arguments to run now (the flags the server last ran with), or nil.
+    static func arguments(intent: Data?, supervisorState: Data?, bootTime: TimeInterval) -> [String]? {
+        guard bootTime > 0, let intent = object(intent), intent["desired"] as? String == "running" else { return nil }
+        let lastCheck = (object(supervisorState)?["last_check_at"] as? NSNumber)?.doubleValue ?? 0
+        guard lastCheck < bootTime else { return nil }
+        let flags = (intent["start_args"] as? [Any] ?? []).map { "\($0)" }
+        return ["start"] + flags
+    }
+
+    private static func object(_ data: Data?) -> [String: Any]? {
+        guard let data else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+}

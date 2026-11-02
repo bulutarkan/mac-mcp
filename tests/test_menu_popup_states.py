@@ -79,6 +79,21 @@ struct MenuLiveStatusHarness {
         let downWithStale = MenuLiveStatus(serverAnswered: false, checking: false, startingAfterLogin: false,
                                            questionsWaiting: 1, agentsWorking: 2)
         precondition(downWithStale.iconLook == .stopped && downWithStale.subtitle == "Not running")
+
+        // After login the app starts the server itself, with the flags it last ran with, when the
+        // supervisor has not checked it since this boot.
+        let running = #"{"desired": "running", "start_args": ["--host", "127.0.0.1", "--port", 8765]}"#.data(using: .utf8)
+        let checkedBefore = #"{"last_check_at": 1000.5}"#.data(using: .utf8)
+        let checkedAfter = #"{"last_check_at": 2000.5}"#.data(using: .utf8)
+        precondition(LoginStart.arguments(intent: running, supervisorState: checkedBefore, bootTime: 1500)
+                     == ["start", "--host", "127.0.0.1", "--port", "8765"])
+        precondition(LoginStart.arguments(intent: running, supervisorState: nil, bootTime: 1500) == ["start", "--host", "127.0.0.1", "--port", "8765"])
+        // The supervisor already ran in this boot, the owner stopped it, or the boot time is unknown.
+        precondition(LoginStart.arguments(intent: running, supervisorState: checkedAfter, bootTime: 1500) == nil)
+        let stoppedIntent = #"{"desired": "stopped", "start_args": []}"#.data(using: .utf8)
+        precondition(LoginStart.arguments(intent: stoppedIntent, supervisorState: checkedBefore, bootTime: 1500) == nil)
+        precondition(LoginStart.arguments(intent: nil, supervisorState: checkedBefore, bootTime: 1500) == nil)
+        precondition(LoginStart.arguments(intent: running, supervisorState: checkedBefore, bootTime: 0) == nil)
         print("MENU_LIVE_STATUS_PASS")
     }
 }
@@ -138,6 +153,35 @@ struct ActivityStaleHarness {
         precondition(app.liveStatus(questionsWaiting: 0, askedBy: nil).server == .stopped)
         precondition(app.activeEvents.isEmpty && app.activityStale)
         print("ACTIVITY_STALE_PASS")
+    }
+}
+'''
+
+LOGIN_START_HARNESS = r'''
+import Foundation
+
+@main
+struct LoginStartHarness {
+    @MainActor static func main() async {
+        let record = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CLI_RECORD"]!)
+        func started() -> [Substring] {
+            ((try? String(contentsOf: record, encoding: .utf8)) ?? "").split(separator: "\n")
+        }
+        let app = AppState(startBackgroundTasks: false)
+        await app.refresh()
+        precondition(app.liveStatus(questionsWaiting: 0, askedBy: nil).server == .starting)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        precondition(started().isEmpty, "an app without background work never starts a server")
+
+        // Nothing listens right after login: the app starts the server itself, once, with the last flags.
+        app.startsBackgroundWork = true
+        await app.refresh()
+        await app.refresh()
+        for _ in 0..<50 where started().isEmpty { try? await Task.sleep(nanoseconds: 100_000_000) }
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        await app.refresh()
+        precondition(started() == ["start --host 127.0.0.1 --port 8765"], "\(started())")
+        print("LOGIN_START_PASS")
     }
 }
 '''
@@ -256,6 +300,47 @@ class ActivityKeepsLastGoodTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_after_login_the_app_starts_the_server_once_without_waiting_for_launchd(self) -> None:
+        dead = socket.socket()
+        dead.bind(("127.0.0.1", 0))
+        dead_port = dead.getsockname()[1]
+        dead.close()
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            record = tmp / "cli-calls.txt"
+            cli = tmp / "fake-mac-mcp"
+            cli.write_text(f'#!/bin/sh\necho "$*" >> "{record}"\n', encoding="utf-8")
+            cli.chmod(0o755)
+            settings = tmp / "settings.json"
+            settings.write_text(json.dumps({"server": {"port": dead_port, "cli_path": str(cli),
+                                                       "start_at_login": True}}), encoding="utf-8")
+            state = tmp / "state"
+            state.mkdir()
+            (state / "server-intent.json").write_text(json.dumps(
+                {"desired": "running", "start_args": ["--host", "127.0.0.1", "--port", "8765"]}), encoding="utf-8")
+            # The supervisor last checked before this boot.
+            (state / "supervisor-state.json").write_text(json.dumps({"last_check_at": 1.0}), encoding="utf-8")
+            sources = [*feature_files("AppState"), SOURCES / "AgentNotificationController.swift",
+                       SOURCES / "SettingsStore.swift", SOURCES / "ToolActivityBubbleController.swift",
+                       SOURCES / "KeychainStore.swift"]
+            built, binary = _swift_build(sources, LOGIN_START_HARNESS, tmp, "login-start")
+            self.assertEqual(0, built.returncode, built.stderr[-3000:])
+            env = {
+                **os.environ,
+                "CLI_RECORD": str(record),
+                "MAC_MCP_SETTINGS_PATH": str(settings),
+                "MAC_MCP_STATE_DIR": str(state),
+                "MAC_MCP_DASHBOARD_TOKEN_FILE": str(state / "dashboard-token"),
+                "MAC_MCP_PENDING_STEERING_STATE_FILE": str(state / "pending-steering.json"),
+                "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.popup-states-test",
+                "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT": "test",
+                "MAC_MCP_DECISIONS_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.harness-test",
+                "MAC_MCP_DECISIONS_KEYCHAIN_ACCOUNT": "test",
+            }
+            ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(0, ran.returncode, ran.stderr[-3000:])
+            self.assertIn("LOGIN_START_PASS", ran.stdout)
+
 
 class PopupWiringTests(unittest.TestCase):
     @classmethod
@@ -280,6 +365,19 @@ class PopupWiringTests(unittest.TestCase):
         # The popup reads the queue without re-rendering on the question window's countdown.
         self.assertIn(".onReceive(prompts.$queue)", self.menu)
         self.assertNotIn("@ObservedObject var prompts", self.menu)
+
+    def test_after_login_the_app_starts_the_server_itself_once(self) -> None:
+        # The supervisor's first pass came 72 s after login; the app opens within seconds.
+        refresh = self.state[self.state.index("func refresh(background: Bool = false) async"):]
+        refresh = refresh[:refresh.index("private func settingsFailureState")]
+        self.assertIn("if Self.serverDown(error) { startAfterLoginIfNeeded() }", refresh)
+        start = self.state[self.state.index("private func startAfterLoginIfNeeded()"):]
+        start = start[:start.index("private static func bootTime()")]
+        self.assertIn("guard startsBackgroundWork, startingAfterLogin, !loginStartRequested,", start)
+        self.assertIn("let args = loginStartArguments", start)
+        self.assertIn("loginStartRequested = true", start)
+        self.assertIn("Self.runCLI(args: args,", start)
+        self.assertIn("startsBackgroundWork = startBackgroundTasks", self.state)
 
     def test_activity_error_keeps_the_last_good_list(self) -> None:
         refresh = self.state[self.state.index("func refresh(background: Bool = false) async"):
