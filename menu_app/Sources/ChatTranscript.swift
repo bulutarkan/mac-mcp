@@ -108,8 +108,8 @@ struct ChatConversation: View {
                         visibleChanged: { visible in
                             // Two screens around what is visible, moved in half-screen steps: scrolling redraws the
                             // history only when a step is crossed.
-                            let step = max(visible.height / 2, 200)
-                            let next = (floor((visible.minY - 2 * visible.height) / step) * step)
+                            let step: CGFloat = max(visible.height / 2, 200)
+                            let next: ClosedRange<CGFloat> = (floor((visible.minY - 2 * visible.height) / step) * step)
                                 ... (ceil((visible.maxY + 2 * visible.height) / step) * step)
                             if next != band { band = next }
                         }
