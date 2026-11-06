@@ -9,7 +9,7 @@ const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000),
 // While the server is down, wait longer after each failed attempt, up to the alarm period.
 const MAX_RECONNECT_MS = 30000;
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames', 'open_window', 'open_tab_window', 'print_pdf'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames', 'open_window', 'open_tab_window', 'print_pdf', 'tab_inventory'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -101,6 +101,31 @@ async function handleOpenWindow(message) {
       type: 'result', request_id: requestId, ok: false,
       error: 'chrome_windows_create_failed', message: String(error && error.message || error || 'unknown')
     });
+  }
+}
+
+async function handleListTabs(message) {
+  const requestId = String(message.request_id || '');
+  if (!requestId) return;
+  try {
+    // Chrome enforces per-profile isolation here: only this Companion's tabs.
+    const tabs = await chrome.tabs.query({});
+    if (!Array.isArray(tabs) || tabs.length > 500) {
+      send({type: 'result', request_id: requestId, ok: false,
+        error: 'chrome_inventory_limit', message: 'The tab inventory is unavailable or too large.'});
+      return;
+    }
+    const items = tabs.filter((tab) => Number.isInteger(tab.id) &&
+        Number.isInteger(tab.windowId) && Number.isInteger(tab.index)).map((tab) => ({
+      chrome_tab_id: tab.id, chrome_window_id: tab.windowId, index: tab.index,
+      active: tab.active === true,
+      title: String(tab.title || '').slice(0, 512),
+      url: String(tab.pendingUrl || tab.url || '').slice(0, 2048)
+    }));
+    send({type: 'result', request_id: requestId, ok: true, tabs: items});
+  } catch (error) {
+    send({type: 'result', request_id: requestId, ok: false,
+      error: 'chrome_inventory_failed', message: String(error && error.message || error || 'unknown')});
   }
 }
 
@@ -680,6 +705,7 @@ function connect(trigger) {
     if (message && message.type === 'hello_ack') { accepted = true; failedAttempts = 0; return; }
     if (message && message.type === 'open_tab') { void handleOpenTab(message); return; }
     if (message && message.type === 'open_window') { void handleOpenWindow(message); return; }
+    if (message && message.type === 'list_tabs') { void handleListTabs(message); return; }
     const handlers = {
       execute_js: handleExecuteJs, dispatch_mouse: handleDispatchMouse, set_file_input: handleSetFileInput,
       handle_dialog: handleDialog, gesture: handleGesture, print_pdf: handlePrintPdf

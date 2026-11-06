@@ -1276,13 +1276,37 @@ def _check_runtime_companion_state() -> CheckResult:
             "Active browser companion connection state could not be queried.", started=started,
         )
     connected = bool(payload.get("chrome_companion_connected"))
+    companion = payload.get("chrome_companion") or {}
+    missing = list(companion.get("missing_features") or []) if isinstance(companion, dict) else []
+    needs_reload = bool(companion.get("needs_reload") or missing) if isinstance(companion, dict) else False
+    broken = connected and needs_reload
+    reason = (
+        "CHROME_COMPANION_RELOAD_REQUIRED" if broken else
+        "CHROME_COMPANION_CONNECTED" if connected else
+        "CHROME_COMPANION_DISCONNECTED"
+    )
+    message = (
+        "Chrome Companion is connected but has outdated capabilities; all affected profiles require an official reload."
+        if broken else "Chrome Visual Companion is actively connected." if connected else
+        "Chrome Visual Companion is installed/configured but is not currently connected."
+    )
     return result(
-        "companion.runtime", "companion", PASS if connected else WARN,
-        "CHROME_COMPANION_CONNECTED" if connected else "CHROME_COMPANION_DISCONNECTED",
-        "Chrome Visual Companion is actively connected." if connected else "Chrome Visual Companion is installed/configured but is not currently connected.",
-        started=started,
-        remediation=None if connected else "Open Chrome, load/reload the Mac MCP Chrome companion, then rerun doctor.",
-        details={"http_status": status_code, "runtime_version": payload.get("version"), "chrome_companion_connected": connected},
+        "companion.runtime", "companion", WARN if broken or not connected else PASS,
+        reason, message, started=started,
+        remediation=(
+            "Reload the Mac MCP Chrome Companion using chrome://extensions in the affected profile(s), "
+            "then rerun doctor and verify every connection's features."
+            if broken or not connected else None
+        ),
+        details={
+            "http_status": status_code,
+            "runtime_version": payload.get("version"),
+            "chrome_companion_connected": connected,
+            "connection_count": companion.get("connection_count", 1 if connected else 0)
+            if isinstance(companion, dict) else 0,
+            "needs_reload": needs_reload,
+            "missing_features": sorted(str(x)[:48] for x in missing[:30]),
+        },
     )
 
 

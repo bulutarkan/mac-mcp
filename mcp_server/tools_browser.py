@@ -287,6 +287,12 @@ def _tab_identity_guard(target: browser_tabs.TabTarget) -> str:
     break the action. When several tabs share the identity the leased index breaks
     the tie, and a tab no longer present in the window fails with a distinct marker.
     """
+    if target.browser == "Google Chrome" and bool(getattr(target, "companion_only", False)):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "ok": False, "error": "chrome_profile_requires_companion",
+            "retryable": False,
+            "message": "AppleScript cannot identify this profile's window. Use the pinned Companion tab handle.",
+        })
     native_id = _js_escape(target.native_id)
     url = _js_escape(target.url)
     title = _js_escape(target.title)
@@ -595,6 +601,24 @@ def _chrome_window_id(window_index: int) -> int:
     Counts browser windows only: a DevTools window is a Chrome window to AppleScript, but the companion
     cannot open a tab in it, so window 1 is the frontmost window that shows web pages.
     """
+    rows = browser_tabs.list_tabs("Google Chrome")
+    matching = {
+        int(row["chrome_window_id"])
+        for row in rows
+        if int(row.get("window_index") or 0) == int(window_index)
+        and row.get("chrome_window_id") is not None
+    }
+    if len(matching) == 1:
+        return next(iter(matching))
+    if len(matching) > 1 or any(
+        int(row.get("window_index") or 0) == int(window_index)
+        and bool(row.get("companion_only"))
+        for row in rows
+    ):
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "ok": False, "error": "chrome_window_owner_ambiguous",
+            "retryable": False,
+        })
     try:
         listing = str(_run_osascript(
             'tell application "Google Chrome"\n'
@@ -1164,6 +1188,12 @@ def browser_list_tabs(settings: Settings, browser: str) -> Dict[str, Any]:
         # Agents list tabs first, so this is where they learn whether background
         # automation works before they start acting.
         out["transport"] = chrome_transport_capabilities()
+        out["inventory"] = (
+            {"coverage": "connected_companion_profiles", "partial": False}
+            if chrome_background_bridge.inventory_supported()
+            else {"coverage": "legacy_applescript_only", "partial": True,
+                  "reason": "chrome_companion_inventory_unavailable"}
+        )
     return out
 
 

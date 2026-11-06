@@ -99,6 +99,7 @@ class TabTarget:
     logical_owner: Optional[str] = None
     lease_rebound: bool = False
     previous_origin: Optional[str] = None
+    companion_only: bool = False
 
 
 _SCAN_ATTEMPTS = 3
@@ -344,8 +345,65 @@ def preferred_window_for_owner(browser: str) -> Optional[int]:
     return None
 
 
-def _scan(browser: str) -> List[Dict[str, Any]]:
+def _merge_chrome_inventory(inventory: List[Dict[str, Any]], legacy: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Preserve known AppleScript rows; include unseen Chrome profile tabs via Companion.
+
+    Unknown profile windows receive synthetic indices but are explicitly marked
+    companion_only, never becoming AppleScript mutation targets.
+    """
+    inventory_ids = {str(item["native_id"]) for item in inventory}
+    # A profile present in AppleScript but not in the authenticated Companion
+    # inventory is out of scope: do not silently claim or mutate its tab.
+    rows = [dict(row) for row in legacy if str(row.get("native_id") or "") in inventory_ids]
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        native_id = str(row.get("native_id") or "")
+        if native_id in by_id:
+            # Never match a browser profile to an ambiguous AppleScript ID.
+            raise ValueError("Duplicate Chrome tab identity in AppleScript inventory")
+        by_id[native_id] = row
+    windows: Dict[int, int] = {}
+    for item in inventory:
+        old = by_id.get(str(item["native_id"]))
+        if old:
+            wid = int(item["chrome_window_id"])
+            if wid in windows and windows[wid] != int(old["window_index"]):
+                raise ValueError("Inconsistent Chrome window identity")
+            windows[wid] = int(old["window_index"])
+            old["chrome_window_id"] = wid
+            old["owner_id"] = str(item.get("owner_id") or "")
+            old["companion_only"] = False
+            old["source"] = "chrome_companion_verified_applescript"
+    next_index = max((int(row["window_index"]) for row in rows), default=0) + 1
+    for wid in sorted({int(item["chrome_window_id"]) for item in inventory} - set(windows)):
+        windows[wid] = next_index
+        next_index += 1
+    for item in sorted(inventory, key=lambda x: (windows[int(x["chrome_window_id"])], int(x["chrome_index"]))):
+        native_id = str(item["native_id"])
+        if native_id in by_id:
+            continue
+        rows.append({
+            "browser": "Google Chrome", "window_index": windows[int(item["chrome_window_id"])],
+            "tab_index": int(item["chrome_index"]) + 1, "active": bool(item.get("active")),
+            "native_id": native_id, "title": str(item.get("title") or ""), "url": str(item.get("url") or ""),
+            "chrome_window_id": int(item["chrome_window_id"]),
+            "owner_id": str(item.get("owner_id") or ""),
+            "companion_only": True, "source": "chrome_companion_only",
+        })
+    return rows
+
+
+def _scan(browser: str, *, _legacy_only: bool = False) -> List[Dict[str, Any]]:
     app = _browser_key(browser)
+    if app == "Google Chrome" and not _legacy_only:
+        from .chrome_background_bridge import chrome_background_bridge
+        if chrome_background_bridge.inventory_supported():
+            inventory = chrome_background_bridge.request_tab_inventory()
+            try:
+                baseline = _scan(browser, _legacy_only=True)
+            except RuntimeError:
+                baseline = []
+            return _merge_chrome_inventory(inventory, baseline)
     if app == "Safari":
         script = r'''
 set out to ""
@@ -422,8 +480,11 @@ return out
     return rows
 
 
-def _chrome_handle(native_id: str) -> str:
-    digest = hashlib.sha1(str(native_id).encode("utf-8")).hexdigest()[:16]
+def _chrome_handle(native_id: str, owner_id: str = "") -> str:
+    # A recycled integer ID in a different profile or after reconnect must
+    # never resurrect an old handle and its delegated mutation lease.
+    identity = (str(owner_id) + "\0" + str(native_id)) if owner_id else str(native_id)
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
     return f"btab_chrome_{digest}"
 
 
@@ -561,7 +622,7 @@ def list_tabs(browser: str) -> List[Dict[str, Any]]:
         used: set[str] = set()
         for row in rows:
             if app == "Google Chrome":
-                handle = _chrome_handle(str(row.get("native_id") or ""))
+                handle = _chrome_handle(str(row.get("native_id") or ""), str(row.get("owner_id") or ""))
             else:
                 handle = (
                     _best_existing_safari(row, used)
@@ -742,6 +803,7 @@ def _target_from_row(row: Dict[str, Any], lease: Optional[Dict[str, Any]] = None
         logical_owner=lease.get("owner"),
         lease_rebound=bool(lease.get("rebound")),
         previous_origin=lease.get("previous_origin"),
+        companion_only=bool(row.get("companion_only")),
     )
 
 

@@ -53,6 +53,27 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(request.call_count, 1)
             self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], f"Bearer {secret}")
 
+    def test_outdated_companion_is_warn_not_false_green(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            secret_file = Path(td) / "dashboard-token"
+            secret_file.write_text("DASHBOARD_TEST_SECRET_EXAMPLE_1234567890")
+            os.chmod(secret_file, 0o600)
+            payload = {
+                "ok": True, "version": "2.3.1", "chrome_companion_connected": True,
+                "chrome_companion": {
+                    "connected": True, "version": "2.3.1",
+                    "connection_count": 2, "needs_reload": True,
+                    "missing_features": ["frames", "open_tab_window"],
+                },
+            }
+            with patch("mcp_server.diagnostics.dashboard_token_path", return_value=secret_file), \
+                 patch("mcp_server.diagnostics._request_json", return_value=(200, payload)):
+                result = diagnostics._check_runtime_companion_state().to_dict()
+        self.assertEqual(result["status"], "warn")
+        self.assertEqual(result["reason_code"], "CHROME_COMPANION_RELOAD_REQUIRED")
+        self.assertEqual(result["details"]["connection_count"], 2)
+        self.assertNotIn("DASHBOARD_TEST_SECRET_EXAMPLE", json.dumps(result))
+
     def test_support_bundle_is_owner_only_and_allowlisted(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = Path(td) / "settings.json"
